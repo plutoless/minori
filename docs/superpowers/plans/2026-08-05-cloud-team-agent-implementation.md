@@ -1,8 +1,10 @@
 # Cloud Team Agent Implementation Plan
 
-**Date:** 2026-08-05  
-**Design:** `docs/superpowers/specs/2026-08-04-cloud-team-agent-design.md`  
-**Target repository:** `/Users/zhangqianze/Documents/minori`  
+> **Status: superseded as an executable plan.** This document remains the product roadmap. Implementation is split into independently testable plans, starting with `2026-08-05-read-only-team-agent.md`. Autonomous writes and durable schedules receive separate plans after the read-only Agent is working.
+
+**Date:** 2026-08-05
+**Design:** `docs/superpowers/specs/2026-08-04-cloud-team-agent-design.md`
+**Target repository:** `/Users/zhangqianze/Documents/minori`
 **Delivery strategy:** vertical slices, with a runnable and testable result after every milestone
 
 ## 1. Outcome
