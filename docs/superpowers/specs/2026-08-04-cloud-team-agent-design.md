@@ -1,7 +1,7 @@
 # Cloud Team Agent Design
 
 **Date:** 2026-08-04  
-**Status:** Approved conversational design; awaiting written-spec review  
+**Status:** Approved for implementation
 **Audience:** Team Agent maintainers and operators
 
 ## 1. Summary
@@ -408,4 +408,3 @@ The same image must run locally with Docker Compose and on an arbitrary always-o
 - [Vercel AI SDK workflow patterns](https://ai-sdk.dev/docs/agents/workflows)
 - [Vercel AI SDK provider architecture](https://ai-sdk.dev/docs/foundations/providers-and-models)
 - [Neon pricing and free plan](https://neon.com/pricing)
-
