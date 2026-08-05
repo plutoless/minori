@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Minori Team Agent · Roadmap Prototype</title>
+  <style>
+    :root {
+      --paper: #f3f1ea;
+      --ink: #12202b;
+      --muted: #65717a;
+      --line: rgba(18, 32, 43, .14);
+      --accent: #0b776d;
+      --accent-2: #d7ff64;
+      --panel: rgba(255,255,255,.72);
+      --shadow: 0 24px 80px rgba(17, 31, 42, .12);
+      --radius: 24px;
+      --space: 1;
+      --motion: 1;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      text-rendering: optimizeLegibility;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    a { color: inherit; }
+    .mono { font-family: "SFMono-Regular", "Cascadia Code", monospace; }
+    .eyebrow {
+      font-size: 11px;
+      font-weight: 760;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+    .prototype-stamp {
+      position: fixed;
+      z-index: 30;
+      top: 18px;
+      right: 20px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 11px;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 760;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      backdrop-filter: blur(14px);
+      opacity: .7;
+    }
+    .prototype-stamp::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: breathe calc(2.4s * var(--motion)) ease-in-out infinite;
+    }
+    @keyframes breathe { 50% { opacity: .25; transform: scale(.72); } }
+    @media (prefers-reduced-motion: reduce) { :root { --motion: 0; } * { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+
+    .variant { min-height: 100vh; padding-bottom: 150px; }
+    .variant[hidden] { display: none !important; }
+
+    /* Shared controls */
+    .variant-switcher {
+      position: fixed;
+      z-index: 40;
+      left: 50%;
+      bottom: 22px;
+      transform: translateX(-50%);
+      display: grid;
+      grid-template-columns: 38px 1fr 38px;
+      gap: 5px;
+      align-items: center;
+      width: min(420px, calc(100vw - 32px));
+      padding: 7px;
+      color: #effaf8;
+      background: rgba(13, 22, 29, .92);
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 18px;
+      box-shadow: 0 18px 54px rgba(0,0,0,.28);
+      backdrop-filter: blur(16px);
+    }
+    .variant-switcher button {
+      border: 0;
+      cursor: pointer;
+      background: transparent;
+      border-radius: 12px;
+    }
+    .nav-arrow { height: 38px; font-size: 18px; }
+    .nav-arrow:hover { background: rgba(255,255,255,.1); }
+    .variant-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+    .variant-tabs button {
+      min-width: 0;
+      padding: 10px 8px;
+      color: rgba(255,255,255,.58);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      transition: all calc(.22s * var(--motion));
+    }
+    .variant-tabs button.active { color: #102127; background: var(--accent-2); }
+    .tweaks-trigger {
+      position: fixed;
+      z-index: 42;
+      right: 20px;
+      bottom: 24px;
+      width: 44px;
+      height: 44px;
+      border: 1px solid rgba(255,255,255,.2);
+      border-radius: 50%;
+      cursor: pointer;
+      color: white;
+      background: rgba(13,22,29,.92);
+      box-shadow: 0 12px 34px rgba(0,0,0,.22);
+    }
+    .tweaks-panel {
+      position: fixed;
+      z-index: 41;
+      right: 20px;
+      bottom: 78px;
+      width: 250px;
+      padding: 18px;
+      color: #eaf4f1;
+      background: rgba(13,22,29,.96);
+      border: 1px solid rgba(255,255,255,.15);
+      border-radius: 18px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.3);
+      backdrop-filter: blur(18px);
+    }
+    .tweaks-panel[hidden] { display: none; }
+    .tweaks-panel h3 { margin: 0 0 14px; font-size: 13px; }
+    .tweak-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; font-size: 12px; color: #a9b7b5; }
+    .segmented { display: flex; gap: 3px; padding: 3px; background: #202f35; border-radius: 10px; }
+    .segmented button { border: 0; border-radius: 7px; padding: 6px 8px; color: #9fb0ad; background: transparent; cursor: pointer; font-size: 10px; }
+    .segmented button.active { color: #102127; background: var(--accent-2); }
+    .tweak-note { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.1); color: #748582; font-size: 10px; line-height: 1.5; }
+
+    /* Variant A — Executive atlas */
+    .variant-a { background: radial-gradient(circle at 85% 0%, #ddf4e8 0, transparent 26%), var(--paper); }
+    .a-shell { width: min(1240px, calc(100% - 48px)); margin: 0 auto; }
+    .a-nav { height: 84px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 760; }
+    .brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: #eafffa; background: var(--ink); font-size: 12px; }
+    .a-nav-meta { color: var(--muted); font-size: 12px; }
+    .a-hero { display: grid; grid-template-columns: 1.1fr .9fr; gap: 80px; align-items: end; padding: calc(82px * var(--space)) 0 68px; }
+    .a-hero h1 { max-width: 760px; margin: 12px 0 20px; font-size: clamp(48px, 7vw, 96px); line-height: .94; letter-spacing: -.06em; font-weight: 690; }
+    .a-hero h1 em { color: var(--accent); font-style: normal; }
+    .a-hero p { max-width: 620px; margin: 0; color: var(--muted); font-size: 18px; line-height: 1.7; }
+    .hero-status { justify-self: end; width: min(100%, 390px); padding: 22px; background: #10232a; color: #ecf5f2; border-radius: var(--radius); box-shadow: var(--shadow); }
+    .status-head { display: flex; justify-content: space-between; align-items: center; }
+    .live-pill { display: inline-flex; align-items: center; gap: 7px; color: var(--accent-2); font-size: 11px; font-weight: 720; }
+    .live-pill::before { content:""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 5px rgba(215,255,100,.12); }
+    .hero-status strong { display: block; margin: 24px 0 4px; font-size: 27px; letter-spacing: -.03em; }
+    .hero-status p { font-size: 12px; color: #93a6a3; line-height: 1.5; }
+    .status-meter { margin-top: 24px; height: 5px; overflow: hidden; border-radius: 8px; background: #314047; }
+    .status-meter i { display: block; width: 33%; height: 100%; background: var(--accent-2); }
+    .roadmap-section { padding: calc(68px * var(--space)) 0; border-top: 1px solid var(--line); }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
+    .section-head h2 { margin: 8px 0 0; font-size: clamp(32px, 4vw, 52px); line-height: 1; letter-spacing: -.045em; }
+    .section-head p { max-width: 450px; margin: 0; color: var(--muted); line-height: 1.6; }
+    .stage-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .stage-card { position: relative; min-height: 330px; padding: 24px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255,255,255,.45); cursor: pointer; text-align: left; transition: transform calc(.2s * var(--motion)), background calc(.2s * var(--motion)); }
+    .stage-card:hover { transform: translateY(-4px); }
+    .stage-card.active { color: #f2f9f7; background: #112a31; }
+    .stage-card::after { content: attr(data-num); position: absolute; right: 18px; bottom: -28px; color: rgba(18,32,43,.06); font-size: 160px; line-height: 1; font-weight: 800; letter-spacing: -.1em; }
+    .stage-card.active::after { color: rgba(255,255,255,.06); }
+    .stage-top { display: flex; justify-content: space-between; gap: 10px; }
+    .stage-state { padding: 6px 9px; border: 1px solid currentColor; border-radius: 999px; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; opacity: .68; }
+    .stage-card h3 { position: relative; z-index: 1; margin: 46px 0 12px; max-width: 260px; font-size: 28px; line-height: 1.05; letter-spacing: -.04em; }
+    .stage-card p { position: relative; z-index: 1; max-width: 280px; color: var(--muted); line-height: 1.6; font-size: 13px; }
+    .stage-card.active p { color: #9fb2af; }
+    .stage-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+    .detail-panel { padding: 28px; border-radius: var(--radius); background: white; border: 1px solid var(--line); }
+    .detail-panel h3 { margin: 8px 0 20px; font-size: 24px; }
+    .task-list { display: grid; gap: 0; }
+    .task { display: grid; grid-template-columns: 30px 1fr auto; gap: 12px; align-items: center; padding: 13px 0; border-top: 1px solid var(--line); font-size: 13px; }
+    .task:first-child { border-top: 0; }
+    .task-num { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: #edf2ef; color: var(--accent); font-size: 10px; font-weight: 780; }
+    .task-tag { color: var(--muted); font-size: 10px; }
+    .outcome-box { display: flex; flex-direction: column; justify-content: space-between; min-height: 340px; padding: 28px; color: #12232a; border-radius: var(--radius); background: var(--accent-2); }
+    .outcome-box blockquote { margin: 40px 0; font-size: 27px; line-height: 1.3; letter-spacing: -.03em; }
+    .outcome-box footer { display: flex; justify-content: space-between; align-items: end; font-size: 11px; }
+    .a-demo { display: grid; grid-template-columns: .78fr 1.22fr; gap: 50px; padding: calc(88px * var(--space)) 0; }
+    .demo-copy h2 { margin: 10px 0 18px; font-size: 48px; line-height: 1; letter-spacing: -.045em; }
+    .demo-copy p { color: var(--muted); line-height: 1.7; }
+    .demo-points { margin-top: 28px; display: grid; gap: 12px; }
+    .demo-point { display: flex; gap: 12px; align-items: center; font-size: 12px; }
+    .demo-point i { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 5px rgba(11,119,109,.1); }
+    .feishu-window { overflow: hidden; border: 1px solid var(--line); border-radius: 28px; background: white; box-shadow: var(--shadow); }
+    .window-bar { display: flex; align-items: center; justify-content: space-between; padding: 15px 18px; border-bottom: 1px solid var(--line); background: #fafbf9; }
+    .dots { display: flex; gap: 6px; }
+    .dots i { width: 7px; height: 7px; border-radius: 50%; background: #cdd5d0; }
+    .window-title { font-size: 11px; color: var(--muted); }
+    .chat-body { min-height: 460px; padding: 26px; background: linear-gradient(180deg,#f7faf9,white); }
+    .message { display: flex; gap: 10px; margin: 0 0 22px; }
+    .message.me { justify-content: flex-end; }
+    .avatar { flex: 0 0 auto; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; color: white; background: #405f8d; font-size: 11px; font-weight: 800; }
+    .avatar.bot { color: #17342e; background: var(--accent-2); }
+    .bubble { max-width: 78%; padding: 13px 15px; border-radius: 6px 16px 16px 16px; background: white; border: 1px solid var(--line); box-shadow: 0 7px 20px rgba(18,32,43,.05); font-size: 13px; line-height: 1.6; }
+    .message.me .bubble { color: white; background: #2863d9; border: 0; border-radius: 16px 6px 16px 16px; }
+    .tool-line { display: flex; align-items: center; gap: 8px; margin: 9px 0; padding: 9px; border-radius: 10px; background: #f0f5f3; color: #61706d; font-size: 10px; }
+    .tool-line b { color: var(--accent); }
+    .source-link { display: flex; justify-content: space-between; gap: 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); color: #2863d9; font-size: 10px; }
+    .architecture-strip { margin-top: 40px; padding: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: #e8ebe5; }
+    .flow { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; gap: 22px; margin-top: 22px; }
+    .flow-node { position: relative; padding: 16px; min-height: 96px; border-radius: 16px; background: #f9faf6; }
+    .flow-node:not(:last-child)::after { content:"→"; position:absolute; right:-17px; top:38%; color:#82908a; }
+    .flow-node b { display: block; margin-bottom: 8px; font-size: 12px; }
+    .flow-node span { color: var(--muted); font-size: 10px; line-height: 1.4; }
+
+    /* Variant B — technical control room */
+    .variant-b { --bg-b:#071014; --panel-b:#0e1b20; --line-b:#203139; --cyan:#49e6c5; --amber:#ffcf70; color:#dce9e6; background: var(--bg-b); }
+    .b-grid { min-height: 100vh; display: grid; grid-template-columns: 230px 1fr; }
+    .b-sidebar { padding: 28px 18px; border-right: 1px solid var(--line-b); background: #091418; }
+    .b-brand { display:flex; align-items:center; gap:10px; padding: 0 8px 26px; border-bottom:1px solid var(--line-b); }
+    .b-logo { display:grid; place-items:center; width:28px; height:28px; border:1px solid var(--cyan); color:var(--cyan); border-radius:6px; font-size:10px; }
+    .b-brand b { font-size:12px; letter-spacing:.04em; }
+    .b-nav { margin-top: 24px; }
+    .b-nav-label { padding: 10px 8px; color:#557078; font-size:9px; letter-spacing:.14em; text-transform:uppercase; }
+    .b-nav button { width:100%; display:flex; align-items:center; gap:10px; padding:11px 10px; border:0; border-radius:8px; color:#789096; background:transparent; cursor:pointer; text-align:left; font-size:11px; }
+    .b-nav button.active { color:#e6f5f2; background:#14262c; }
+    .b-nav button i { width:7px; height:7px; border-radius:2px; background:currentColor; }
+    .b-side-foot { position:sticky; top:calc(100vh - 120px); margin-top:120px; padding:12px; border:1px solid var(--line-b); border-radius:10px; font-size:9px; color:#60767b; line-height:1.6; }
+    .b-main { min-width:0; }
+    .b-topbar { height:72px; display:flex; align-items:center; justify-content:space-between; padding:0 30px; border-bottom:1px solid var(--line-b); }
+    .b-topbar h1 { margin:0; font-size:15px; letter-spacing:.01em; }
+    .b-health { display:flex; gap:18px; color:#6e868b; font-size:10px; }
+    .b-health span::before { content:""; display:inline-block; width:6px; height:6px; margin-right:6px; border-radius:50%; background:var(--cyan); box-shadow:0 0 9px var(--cyan); }
+    .b-content { padding: 28px 30px 110px; }
+    .b-summary { display:grid; grid-template-columns:1.25fr .75fr; gap:14px; }
+    .b-hero { padding:30px; min-height:280px; border:1px solid var(--line-b); border-radius:14px; background:linear-gradient(145deg,#102126,#0b171b); }
+    .b-hero .eyebrow { color:var(--cyan); }
+    .b-hero h2 { max-width:700px; margin:36px 0 18px; font-size:clamp(35px,5vw,68px); line-height:.98; letter-spacing:-.05em; font-weight:600; }
+    .b-hero p { max-width:650px; margin:0; color:#779096; font-size:13px; line-height:1.7; }
+    .b-scope { display:grid; grid-template-rows:1fr 1fr; gap:14px; }
+    .metric { padding:22px; border:1px solid var(--line-b); border-radius:14px; background:var(--panel-b); }
+    .metric span { color:#61777d; font-size:9px; letter-spacing:.1em; text-transform:uppercase; }
+    .metric strong { display:block; margin-top:18px; font-size:34px; font-weight:560; letter-spacing:-.04em; }
+    .metric small { color:#6d8589; font-size:10px; }
+    .b-pipeline { display:grid; grid-template-columns:1.35fr .65fr; gap:14px; margin-top:14px; }
+    .console-panel { padding:22px; border:1px solid var(--line-b); border-radius:14px; background:var(--panel-b); }
+    .panel-heading { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:20px; }
+    .panel-heading h3 { margin:0; font-size:12px; letter-spacing:.03em; }
+    .panel-heading span { color:#5b747a; font-size:9px; }
+    .pipeline-track { position:relative; display:grid; grid-template-columns:repeat(5,1fr); gap:8px; padding-top:12px; }
+    .pipeline-track::before { content:""; position:absolute; top:36px; left:8%; right:8%; height:1px; background:var(--line-b); }
+    .pipe-node { position:relative; z-index:1; text-align:center; cursor:pointer; }
+    .pipe-icon { display:grid; place-items:center; width:50px; height:50px; margin:0 auto 11px; border:1px solid var(--line-b); border-radius:50%; color:#647c81; background:#0b171b; font-size:11px; transition:all calc(.2s * var(--motion)); }
+    .pipe-node.active .pipe-icon, .pipe-node:hover .pipe-icon { color:#071014; border-color:var(--cyan); background:var(--cyan); box-shadow:0 0 28px rgba(73,230,197,.2); }
+    .pipe-node b { display:block; font-size:9px; }
+    .pipe-node small { color:#536970; font-size:8px; }
+    .event-log { margin-top:24px; border-top:1px solid var(--line-b); }
+    .log-row { display:grid; grid-template-columns:76px 76px 1fr auto; gap:10px; padding:12px 2px; border-bottom:1px solid rgba(32,49,57,.6); color:#819498; font-size:9px; }
+    .log-row b { color:#c0d2cf; font-weight:500; }
+    .log-status { color:var(--cyan); }
+    .guardrail-list { display:grid; gap:8px; }
+    .guardrail { padding:13px; border:1px solid var(--line-b); border-radius:9px; background:#0a1519; }
+    .guardrail b { display:flex; align-items:center; gap:8px; font-size:10px; }
+    .guardrail b::before { content:"✓"; display:grid; place-items:center; width:16px; height:16px; border-radius:50%; color:#071014; background:var(--cyan); font-size:8px; }
+    .guardrail p { margin:7px 0 0 24px; color:#5e767b; font-size:9px; line-height:1.5; }
+    .b-roadmap { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:14px; }
+    .release { padding:22px; min-height:250px; border:1px solid var(--line-b); border-radius:14px; background:var(--panel-b); }
+    .release.current { border-color:rgba(73,230,197,.48); background:linear-gradient(160deg,rgba(73,230,197,.07),var(--panel-b)); }
+    .release-head { display:flex; justify-content:space-between; gap:10px; }
+    .release-no { color:#4c646a; font-family:"SFMono-Regular",monospace; font-size:10px; }
+    .release-state { color:var(--cyan); font-size:8px; letter-spacing:.08em; text-transform:uppercase; }
+    .release h3 { margin:32px 0 9px; font-size:20px; letter-spacing:-.03em; }
+    .release p { margin:0; color:#657b80; font-size:10px; line-height:1.6; }
+    .release ul { margin:18px 0 0; padding:0; list-style:none; }
+    .release li { padding:7px 0; border-top:1px solid var(--line-b); color:#8da09e; font-size:9px; }
+    .release li::before { content:"·"; margin-right:8px; color:var(--cyan); }
+    .b-demo-card { margin-top:14px; padding:22px; border:1px solid var(--line-b); border-radius:14px; background:#0b171b; }
+    .terminal { overflow:hidden; border:1px solid #253940; border-radius:10px; background:#050b0e; }
+    .terminal-head { padding:10px 13px; border-bottom:1px solid #1b2a30; color:#61747a; font-size:9px; }
+    .terminal-body { min-height:160px; padding:18px; color:#8fa7a5; font-size:10px; line-height:1.8; }
+    .terminal-body .cmd { color:var(--cyan); }
+    .terminal-body .comment { color:#445a60; }
+
+    /* Variant C — narrative walkthrough */
+    .variant-c { --orange:#ff5b35; color:#201b18; background:#fff9ef; }
+    .c-hero { position:relative; min-height:88vh; display:flex; flex-direction:column; justify-content:space-between; padding:30px max(28px,calc((100vw - 1220px)/2)); overflow:hidden; border-bottom:1px solid #d9cfc2; }
+    .c-hero::after { content:"MINORI"; position:absolute; right:-2vw; bottom:-12vw; color:rgba(255,91,53,.07); font-size:29vw; line-height:.8; font-weight:800; letter-spacing:-.12em; pointer-events:none; }
+    .c-top { position:relative; z-index:1; display:flex; justify-content:space-between; align-items:center; }
+    .c-wordmark { font-size:13px; font-weight:800; letter-spacing:.11em; }
+    .c-top small { font-size:10px; color:#8e8177; }
+    .c-hero-copy { position:relative; z-index:1; max-width:1040px; padding:100px 0 50px; }
+    .c-hero-copy .eyebrow { color:var(--orange); }
+    .c-hero h1 { margin:22px 0 28px; font-size:clamp(58px,10vw,146px); line-height:.82; letter-spacing:-.075em; font-weight:700; }
+    .c-hero h1 span { display:block; margin-left:15%; color:var(--orange); }
+    .c-hero-desc { display:grid; grid-template-columns:1fr 1fr; gap:60px; max-width:780px; margin-left:15%; }
+    .c-hero-desc p { margin:0; color:#74675e; font-size:15px; line-height:1.75; }
+    .c-scroll { position:relative; z-index:1; display:flex; align-items:center; gap:12px; font-size:10px; letter-spacing:.1em; text-transform:uppercase; }
+    .c-scroll::before { content:"↓"; display:grid; place-items:center; width:30px; height:30px; border:1px solid currentColor; border-radius:50%; }
+    .c-chapter { width:min(1180px,calc(100% - 48px)); margin:0 auto; padding:calc(110px * var(--space)) 0; border-bottom:1px solid #d9cfc2; }
+    .chapter-grid { display:grid; grid-template-columns:180px 1fr; gap:70px; }
+    .chapter-no { color:var(--orange); font-size:12px; font-weight:800; }
+    .chapter-body h2 { margin:0 0 25px; max-width:850px; font-size:clamp(42px,7vw,84px); line-height:.95; letter-spacing:-.055em; }
+    .chapter-lead { max-width:700px; margin:0 0 55px; color:#71655c; font-size:17px; line-height:1.8; }
+    .c-road { display:grid; gap:0; }
+    .c-road-row { display:grid; grid-template-columns:80px 1fr 200px; gap:20px; align-items:start; padding:30px 0; border-top:1px solid #d9cfc2; }
+    .c-road-row:last-child { border-bottom:1px solid #d9cfc2; }
+    .big-no { color:var(--orange); font-size:36px; line-height:1; letter-spacing:-.06em; }
+    .c-road-row h3 { margin:0 0 10px; font-size:25px; }
+    .c-road-row p { max-width:570px; margin:0; color:#776b61; font-size:13px; line-height:1.7; }
+    .c-tag { justify-self:end; padding:7px 10px; border:1px solid currentColor; border-radius:999px; font-size:9px; letter-spacing:.08em; text-transform:uppercase; }
+    .story-sim { display:grid; grid-template-columns:.72fr 1.28fr; gap:40px; }
+    .scenario-list { display:grid; align-content:start; gap:8px; }
+    .scenario-list button { padding:18px; border:1px solid #d9cfc2; border-radius:14px; background:transparent; cursor:pointer; text-align:left; transition:all calc(.2s * var(--motion)); }
+    .scenario-list button.active { color:#fff8ef; border-color:#24201d; background:#24201d; }
+    .scenario-list b { display:block; margin-bottom:5px; font-size:13px; }
+    .scenario-list span { color:#8a7c71; font-size:10px; }
+    .phone { max-width:560px; margin:0 auto; padding:12px; border:2px solid #2b2521; border-radius:34px; background:#29231f; box-shadow:14px 18px 0 #f3d4c6; }
+    .phone-screen { min-height:570px; overflow:hidden; border-radius:24px; background:#f4f7f6; }
+    .phone-head { display:flex; justify-content:space-between; padding:16px 18px; color:#fff; background:#3478f6; font-size:11px; }
+    .phone-chat { padding:22px 18px; }
+    .phone-system { margin-bottom:22px; color:#87918e; text-align:center; font-size:9px; }
+    .typing { display:inline-flex; gap:3px; padding:10px 13px; border-radius:14px; background:white; }
+    .typing i { width:5px; height:5px; border-radius:50%; background:#96a29e; animation:breathe calc(1.2s * var(--motion)) infinite; }
+    .response-card { margin-top:16px; padding:16px; border-radius:14px; background:white; box-shadow:0 8px 24px rgba(30,42,38,.08); }
+    .response-card h4 { margin:0 0 10px; font-size:13px; }
+    .response-card p { margin:0; color:#596562; font-size:11px; line-height:1.7; }
+    .receipt { margin-top:12px; padding:10px; border-left:3px solid var(--orange); background:#fff3ed; color:#7b6256; font-size:9px; line-height:1.5; }
+    .c-principles { display:grid; grid-template-columns:repeat(2,1fr); gap:1px; background:#d9cfc2; border:1px solid #d9cfc2; }
+    .principle { min-height:230px; padding:30px; background:#fff9ef; }
+    .principle span { color:var(--orange); font-size:10px; font-weight:800; }
+    .principle h3 { margin:45px 0 10px; font-size:25px; }
+    .principle p { max-width:400px; margin:0; color:#796d63; font-size:12px; line-height:1.7; }
+    .c-close { width:min(1180px,calc(100% - 48px)); margin:0 auto; padding:100px 0 160px; }
+    .c-close h2 { max-width:900px; margin:0; font-size:clamp(46px,8vw,100px); line-height:.92; letter-spacing:-.06em; }
+    .c-close h2 em { color:var(--orange); font-style:normal; }
+
+    @media (max-width: 900px) {
+      .a-shell { width:min(100% - 30px, 720px); }
+      .a-hero, .stage-detail, .a-demo, .b-summary, .b-pipeline, .story-sim { grid-template-columns:1fr; }
+      .a-hero { gap:36px; padding-top:65px; }
+      .hero-status { justify-self:start; }
+      .stage-grid, .b-roadmap { grid-template-columns:1fr; }
+      .flow { grid-template-columns:1fr; }
+      .flow-node:not(:last-child)::after { content:"↓"; right:50%; top:auto; bottom:-19px; }
+      .b-grid { grid-template-columns:1fr; }
+      .b-sidebar { display:none; }
+      .b-content { padding:20px 16px 110px; }
+      .b-topbar { padding:0 18px; }
+      .b-health span:not(:first-child) { display:none; }
+      .chapter-grid { grid-template-columns:1fr; gap:25px; }
+      .c-road-row { grid-template-columns:50px 1fr; }
+      .c-tag { grid-column:2; justify-self:start; }
+      .c-hero-desc { grid-template-columns:1fr; gap:16px; margin-left:0; }
+      .c-hero h1 span { margin-left:0; }
+      .c-principles { grid-template-columns:1fr; }
+    }
+    @media (max-width: 620px) {
+      .prototype-stamp { top:12px; right:12px; }
+      .a-nav-meta { display:none; }
+      .a-hero h1 { font-size:49px; }
+      .section-head { align-items:start; flex-direction:column; }
+      .pipeline-track { grid-template-columns:repeat(5,75px); overflow:auto; padding-bottom:10px; }
+      .log-row { grid-template-columns:58px 1fr; }
+      .log-row span:nth-child(3), .log-row span:last-child { display:none; }
+      .c-hero, .c-chapter, .c-close { width:100%; padding-left:20px; padding-right:20px; }
+      .chapter-body h2 { font-size:44px; }
+      .variant-switcher { bottom:14px; }
+      .tweaks-trigger { display:none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="prototype-stamp">Throwaway prototype</div>
+
+  <main id="variant-a" class="variant variant-a">
+    <div class="a-shell">
+      <nav class="a-nav">
+        <div class="brand"><span class="brand-mark">M</span> Minori Team Agent</div>
+        <div class="a-nav-meta mono">ROADMAP / 2026.08 / V0.1</div>
+      </nav>
+
+      <section class="a-hero">
+        <div>
+          <div class="eyebrow">The delivery thesis</div>
+          <h1>先让团队<em>问得到</em>，再让 Agent 做得到。</h1>
+          <p>一个独立的飞书团队机器人身份，在明确授权的群聊与私聊中工作；知识库操作使用专用飞书用户的真实权限，并通过 Lark CLI 留下可验证的来源链路。</p>
+        </div>
+        <aside class="hero-status">
+          <div class="status-head"><span class="eyebrow">Current focus</span><span class="live-pill">PLAN READY</span></div>
+          <strong>Phase 1 · Read-only</strong>
+          <p>首个独立可用版本：对话、检索、阅读、引用。自主写入与定时任务被刻意留在后续阶段。</p>
+          <div class="status-meter"><i></i></div>
+        </aside>
+      </section>
+
+      <section class="roadmap-section">
+        <header class="section-head">
+          <div><div class="eyebrow">Three releases, one architecture</div><h2>分阶段交付，而非一次造完。</h2></div>
+          <p>点击阶段查看交付边界。每一步都能单独上线、验证，并成为下一步的可靠地基。</p>
+        </header>
+        <div class="stage-grid" id="a-stage-grid">
+          <button class="stage-card active" data-stage="0" data-num="1">
+            <div class="stage-top"><span class="eyebrow">Release 01</span><span class="stage-state">Executable now</span></div>
+            <h3>只读 Team Agent</h3>
+            <p>在指定群和合格私聊中连续对话，搜索、读取知识库，并返回可点击的飞书来源。</p>
+          </button>
+          <button class="stage-card" data-stage="1" data-num="2">
+            <div class="stage-top"><span class="eyebrow">Release 02</span><span class="stage-state">Next plan</span></div>
+            <h3>自主知识写入</h3>
+            <p>创建、追加与小范围修改文档；不逐次确认，但每次变更都有冲突检测和审计回执。</p>
+          </button>
+          <button class="stage-card" data-stage="2" data-num="3">
+            <div class="stage-top"><span class="eyebrow">Release 03</span><span class="stage-state">Later</span></div>
+            <h3>持久化定时任务</h3>
+            <p>由合格成员创建的计划任务，可在无人在线时调用同一 Agent 运行时并更新文档。</p>
+          </button>
+        </div>
+        <div class="stage-detail">
+          <div class="detail-panel">
+            <div class="eyebrow" id="a-detail-kicker">Release 01 · 7 implementation tasks</div>
+            <h3 id="a-detail-title">首版实施清单</h3>
+            <div class="task-list" id="a-task-list"></div>
+          </div>
+          <div class="outcome-box">
+            <div class="eyebrow">Definition of useful</div>
+            <blockquote id="a-outcome">“团队成员在飞书里问一个真实问题，Agent 能从授权知识库找到答案，并给出可点击来源。”</blockquote>
+            <footer><span id="a-proof">群聊 + 合格私聊 / 重启可恢复 / 无写入工具</span><b>MINORI →</b></footer>
+          </div>
+        </div>
+      </section>
+
+      <section class="a-demo">
+        <div class="demo-copy">
+          <div class="eyebrow">Example interaction</div>
+          <h2>不是固定流程，是带工具的开放对话。</h2>
+          <p>AI SDK Agent 自己判断是否需要搜索、继续阅读或追问。业务事实来自飞书文档，文档内容只被当作不可信证据，不能扩大权限。</p>
+          <div class="demo-points">
+            <div class="demo-point"><i></i><span>保留对话上下文，不把用户塞进固定问答流程</span></div>
+            <div class="demo-point"><i></i><span>答案区分“文档明确写明”与“Agent 推断”</span></div>
+            <div class="demo-point"><i></i><span>引用真实文档标题与可点击链接</span></div>
+          </div>
+        </div>
+        <div class="feishu-window">
+          <div class="window-bar"><div class="dots"><i></i><i></i><i></i></div><div class="window-title">飞书 · Console Experience 群</div><span class="mono" style="font-size:9px;color:#7e8b86">BOT ONLINE</span></div>
+          <div class="chat-body">
+            <div class="message me"><div class="bubble">@Minori 我们关于 Console first success 的最新结论是什么？</div><div class="avatar">QZ</div></div>
+            <div class="message"><div class="avatar bot">M</div><div class="bubble"><div>我先检查团队知识库中最近更新的相关材料。</div><div class="tool-line"><b>SEARCH</b><span class="mono">drive +search "Console first success"</span></div><div class="tool-line"><b>READ</b><span class="mono">docs +fetch / Journey Contract</span></div></div></div>
+            <div class="message"><div class="avatar bot">M</div><div class="bubble"><b>最新结论：Home 用来启动 journey，导航用于管理已有资源。</b><br/>Voice Agent 可从 Studio 或 Code 开始；Realtime 默认推荐 Code 路径。这些是已确认的体验原则，具体上线节奏仍需另行确认。<div class="source-link"><span>Agora User Journey Contract</span><span>打开文档 ↗</span></div><div class="source-link"><span>Console / Studio Workflow</span><span>打开文档 ↗</span></div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="architecture-strip">
+        <div class="eyebrow">Runtime shape · one container + Neon</div>
+        <div class="flow">
+          <div class="flow-node"><b>飞书入口</b><span>指定群聊<br/>合格成员私聊</span></div>
+          <div class="flow-node"><b>快速持久化</b><span>Gateway 在 3 秒内<br/>保存并返回</span></div>
+          <div class="flow-node"><b>AI SDK Agent</b><span>开放对话<br/>最多 12 步工具循环</span></div>
+          <div class="flow-node"><b>Lark CLI</b><span>专用用户 --as user<br/>类型化命令目录</span></div>
+          <div class="flow-node"><b>Neon</b><span>对话、事件<br/>运行记录与幂等</span></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <main id="variant-b" class="variant variant-b" hidden>
+    <div class="b-grid">
+      <aside class="b-sidebar">
+        <div class="b-brand"><span class="b-logo mono">MI</span><b>MINORI CONTROL</b></div>
+        <div class="b-nav">
+          <div class="b-nav-label">System</div>
+          <button class="active"><i></i>Overview</button>
+          <button><i></i>Event pipeline</button>
+          <button><i></i>Knowledge tools</button>
+          <div class="b-nav-label">Delivery</div>
+          <button><i></i>Roadmap</button>
+          <button><i></i>Acceptance gates</button>
+        </div>
+        <div class="b-side-foot mono">PROTOTYPE MODE<br/>No live Feishu data<br/>No credentials loaded</div>
+      </aside>
+      <div class="b-main">
+        <header class="b-topbar">
+          <h1>Team Agent / Delivery Control Room</h1>
+          <div class="b-health"><span>Architecture ready</span><span>Plan split</span><span>0 production writes</span></div>
+        </header>
+        <div class="b-content">
+          <section class="b-summary">
+            <div class="b-hero">
+              <div class="eyebrow">Mission / Access the team's explicit knowledge boundary</div>
+              <h2>Feishu-native.<br/>Open-ended.<br/>Auditable.</h2>
+              <p>独立机器人负责交互，专用飞书用户负责知识访问。Agent 不模拟提问者身份，也不会在用户权限被拒绝时降级到机器人凭证。</p>
+            </div>
+            <div class="b-scope">
+              <div class="metric"><span>Current executable release</span><strong>01 / 03</strong><small>Read-only knowledge agent</small></div>
+              <div class="metric"><span>Implementation slices</span><strong>7</strong><small>From service bootstrap to acceptance</small></div>
+            </div>
+          </section>
+
+          <section class="b-pipeline">
+            <div class="console-panel">
+              <div class="panel-heading"><h3>Durable event pipeline</h3><span>点击节点检查执行边界</span></div>
+              <div class="pipeline-track" id="pipeline-track">
+                <div class="pipe-node active" data-pipe="received"><div class="pipe-icon mono">01</div><b>RECEIVE</b><small>&lt; 3 sec</small></div>
+                <div class="pipe-node" data-pipe="persisted"><div class="pipe-icon mono">02</div><b>PERSIST</b><small>Neon</small></div>
+                <div class="pipe-node" data-pipe="authorized"><div class="pipe-icon mono">03</div><b>AUTHORIZE</b><small>fail closed</small></div>
+                <div class="pipe-node" data-pipe="retrieving"><div class="pipe-icon mono">04</div><b>RETRIEVE</b><small>Lark CLI</small></div>
+                <div class="pipe-node" data-pipe="answered"><div class="pipe-icon mono">05</div><b>ANSWER</b><small>with sources</small></div>
+              </div>
+              <div class="event-log" id="event-log"></div>
+            </div>
+            <aside class="console-panel">
+              <div class="panel-heading"><h3>Non-negotiable guardrails</h3><span>R01</span></div>
+              <div class="guardrail-list">
+                <div class="guardrail"><b>Dedicated user boundary</b><p>Lark CLI 只以专用用户身份读取被授权空间。</p></div>
+                <div class="guardrail"><b>Typed read tools only</b><p>首版没有 shell、原始 API、写入、删除或权限工具。</p></div>
+                <div class="guardrail"><b>Eligibility fails closed</b><p>指定群可用；私聊者必须是这些群的当前成员。</p></div>
+                <div class="guardrail"><b>Untrusted evidence</b><p>文档中的指令不能授权写入或泄露秘密。</p></div>
+              </div>
+            </aside>
+          </section>
+
+          <section class="b-roadmap">
+            <article class="release current"><div class="release-head"><span class="release-no">RELEASE_01</span><span class="release-state">READY TO BUILD</span></div><h3>Read-only Agent</h3><p>一个有用、可部署、可以独立验收的起点。</p><ul><li>Service + observability</li><li>Neon persistence + idempotency</li><li>Lark read adapter</li><li>Feishu eligibility gateway</li><li>AI SDK agent + sources</li><li>Durable worker + replies</li><li>Docker + OAuth + acceptance</li></ul></article>
+            <article class="release"><div class="release-head"><span class="release-no">RELEASE_02</span><span class="release-state">NEXT PLAN</span></div><h3>Autonomous writes</h3><p>无需逐次确认，但必须是最小修改、有冲突检测、有回执。</p><ul><li>Create / append / targeted patch</li><li>Pre-write re-read</li><li>Revision conflict handling</li><li>Durable write audit</li></ul></article>
+            <article class="release"><div class="release-head"><span class="release-no">RELEASE_03</span><span class="release-state">LATER</span></div><h3>Durable schedules</h3><p>合格成员创建、所有者管理，由可信系统触发同一 Agent 运行时。</p><ul><li>Register / pause / resume</li><li>Owner + admin policy</li><li>Exactly-once run key</li><li>Write receipt + notification</li></ul></article>
+          </section>
+
+          <section class="b-demo-card">
+            <div class="panel-heading"><h3>Lark CLI adapter / allowed command surface</h3><span>shell: false · --as user · pinned version</span></div>
+            <div class="terminal"><div class="terminal-head mono">minori@agent / knowledge-read</div><div class="terminal-body mono"><span class="comment"># The model never composes raw shell strings</span><br/><span class="cmd">$ lark drive +search</span> --query "Console first success" --as user<br/><span class="cmd">$ lark docs +fetch</span> --document_id doccn•••• --as user<br/><span class="cmd">$ lark wiki +nodes</span> --space_id 728•••• --as user<br/><br/><span class="comment">→ normalized result: title, url, excerpt, updatedAt</span></div></div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <main id="variant-c" class="variant variant-c" hidden>
+    <section class="c-hero">
+      <div class="c-top"><div class="c-wordmark">MINORI / TEAM AGENT</div><small class="mono">ROADMAP STORY · 2026</small></div>
+      <div class="c-hero-copy"><div class="eyebrow">A rollout story in three acts</div><h1>从能回答，<span>到能行动。</span></h1><div class="c-hero-desc"><p>不是给飞书加一个问答框，而是把一个有边界、有记忆、能调用团队知识工具的同事放进日常对话。</p><p>我们先验证信任最核心的一环：它读到什么、根据什么回答、失败时是否安全。</p></div></div>
+      <div class="c-scroll">向下阅读计划</div>
+    </section>
+
+    <section class="c-chapter">
+      <div class="chapter-grid">
+        <div class="chapter-no mono">CHAPTER / 01</div>
+        <div class="chapter-body"><h2>三个阶段，各自都是完整产品。</h2><p class="chapter-lead">拆分不是为了降低野心，而是让“对话可信”“写入安全”“无人值守可靠”分别接受真实环境的检验。</p>
+          <div class="c-road">
+            <div class="c-road-row"><div class="big-no">01</div><div><h3>问得到 · Read-only</h3><p>群成员在指定群聊或私聊中提出开放问题，Agent 通过 Lark CLI 检索与阅读，并用来源链接回答。</p></div><div class="c-tag">现在实施</div></div>
+            <div class="c-road-row"><div class="big-no">02</div><div><h3>做得到 · Autonomous writes</h3><p>Agent 可以创建、追加和局部修改文档。无需逐次确认，但不允许盲目覆盖，每次都有变更摘要与审计。</p></div><div class="c-tag">下一份计划</div></div>
+            <div class="c-road-row"><div class="big-no">03</div><div><h3>持续做 · Durable schedules</h3><p>由合格成员注册任务，Agent 在约定时间以任务所有者为来源运行，并把结果与回执发送到指定会话。</p></div><div class="c-tag">后续阶段</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="c-chapter">
+      <div class="chapter-grid">
+        <div class="chapter-no mono">CHAPTER / 02</div>
+        <div class="chapter-body"><h2>在飞书里，它具体是什么感觉？</h2><p class="chapter-lead">选择一个场景。右侧是交互意图原型，不代表最终飞书卡片样式。</p>
+          <div class="story-sim">
+            <div class="scenario-list" id="scenario-list">
+              <button class="active" data-scenario="read"><b>询问团队结论</b><span>首版 · 可交付</span></button>
+              <button data-scenario="private"><b>从私聊继续追问</b><span>首版 · 成员校验</span></button>
+              <button data-scenario="write"><b>把结论写回文档</b><span>第二阶段 · 自主写入</span></button>
+              <button data-scenario="schedule"><b>每周自动更新周报</b><span>第三阶段 · 定时任务</span></button>
+            </div>
+            <div class="phone"><div class="phone-screen"><div class="phone-head"><span>‹ Console Experience</span><b>•••</b></div><div class="phone-chat" id="phone-chat"></div></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="c-chapter">
+      <div class="chapter-grid">
+        <div class="chapter-no mono">CHAPTER / 03</div>
+        <div class="chapter-body"><h2>自由对话，不等于无边界。</h2><p class="chapter-lead">约束放在身份、工具和持久化层，而不是把团队对话限制成几个僵硬的菜单。</p>
+          <div class="c-principles">
+            <article class="principle"><span>01 / IDENTITY</span><h3>只拥有专用用户的权限</h3><p>机器人负责收发消息，知识操作使用单独准备的飞书用户；没有被分享的空间天然不可见。</p></article>
+            <article class="principle"><span>02 / TOOL SURFACE</span><h3>模型只能调用被允许的动作</h3><p>首版只有类型化搜索和读取工具。后续写入也只开放创建、追加和小范围 patch，不开放删除或权限管理。</p></article>
+            <article class="principle"><span>03 / DURABILITY</span><h3>先记录，再执行</h3><p>飞书事件先进入 Neon，后台再处理。重复事件、容器重启和网络抖动不会产生重复回复或重复写入。</p></article>
+            <article class="principle"><span>04 / EVIDENCE</span><h3>每个事实回到来源</h3><p>回答附带飞书文档标题与链接，并清楚区分原文事实、Agent 推断和仍未确认的信息。</p></article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="c-close"><div class="eyebrow">Next decision</div><h2>先把 <em>Phase 1</em> 跑进一个真实团队群。</h2></section>
+  </main>
+
+  <nav class="variant-switcher" aria-label="原型版本切换">
+    <button class="nav-arrow" id="prev-variant" aria-label="上一个版本">←</button>
+    <div class="variant-tabs"><button data-variant="A" class="active">A · Atlas</button><button data-variant="B">B · Control</button><button data-variant="C">C · Story</button></div>
+    <button class="nav-arrow" id="next-variant" aria-label="下一个版本">→</button>
+  </nav>
+  <button class="tweaks-trigger" id="tweaks-trigger" aria-label="原型显示设置">⌁</button>
+  <aside class="tweaks-panel" id="tweaks-panel" hidden>
+    <h3>Prototype tweaks</h3>
+    <div class="tweak-row"><span>信息密度</span><div class="segmented" id="density-control"><button data-density=".82">紧凑</button><button data-density="1" class="active">舒展</button></div></div>
+    <div class="tweak-row"><span>动态效果</span><div class="segmented" id="motion-control"><button data-motion="1" class="active">开启</button><button data-motion="0">关闭</button></div></div>
+    <p class="tweak-note">原型设置仅在当前页面内生效，不会保存。版本选择通过 URL 参数共享。</p>
+  </aside>
+
+  <script>
+    const roadmap = [
+      {
+        kicker: 'Release 01 · 7 implementation tasks', title: '首版实施清单',
+        tasks: ['启动可验证、可观测的服务','Neon 事件、对话与幂等存储','无 shell 的 Lark CLI 读取适配器','飞书群聊与私聊资格校验','AI SDK 只读知识 Agent','持久事件转成带来源的回复','Docker、OAuth 与端到端验收'],
+        outcome: '“团队成员在飞书里问一个真实问题，Agent 能从授权知识库找到答案，并给出可点击来源。”',
+        proof: '群聊 + 合格私聊 / 重启可恢复 / 无写入工具'
+      },
+      {
+        kicker: 'Release 02 · scope preview', title: '写入安全清单',
+        tasks: ['创建、追加与定点 patch','写前重新读取目标修订','内容变化时重算，不盲目覆盖','所有操作保留变更摘要','持久化写入前后 revision/hash','显示写入回执与失败原因'],
+        outcome: '“Agent 可以自主把结论写回知识库，但它不能删除、管理权限或无痕覆盖团队内容。”',
+        proof: '无需逐次确认 / 最小修改 / 可审计 / 可检测冲突'
+      },
+      {
+        kicker: 'Release 03 · scope preview', title: '无人值守可靠性',
+        tasks: ['成员注册与检查计划任务','所有者暂停、恢复、编辑或取消','系统可信触发，不接受文档内指令','复用同一个 Agent 与写入策略','唯一 run key 防止重复执行','运行结果回到指定飞书会话'],
+        outcome: '“计划任务可以在没人在线时更新文档，但每次运行都有明确所有者、运行记录和可见结果。”',
+        proof: 'Owner based / exactly once / same tool boundary / visible result'
+      }
+    ];
+
+    const scenarios = {
+      read: `<div class="phone-system">今天 10:24 · 首版交互</div><div class="message me"><div class="bubble">我们关于 Console first success 的最新结论是什么？</div></div><div class="message"><div class="avatar bot">M</div><div><div class="typing"><i></i><i></i><i></i></div><div class="response-card"><h4>已检查 3 份相关文档</h4><p>Home 用来启动 journey，导航用于管理已有资源。Realtime 当前推荐 Code 路径。</p><div class="source-link"><span>User Journey Contract</span><span>打开 ↗</span></div></div></div></div>`,
+      private: `<div class="phone-system">私聊 · 正在校验团队成员资格</div><div class="message me"><div class="bubble">上个结论里，Studio 的范围是什么？</div></div><div class="message"><div class="avatar bot">M</div><div class="response-card"><h4>成员校验通过</h4><p>你是指定群的当前成员，可以在私聊继续对话。我会沿用上下文并只读取专用用户可见的知识空间。</p><div class="receipt">群成员缓存最多 5 分钟；无法确认时拒绝访问。</div></div></div>`,
+      write: `<div class="phone-system">第二阶段预览 · 尚未在首版开放</div><div class="message me"><div class="bubble">把这个结论追加到 Journey Contract 的决策记录。</div></div><div class="message"><div class="avatar bot">M</div><div class="response-card"><h4>已更新 · Journey Contract</h4><p>在“Decisions”末尾追加了 1 条记录，没有改动其他段落。</p><div class="receipt"><b>写入回执</b><br/>触发者：合格群成员<br/>策略：append · 写前 revision 已复核<br/>审计：write_op_02F8</div></div></div>`,
+      schedule: `<div class="phone-system">第三阶段预览 · 尚未在首版开放</div><div class="message me"><div class="bubble">每周五下午 4 点，把本周确认的 Roadmap 进展写入团队周报并通知这个群。</div></div><div class="message"><div class="avatar bot">M</div><div class="response-card"><h4>计划任务已注册</h4><p>每周五 16:00（America/Los_Angeles）运行。所有者是你，目标为“团队周报 / Roadmap 进展”。</p><div class="receipt">下一次：2026-08-07 16:00<br/>你可以随时暂停、编辑或取消。</div></div></div>`
+    };
+
+    const pipelineLogs = {
+      received: [['10:24:09','RECEIVE','im.message.receive_v1','accepted'],['10:24:09','ACK','gateway returned','184 ms']],
+      persisted: [['10:24:09','INSERT','event 7f2e...','unique'],['10:24:10','CLAIM','worker lease acquired','30 sec']],
+      authorized: [['10:24:10','CHAT','configured group','allowed'],['10:24:10','MEMBER','open_id in current members','verified']],
+      retrieving: [['10:24:12','SEARCH','Console first success','3 hits'],['10:24:14','FETCH','Journey Contract','12.4 KB']],
+      answered: [['10:24:18','FORMAT','2 document citations','valid'],['10:24:19','REPLY','source-linked answer','sent']]
+    };
+
+    function renderRoadmap(index) {
+      const data = roadmap[index];
+      document.querySelectorAll('.stage-card').forEach((el,i) => el.classList.toggle('active', i === index));
+      document.getElementById('a-detail-kicker').textContent = data.kicker;
+      document.getElementById('a-detail-title').textContent = data.title;
+      document.getElementById('a-task-list').innerHTML = data.tasks.map((task,i) => `<div class="task"><span class="task-num">${String(i+1).padStart(2,'0')}</span><span>${task}</span><span class="task-tag mono">${index === 0 ? 'BUILD' : 'SCOPE'}</span></div>`).join('');
+      document.getElementById('a-outcome').textContent = data.outcome;
+      document.getElementById('a-proof').textContent = data.proof;
+    }
+    document.getElementById('a-stage-grid').addEventListener('click', e => {
+      const card = e.target.closest('.stage-card'); if (card) renderRoadmap(Number(card.dataset.stage));
+    });
+    renderRoadmap(0);
+
+    function renderPipeline(key) {
+      document.querySelectorAll('.pipe-node').forEach(el => el.classList.toggle('active', el.dataset.pipe === key));
+      document.getElementById('event-log').innerHTML = pipelineLogs[key].map(row => `<div class="log-row mono"><span>${row[0]}</span><b>${row[1]}</b><span>${row[2]}</span><span class="log-status">${row[3]}</span></div>`).join('');
+    }
+    document.getElementById('pipeline-track').addEventListener('click', e => { const node=e.target.closest('.pipe-node'); if(node) renderPipeline(node.dataset.pipe); });
+    renderPipeline('received');
+
+    function renderScenario(key) {
+      document.querySelectorAll('#scenario-list button').forEach(el => el.classList.toggle('active', el.dataset.scenario === key));
+      document.getElementById('phone-chat').innerHTML = scenarios[key];
+    }
+    document.getElementById('scenario-list').addEventListener('click', e => { const btn=e.target.closest('button'); if(btn) renderScenario(btn.dataset.scenario); });
+    renderScenario('read');
+
+    const variantIds = ['A','B','C'];
+    let current = variantIds.includes(new URLSearchParams(location.search).get('variant')) ? new URLSearchParams(location.search).get('variant') : 'A';
+    function setVariant(id, push=true) {
+      current = id;
+      variantIds.forEach(v => {
+        document.getElementById(`variant-${v.toLowerCase()}`).hidden = v !== id;
+        document.querySelector(`[data-variant="${v}"]`).classList.toggle('active', v === id);
+      });
+      if (push) {
+        const url = new URL(location.href); url.searchParams.set('variant', id); history.replaceState({},'',url);
+      }
+      scrollTo({top:0,behavior:'instant'});
+    }
+    document.querySelectorAll('[data-variant]').forEach(btn => btn.addEventListener('click', () => setVariant(btn.dataset.variant)));
+    function stepVariant(delta) { const next=(variantIds.indexOf(current)+delta+variantIds.length)%variantIds.length; setVariant(variantIds[next]); }
+    document.getElementById('prev-variant').addEventListener('click', () => stepVariant(-1));
+    document.getElementById('next-variant').addEventListener('click', () => stepVariant(1));
+    addEventListener('keydown', e => {
+      const tag = e.target.tagName; if (['INPUT','TEXTAREA','SELECT'].includes(tag) || e.target.isContentEditable) return;
+      if (e.key === 'ArrowLeft') stepVariant(-1); if (e.key === 'ArrowRight') stepVariant(1);
+    });
+    setVariant(current, false);
+
+    const tweaksPanel=document.getElementById('tweaks-panel');
+    document.getElementById('tweaks-trigger').addEventListener('click', () => tweaksPanel.hidden=!tweaksPanel.hidden);
+    document.getElementById('density-control').addEventListener('click', e => { if(!e.target.dataset.density)return; document.documentElement.style.setProperty('--space',e.target.dataset.density); e.currentTarget.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b===e.target)); });
+    document.getElementById('motion-control').addEventListener('click', e => { if(!e.target.dataset.motion)return; document.documentElement.style.setProperty('--motion',e.target.dataset.motion); e.currentTarget.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b===e.target)); });
+  </script>
+</body>
+</html>
