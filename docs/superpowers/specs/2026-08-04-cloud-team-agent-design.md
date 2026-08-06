@@ -1,30 +1,34 @@
 # Cloud Team Agent Design
 
 **Date:** 2026-08-04  
-**Status:** Approved for implementation
+**Status:** Approved product direction; implemented in three independently accepted plans
 **Audience:** Team Agent maintainers and operators
+
+**Active implementation plan:** `docs/superpowers/plans/2026-08-05-read-only-team-agent.md`
 
 ## 1. Summary
 
-Build a portable, cloud-hosted Team Agent that interacts with team members in approved Feishu groups and private chats. The Agent uses Vercel AI SDK for open-ended conversation and tool use, and the official Lark CLI to search, read, create, and update the team's Feishu knowledge base.
+Build a portable, cloud-hosted Team Agent that interacts with team members in approved Feishu groups and private chats. The Agent uses Vercel AI SDK for open-ended conversation and tool use, and the official Lark CLI to work with the team's Feishu knowledge base.
 
-The Agent signs into Lark CLI as a dedicated Feishu user. Its effective knowledge-base permissions are exactly the permissions granted to that user. It can write autonomously without per-operation confirmation. Safety comes from the dedicated user's permissions, a narrow typed tool surface, no delete or permission-management tools, conflict detection, and complete audit records.
+The Agent signs into Lark CLI as a Dedicated Knowledge User. Its effective Knowledge Boundary is exactly the content visible to that user; there is no second application-level space allowlist. Autonomous writes do not require per-operation confirmation once their tool set is introduced in plan 2. Safety comes from the dedicated user's permissions, narrow typed tool surfaces, no delete or permission-management tools, conflict detection, and audit records.
 
-The first release is one container backed by Neon PostgreSQL. It has no Redis dependency and no separate worker service.
+Delivery is phased. Plan 1 is a useful read-only cloud release; plan 2 adds autonomous knowledge writes; plan 3 adds durable schedules and later operational hardening. Each phase remains one container backed by Neon PostgreSQL, with no Redis dependency or separate worker service until usage demonstrates a need.
 
 ## 2. Goals
 
 - Give team members a natural, continuous Agent conversation in approved Feishu groups.
 - Allow members of those groups to use the same Agent in private chat.
 - Let the Agent autonomously search, navigate, and read the knowledge base while reasoning.
-- Let the Agent create, append to, and update knowledge-base documents without a confirmation card.
-- Support registered scheduled tasks that can autonomously update documents.
+- In plan 2, let the Agent create, append to, and update knowledge-base documents without a confirmation card.
+- In plan 3, support registered scheduled tasks that can autonomously update documents.
 - Return clickable source documents when an answer relies on the knowledge base.
-- Preserve conversation continuity, event idempotency, schedule state, and an audit trail across container restarts.
+- Preserve conversation continuity and event idempotency across container restarts from plan 1, then add write audit and schedule state in their respective phases.
 - Keep model choice replaceable through Vercel AI SDK.
 - Package the service as one portable container that can run on any platform offering an always-on process, outbound WebSocket support, secrets, and network access to external services.
 
-## 3. Non-goals for the First Release
+## 3. Non-goals and Deferred Scope
+
+Plan 1 specifically defers autonomous writes, schedules, and opt-in long-term memory. Those capabilities must not appear as hidden tables, tools, or summaries before their plans are designed and accepted.
 
 - GitHub Issue or GitHub Project management.
 - Coding, repository modification, sandbox execution, CI, or pull-request creation.
@@ -49,7 +53,9 @@ The service maintains a configured list of allowed Feishu chat IDs.
 
 ### 4.2 Open-ended conversation
 
-The system does not route messages into rigid question, search, or write workflows. A reusable AI SDK `ToolLoopAgent` receives the conversation and may:
+The system does not route messages into rigid question, search, or write workflows. In a group, an eligible member starts an Agent Thread by mentioning Minori or replying to it; eligible members may then continue naturally inside that Feishu reply thread without repeating the mention. Unrelated group-timeline messages do not activate Minori. Every eligible private-chat message activates it.
+
+A reusable AI SDK `ToolLoopAgent` receives the conversation and may:
 
 - respond directly;
 - ask follow-up questions;
@@ -58,10 +64,12 @@ The system does not route messages into rigid question, search, or write workflo
 - read parent, child, or related documents;
 - compare and synthesize multiple documents;
 - brainstorm, plan, explain, or draft content;
-- create or update a document when doing so helps complete the user's request;
-- register, inspect, pause, resume, or cancel a scheduled task through typed schedule tools.
+- create or update a document when doing so helps complete the user's request after plan 2 exposes those tools;
+- register, inspect, pause, resume, or cancel a scheduled task after plan 3 exposes schedule tools.
 
-Runtime limits such as maximum tool steps, timeouts, and token budgets protect the service but do not prescribe a fixed reasoning sequence.
+Runtime limits such as maximum tool steps, timeouts, and soft context targets protect the service but do not prescribe a fixed reasoning sequence. Plan 1 has no per-member request quota, accepted-event queue cap, or application-level daily token budget.
+
+Each run automatically receives a bounded recent window from the current Agent Thread or private chat and may use a scoped read-only tool to search older messages from that same conversation within the 30-day retention period. This retained thread history is not summarized into long-term memory and cannot cross a conversation boundary.
 
 ### 4.3 Knowledge-grounded answers
 
@@ -73,7 +81,7 @@ When an answer makes factual claims based on team knowledge, it includes the rel
 
 Failure to find a source is reported honestly and is not converted into a confident answer.
 
-### 4.4 Autonomous writes
+### 4.4 Autonomous writes (Plan 2)
 
 The Agent may directly create documents, append content, or update a defined section. It does not ask for a confirmation card.
 
@@ -87,9 +95,9 @@ Each write follows these rules:
 6. The service records the actual CLI result and final document URL.
 7. The Agent posts a receipt in the originating conversation or the schedule's notification chat with the document link and a concise description of what changed.
 
-The first release does not expose delete, move, permission, sharing, or arbitrary raw-API tools to the model.
+No phase exposes delete, move, permission, sharing, or arbitrary raw-API tools to the model unless a later design explicitly replaces this decision.
 
-### 4.5 Scheduled work
+### 4.5 Scheduled work (Plan 3)
 
 An eligible member may ask the Agent to create a schedule in natural language. The Agent converts the request into a typed schedule record and reports the interpreted schedule immediately.
 
@@ -124,7 +132,7 @@ Approved Feishu groups and eligible private chats
               +----------+-----------+
               |                      |
               v                      v
-       Typed Lark Tools        Schedule Tools
+       Typed Lark Tools        Schedule Tools (Plan 3)
        Lark CLI adapter        deterministic service
               |                      |
               +----------+-----------+
@@ -144,33 +152,33 @@ The gateway uses Feishu's official Node SDK and long-connection event delivery f
 - validates allowed chats and current membership;
 - acknowledges slow work promptly;
 - maps group threads and private conversations to internal conversation IDs;
-- sends text, rich cards, citations, write receipts, and operational notices;
+- sends text, source links, and temporary `Typing` reactions in plan 1, then write receipts when writes are introduced;
 - never places OAuth URLs, tokens, or raw tool output into a group message.
 
 Long connection avoids requiring a public inbound webhook, but the deployment must keep an always-on process and outbound WebSocket connection.
 
 ### 5.2 Knowledge Agent
 
-The Agent is implemented with Vercel AI SDK's `ToolLoopAgent`.
+The Agent is implemented with Vercel AI SDK's `ToolLoopAgent`, without an intent router or scenario workflow graph.
 
-- The model comes from a central provider registry.
-- The default configuration uses Vercel AI Gateway and a model ID supplied by `AI_MODEL`.
-- Direct OpenAI, Anthropic, or an OpenAI-compatible provider can replace the gateway without changing tools or business services.
+- Plan 1 uses `@ai-sdk/openai` and the OpenAI Responses API directly; it does not use Vercel AI Gateway.
+- `AI_MODEL` defaults to `gpt-5.6-terra`. `OPENAI_BASE_URL` may point to a Responses-compatible proxy; a Chat-Completions-only endpoint fails startup preflight rather than causing protocol fallback.
+- Every request uses `store: false`. Cross-turn continuity is rebuilt from Minori's Neon history without `previous_response_id`.
+- Later provider changes must preserve the Agent, tools, and business-service contracts.
 - All tool inputs use strict Zod schemas.
-- Each run has a configurable step limit, wall-clock timeout, and model-token budget.
+- Each plan-1 run has a 12-step ceiling and a 90-second wall-clock timeout. Recent conversation context targets about 24k tokens and retrieved evidence about 40k–60k tokens, but these are soft quality and cost targets rather than scenario gates.
 - Model output cannot directly invoke the CLI, database, scheduler, or shell.
 
 ### 5.3 Lark CLI adapter
 
-The adapter exposes a small set of domain tools rather than the CLI's complete command surface:
+The adapter exposes a small set of domain tools rather than the CLI's complete command surface. Plan 1 exposes:
 
 - search wiki and Drive documents;
 - inspect knowledge spaces and node trees;
 - fetch document content and metadata;
-- create a document in an allowed location visible to the dedicated user;
-- append content;
-- patch a specific section or block;
 - return document metadata and URLs.
+
+Plan 2 may add create, append, and targeted patch tools without changing the read tools. The Agent may adaptively move from relevant sections to adjacent sections, other documents, or paginated full-document reads whenever accuracy requires it; the user does not need to name a special workflow.
 
 The adapter uses `child_process.spawn` with an argument array and `shell: false`. It never concatenates a model-generated shell command. Each command:
 
@@ -184,11 +192,11 @@ The adapter uses `child_process.spawn` with an argument array and `shell: false`
 
 The Lark CLI version is pinned in the image. Upgrades require the real CLI integration suite to pass.
 
-### 5.4 Write policy
+### 5.4 Write policy (Plan 2)
 
 Write policy is deterministic application code, not prompt text alone.
 
-Allowed effects in the first release:
+Allowed effects after plan 2:
 
 - create a document;
 - append content;
@@ -203,9 +211,9 @@ Disallowed effects:
 - execute arbitrary Lark raw API calls;
 - execute arbitrary shell commands.
 
-### 5.5 Scheduler
+### 5.5 Scheduler (Plan 3)
 
-The scheduler runs in the same Node process for the first release. PostgreSQL is the source of truth; in-memory timers are only wake-up mechanisms. A database lease ensures that a future multi-replica deployment will not execute a due schedule more than once.
+When introduced, the scheduler runs in the same Node process. PostgreSQL is the source of truth; in-memory timers are only wake-up mechanisms. A database lease ensures that a future multi-replica deployment will not execute a due schedule more than once.
 
 No Redis or separate queue is required. Long or heavily parallel workflows are explicitly deferred until usage demonstrates the need for a durable workflow engine.
 
@@ -235,22 +243,24 @@ Drizzle ORM defines migrations and keeps the application compatible with standar
 
 - Agent run ID, tool name, caller or schedule owner, target identifiers, start/end timestamps, success state, error category, and sanitized summary. Full retrieved document bodies are not copied here.
 
-`write_operations`
+The following tables are introduced only with their corresponding later plans:
+
+`write_operations` (Plan 2)
 
 - Tool run, target document token, operation type, pre-write revision/hash, post-write revision/hash when available, sanitized change summary, source trigger, and outcome.
 
-`schedules`
+`schedules` (Plan 3)
 
 - Owner, purpose, recurrence, timezone, instructions, target context, notification chat, enabled state, next run, and last-run summary.
 
-`schedule_runs`
+`schedule_runs` (Plan 3)
 
 - Unique schedule/run key, scheduled time, actual start/end, Agent run ID, status, and error summary.
 
 ### 6.2 Retention
 
 - Conversation messages are retained for 30 days by default to support continuity.
-- Audit metadata, write operations, and schedule history are retained for 180 days by default.
+- Write-operation and schedule audit retention is defined when those phases are implemented.
 - Retrieved document bodies are held only for the active Agent run unless they are present in a retained conversation message.
 - Retention periods are configurable by environment variables and enforced by a daily maintenance job.
 
@@ -272,7 +282,7 @@ An operator runs a one-time container command that starts Lark CLI's non-blockin
 - Lark CLI auth status and required scopes are verified;
 - credential state is stored in a platform secret or encrypted credential volume mounted into the container;
 - credentials are excluded from the image, PostgreSQL, application logs, and Agent context;
-- failed refresh or revoked access causes knowledge tools to stop and sends a private administrator notice.
+- failed refresh or revoked access causes knowledge tools to stop, changes readiness, and emits a redacted structured error. Plan 1 has no proactive operations chat.
 
 The implementation may later use Lark CLI's Credential extension to fetch tokens from a centralized Vault. That extension is not required for the first deployable release.
 
@@ -287,7 +297,7 @@ The implementation may later use Lark CLI's Credential extension to fetch tokens
 - **Concurrent document edit:** re-read and recompute a minimal patch, or report a conflict when a safe merge is not possible.
 - **Model failure:** preserve the conversation and offer a retry; do not report a model outage as missing knowledge.
 - **Database unavailable:** acknowledge service degradation but do not perform writes or schedule executions that cannot be audited and deduplicated.
-- **Container restart:** restore conversations and schedules from PostgreSQL; reconcile any write operation left in an unknown state.
+- **Container restart:** restore conversations and queued events from PostgreSQL in plan 1; later plans also restore schedules and reconcile writes.
 - **Schedule failure:** record the run, notify the configured chat, and preserve the next recurrence unless an administrator pauses it.
 
 ## 9. Security Model
@@ -316,15 +326,15 @@ The repository ships a multi-stage Docker image containing:
 External services and configuration:
 
 - Neon PostgreSQL through `DATABASE_URL`;
-- model credentials or Vercel AI Gateway credentials;
+- `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `AI_MODEL`;
 - Feishu app ID, app secret, and event-encryption configuration;
 - mounted Lark CLI credential secret/volume;
-- allowed chat IDs and administrator open IDs;
-- model, timeout, retention, and schedule configuration.
+- allowed chat IDs;
+- model, timeout, and retention configuration, with administrator and schedule configuration added only when those phases require it.
 
 Readiness reports separate states for process health, PostgreSQL reachability, Feishu gateway connectivity, Lark user login, and model configuration. It reports only status categories, never secrets.
 
-The same image must run locally with Docker Compose and on an arbitrary always-on container platform. Docker Compose is for local validation; Neon remains the default database in both environments.
+The same image must run locally with Docker Compose and on an arbitrary always-on container platform. The first production target is the team's existing Ubuntu 24.04 LTS x86_64 Vultr host using Docker Compose; Neon remains external in local and production environments.
 
 ## 11. Testing Strategy
 
@@ -334,10 +344,10 @@ The same image must run locally with Docker Compose and on an arbitrary always-o
 - message and event idempotency;
 - CLI argument construction and injection resistance;
 - JSON success/error parsing and redaction;
-- write-policy enforcement;
-- schedule recurrence, ownership, leases, and missed-run coalescing;
 - retention cleanup;
-- document conflict decisions.
+- current-conversation history isolation and adaptive document paging;
+- write-policy enforcement and conflict decisions in plan 2;
+- schedule recurrence, ownership, leases, and missed-run coalescing in plan 3.
 
 ### 11.2 Agent evaluations
 
@@ -346,8 +356,8 @@ The same image must run locally with Docker Compose and on an arbitrary always-o
 - multi-document synthesis with source links;
 - honest response when no source exists;
 - follow-up questions when the request is ambiguous;
-- autonomous document creation and targeted updating;
-- creation and management of schedules;
+- autonomous document creation and targeted updating in plan 2;
+- creation and management of schedules in plan 3;
 - resistance to instructions embedded in retrieved documents;
 - refusal or inability to use unexposed destructive tools;
 - useful behavior at the tool-step and token limits.
@@ -356,7 +366,7 @@ The same image must run locally with Docker Compose and on an arbitrary always-o
 
 - Neon migrations and repository behavior;
 - mocked Lark CLI subprocess failures and timeouts;
-- real Lark CLI search, fetch, create, append, and patch against a dedicated test knowledge space;
+- real Lark CLI search and fetch against dedicated test knowledge in plan 1, followed by create, append, and patch coverage in plan 2;
 - Lark login expiry and permission denial;
 - model provider contract through AI SDK.
 
@@ -366,28 +376,26 @@ The same image must run locally with Docker Compose and on an arbitrary always-o
 - private message from an eligible member;
 - rejection of an ineligible user or disallowed group;
 - grounded answer with working Feishu links;
-- direct autonomous write followed by a visible receipt;
 - duplicate message and duplicate event delivery;
-- scheduled autonomous update and notification;
-- restart with active conversations and due schedules;
-- reconciliation of an interrupted write.
+- restart with active conversations and queued events;
+- direct autonomous write followed by a visible receipt and interrupted-write reconciliation in plan 2;
+- scheduled autonomous update, notification, and restart recovery in plan 3.
 
-## 12. MVP Acceptance Criteria
+## 12. Plan 1 Acceptance Criteria
 
 1. An allowed-group member can have a natural multi-turn conversation with the Agent in the group.
 2. A current member of any allowed group can use the Agent in private chat.
 3. The Agent can autonomously search, navigate, and read multiple knowledge-base documents using Lark CLI as the dedicated user.
 4. Grounded answers include working Feishu document links and unsupported claims are identified as such.
-5. The Agent can autonomously create a document, append content, and update a targeted section without confirmation.
-6. Every write produces a visible receipt and a durable audit record.
-7. Document content cannot trigger a side effect or expand the Agent's tool permissions.
-8. The Agent has no document-delete, node-move, permission-management, raw API, or arbitrary-shell capability.
-9. An eligible member can create, inspect, pause, resume, edit, and cancel a scheduled task that autonomously writes documents.
-10. Duplicate events, uncertain writes, and container restarts do not cause duplicate writes or schedule runs.
-11. Conversations, schedules, event state, and audit records survive a restart through Neon PostgreSQL.
-12. The model can be changed through configuration without changing Feishu, Lark tool, schedule, or persistence code.
-13. The complete service runs from one container image and requires no Redis or local persistent database volume.
-14. The README documents Feishu app setup, dedicated-user OAuth, allowed chats, Neon, model configuration, local Docker validation, cloud deployment, and credential rotation.
+5. Document content cannot expand the Agent's policy or tool permissions.
+6. The Agent has no write, delete, node-move, permission-management, raw API, generic HTTP, filesystem, or arbitrary-shell capability.
+7. Duplicate events, uncertain replies, and container restarts do not cause duplicate replies.
+8. Conversations and event state survive a restart through Neon PostgreSQL; recent context and scoped current-conversation history search work within the 30-day retention window.
+9. OpenAI Responses requests use `store: false`; a configured custom base URL must pass the Responses and structured-tool-call preflight.
+10. The complete service runs on the existing Vultr host from one container image and requires no Redis or local PostgreSQL volume.
+11. The README documents Feishu app setup, dedicated-user OAuth, allowed chats, Neon, OpenAI configuration, local Docker validation, Vultr deployment, rollback, and credential rotation.
+
+Plan 2 adds acceptance criteria for autonomous create, append, and targeted patch with visible receipts and durable audit records. Plan 3 adds schedule ownership, lifecycle, deduplicated execution, and restart recovery criteria.
 
 ## 13. Implementation Sequence
 
@@ -395,10 +403,10 @@ The same image must run locally with Docker Compose and on an arbitrary always-o
 2. Add Neon/Drizzle schema, migrations, repositories, idempotency, and retention.
 3. Implement Feishu long-connection gateway, allowed-chat checks, membership checks, and replies.
 4. Install and pin Lark CLI; implement credential bootstrap and the typed read-only adapter.
-5. Add the AI SDK provider registry, ToolLoopAgent, conversation persistence, and source-link formatting.
-6. Add autonomous create, append, and targeted patch tools with conflict detection and write auditing.
-7. Add schedules, ownership, database leasing, restart recovery, and notifications.
-8. Complete real Feishu/Neon end-to-end tests, security evaluations, operator documentation, and deployment verification.
+5. Add the direct OpenAI AI SDK provider, ToolLoopAgent, conversation persistence, scoped retained-thread search, and source-link formatting.
+6. Complete plan-1 real Feishu/Neon end-to-end tests, security evaluations, operator documentation, and Vultr deployment verification.
+7. In plan 2, add autonomous create, append, and targeted patch tools with conflict detection and write auditing.
+8. In plan 3, add schedules, ownership, database leasing, restart recovery, and notifications.
 
 ## 14. References
 
@@ -407,4 +415,7 @@ The same image must run locally with Docker Compose and on an arbitrary always-o
 - [Vercel AI SDK Agents](https://ai-sdk.dev/docs/agents/overview)
 - [Vercel AI SDK workflow patterns](https://ai-sdk.dev/docs/agents/workflows)
 - [Vercel AI SDK provider architecture](https://ai-sdk.dev/docs/foundations/providers-and-models)
+- [AI SDK OpenAI provider](https://ai-sdk.dev/providers/ai-sdk-providers/openai)
+- [OpenAI API quickstart](https://developers.openai.com/api/docs/quickstart)
+- [GPT-5.6 Terra](https://developers.openai.com/api/docs/models/gpt-5.6-terra)
 - [Neon pricing and free plan](https://neon.com/pricing)
