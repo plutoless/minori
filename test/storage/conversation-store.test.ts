@@ -41,6 +41,8 @@ describe('PostgresConversationStore', () => {
 
     expect(first).toEqual(second);
     expect(first).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await store.exists('oc_1:om_root')).toBe(true);
+    expect(await store.exists('oc_1:om_missing')).toBe(false);
   });
 
   it('returns the newest messages within the soft budget in chronological order', async () => {

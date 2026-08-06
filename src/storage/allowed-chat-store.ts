@@ -4,6 +4,7 @@ import { allowedChats } from './schema.js';
 
 export interface AllowedChatStore {
   isAllowed(chatId: string): Promise<boolean>;
+  listAllowedChatIds(): Promise<string[]>;
 }
 
 export class PostgresAllowedChatStore implements AllowedChatStore {
@@ -19,5 +20,12 @@ export class PostgresAllowedChatStore implements AllowedChatStore {
       .limit(1);
 
     return allowed !== undefined;
+  }
+
+  async listAllowedChatIds(): Promise<string[]> {
+    const rows = await this.db.select({ chatId: allowedChats.chatId })
+      .from(allowedChats)
+      .where(eq(allowedChats.enabled, true));
+    return rows.map((row) => row.chatId);
   }
 }

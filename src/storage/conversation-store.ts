@@ -29,6 +29,7 @@ export type ConversationStoreOptions = {
 
 export interface ConversationStore {
   getOrCreateConversation(identity: ConversationIdentity): Promise<string>;
+  exists(conversationKey: string): Promise<boolean>;
   append(message: StoredMessage): Promise<void>;
   recentWithinBudget(
     conversationKey: string,
@@ -91,6 +92,14 @@ export class PostgresConversationStore implements ConversationStore {
 
     if (!conversation) throw new Error('conversation_identity_unavailable');
     return conversation.id;
+  }
+
+  async exists(conversationKey: string): Promise<boolean> {
+    const [conversation] = await this.db.select({ id: conversations.id })
+      .from(conversations)
+      .where(eq(conversations.conversationKey, conversationKey))
+      .limit(1);
+    return conversation !== undefined;
   }
 
   async append(message: StoredMessage): Promise<void> {

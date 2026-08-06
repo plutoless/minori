@@ -505,10 +505,10 @@ git commit -m "feat: add safe lark knowledge reader"
 
 **Files:**
 - Create: `src/feishu/normalize-event.ts`, `src/feishu/membership.ts`, `src/feishu/client.ts`, `src/feishu/gateway.ts`
-- Test: `test/feishu/normalize-event.test.ts`, `test/feishu/membership.test.ts`, `test/feishu/gateway.test.ts`
+- Test: `test/feishu/normalize-event.test.ts`, `test/feishu/membership.test.ts`, `test/feishu/client.test.ts`, `test/feishu/gateway.test.ts`
 
 **Interfaces:**
-- Produces: `normalizeMessageEvent(data): NormalizedMessage | null`
+- Produces: `normalizeMessageEvent(data, activation): NormalizedMessage | null`
 - Produces: `MembershipPolicy.authorize(message): Promise<AuthorizationResult>`
 - Produces: `FeishuMessenger.replyText(messageId, text, idempotencyKey): Promise<string>`
 - Produces: `FeishuMessenger.addReaction(messageId, emojiType): Promise<string | null>`
@@ -521,6 +521,13 @@ export type AuthorizationResult =
   | { allowed: true }
   | { allowed: false; reason: 'chat_not_allowed' | 'not_team_member' | 'membership_unavailable' };
 export interface ChatMemberSource { listOpenIds(chatId: string): Promise<Set<string>> }
+export interface MessageContextSource {
+  isBotMessage(
+    messageId: string,
+    bot: { openId: string; appId: string },
+  ): Promise<boolean>
+}
+export interface AgentThreadSource { exists(conversationKey: string): Promise<boolean> }
 export interface FeishuMessenger {
   replyText(messageId: string, text: string, idempotencyKey: string): Promise<string>;
   addReaction(messageId: string, emojiType: 'Typing'): Promise<string | null>;
@@ -530,7 +537,7 @@ export interface FeishuMessenger {
 
 - [ ] **Step 1: Define and test normalized messages**
 
-Import `NormalizedMessage` from `src/contracts/messages.ts`. Test plain text; rich-text visible text, links, and code blocks; removal of the activation mention; Feishu document-link extraction; malformed JSON content; missing sender; `root_id`/`parent_id` extraction; bot mentions; replies to Minori; and unsupported message types. Malformed or irrelevant events return `null` without throwing. An otherwise valid, triggered image, audio, video, or file-only event returns `content.kind='unsupported'` so the worker can reply explicitly. Derive conversation identity as the private-chat ID for `p2p`, and as the Agent Thread root message ID for group conversations.
+Import `NormalizedMessage` from `src/contracts/messages.ts`. Test plain text; rich-text visible text, links, and code blocks; removal of the activation mention; Feishu document-link extraction; malformed JSON content; missing sender; `root_id`/`parent_id` extraction; bot mentions; replies to Minori; and unsupported message types. Malformed or irrelevant events return `null` without throwing. An otherwise valid, triggered image, audio, video, or file-only event returns `content.kind='unsupported'` so the worker can reply explicitly. Derive conversation identity as the private-chat ID for `p2p`, and as the Agent Thread root message ID for group conversations. Keep parsing pure: trusted gateway code supplies whether the event replies to a bot-authored message or belongs to a previously activated Agent Thread.
 
 - [ ] **Step 2: Write membership policy tests**
 
@@ -548,6 +555,8 @@ client.im.v1.chatMembers.get({
 ```
 
 Follow `has_more/page_token` until complete. Cache a `Set<string>` per allowed chat for 300,000 ms. Private authorization succeeds when the sender appears in any allowed-chat set.
+
+Use `AllowedChatStore.listAllowedChatIds()` to discover the configured group entry points. Use `ConversationStore.exists(conversationKey)` to recognize continuations only inside a previously activated Agent Thread. To recognize a new reply-to-Minori activation, fetch the parent message and require `sender_type='app'` plus either `open_bot_id` matching Minori's bot open ID or an `id_type='app_id'` sender ID matching `FEISHU_APP_ID`; lookup failures fail closed.
 
 Implement message reactions through `client.im.v1.messageReaction.create` and `.delete`. Creating returns the `reaction_id` needed for deletion. Reaction API failures are logged with stable, non-secret error codes but do not fail the Agent run.
 

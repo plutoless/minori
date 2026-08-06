@@ -36,5 +36,6 @@ describe('PostgresAllowedChatStore', () => {
     expect(await store.isAllowed('oc_enabled')).toBe(true);
     expect(await store.isAllowed('oc_disabled')).toBe(false);
     expect(await store.isAllowed('oc_missing')).toBe(false);
+    expect(await store.listAllowedChatIds()).toEqual(['oc_enabled']);
   });
 });
