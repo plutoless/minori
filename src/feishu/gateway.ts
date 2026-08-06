@@ -127,9 +127,14 @@ export function createOfficialLongConnection(
   const eventDispatcher = new EventDispatcher({}).register({
     'im.message.receive_v1': (data) => gateway.handle(data),
   });
-  const wsClient = new WSClient({ ...credentials, loggerLevel: LoggerLevel.info });
+  const wsClient = new WSClient({
+    ...credentials,
+    loggerLevel: LoggerLevel.info,
+    handshakeTimeoutMs: 15_000,
+  });
   return {
     start: () => wsClient.start({ eventDispatcher }),
     stop: () => wsClient.close(),
+    status: () => wsClient.getConnectionStatus().state,
   };
 }

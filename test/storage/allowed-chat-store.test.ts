@@ -38,4 +38,13 @@ describe('PostgresAllowedChatStore', () => {
     expect(await store.isAllowed('oc_missing')).toBe(false);
     expect(await store.listAllowedChatIds()).toEqual(['oc_enabled']);
   });
+
+  it('atomically makes the configured group list authoritative', async () => {
+    await store.configure(['oc_a', 'oc_b']);
+    expect((await store.listAllowedChatIds()).sort()).toEqual(['oc_a', 'oc_b']);
+
+    await store.configure(['oc_b', 'oc_c']);
+    expect((await store.listAllowedChatIds()).sort()).toEqual(['oc_b', 'oc_c']);
+    expect(await store.isAllowed('oc_a')).toBe(false);
+  });
 });

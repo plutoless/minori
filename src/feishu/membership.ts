@@ -54,15 +54,11 @@ export class MembershipPolicy {
       return { allowed: false, reason: 'membership_unavailable' };
     }
 
-    let lookupFailed = false;
-    for (const chatId of chatIds) {
-      try {
-        const members = await this.membersFor(chatId);
-        if (members.has(message.senderOpenId)) return { allowed: true };
-      } catch {
-        lookupFailed = true;
-      }
-    }
+    const lookups = await Promise.allSettled(chatIds.map((chatId) => this.membersFor(chatId)));
+    if (lookups.some(
+      (lookup) => lookup.status === 'fulfilled' && lookup.value.has(message.senderOpenId),
+    )) return { allowed: true };
+    const lookupFailed = lookups.some((lookup) => lookup.status === 'rejected');
     return lookupFailed
       ? { allowed: false, reason: 'membership_unavailable' }
       : { allowed: false, reason: 'not_team_member' };

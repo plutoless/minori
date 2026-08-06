@@ -52,4 +52,20 @@ describe('createModelPreflight', () => {
     expect(preflight.status()).toBe('degraded');
     expect(JSON.stringify(warnings)).toBe('[{"errorCode":"model_preflight_failed"}]');
   });
+
+  it('can recover a degraded startup probe without restarting the process', async () => {
+    const runProbe = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary upstream failure'))
+      .mockResolvedValueOnce(undefined);
+    const preflight = createModelPreflight(loadConfig({
+      NODE_ENV: 'test', OPENAI_API_KEY: 'test-key',
+    }), { runProbe });
+
+    await preflight.initialize();
+    expect(preflight.status()).toBe('degraded');
+    await preflight.refresh();
+
+    expect(preflight.status()).toBe('ok');
+    expect(runProbe).toHaveBeenCalledTimes(2);
+  });
 });

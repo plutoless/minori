@@ -13,7 +13,11 @@ import {
 import type { NormalizedMessage } from '../contracts/messages.js';
 
 export type EventStatus = 'queued' | 'processing' | 'completed' | 'failed';
-export type EventOutcome = { replyMessageId?: string; errorCode?: string };
+export type EventOutcome = {
+  replyMessageId?: string;
+  errorCode?: string;
+  preparedReplyText?: string;
+};
 
 export const processedEvents = pgTable('processed_events', {
   eventId: text('event_id').primaryKey(),

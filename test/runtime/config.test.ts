@@ -26,6 +26,10 @@ describe('loadConfig', () => {
     });
   });
 
+  it('accepts the dedicated Feishu bot identity used for mention detection', () => {
+    expect(loadConfig({ FEISHU_BOT_OPEN_ID: 'ou_bot' }).feishuBotOpenId).toBe('ou_bot');
+  });
+
   it('rejects an unsupported log level at the configuration boundary', () => {
     expect(() => loadConfig({ LOG_LEVEL: 'verbose-ish' })).toThrow();
   });

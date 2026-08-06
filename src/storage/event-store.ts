@@ -7,6 +7,10 @@ export type StoredEvent = {
   eventId: string;
   payload: NormalizedMessage;
   attempts: number;
+  processingReactionId?: string;
+  replyIdempotencyKey?: string;
+  replyAttemptedAt?: Date;
+  preparedReplyText?: string;
 };
 
 export interface EventStore {
@@ -17,7 +21,15 @@ export interface EventStore {
     claimAttempt: number,
     outcome: { replyMessageId?: string; errorCode?: string },
   ): Promise<void>;
-  markReplyStarted(eventId: string, claimAttempt: number, key: string, attemptedAt: Date): Promise<void>;
+  markReplyStarted(
+    eventId: string,
+    claimAttempt: number,
+    key: string,
+    attemptedAt: Date,
+    preparedReplyText?: string,
+  ): Promise<void>;
+  saveProcessingReaction(eventId: string, claimAttempt: number, reactionId: string): Promise<void>;
+  clearProcessingReaction(eventId: string, claimAttempt: number): Promise<void>;
   markReplyUncertain(eventId: string, claimAttempt: number): Promise<void>;
   retry(
     eventId: string,
@@ -102,17 +114,58 @@ export class PostgresEventStore implements EventStore {
       returning
         event.event_id as "eventId",
         event.payload,
-        event.attempts
+        event.attempts,
+        event.processing_reaction_id as "processingReactionId",
+        event.reply_idempotency_key as "replyIdempotencyKey",
+        event.reply_attempted_at as "replyAttemptedAt",
+        event.outcome ->> 'preparedReplyText' as "preparedReplyText"
     `);
 
     return (result.rows as Array<{
       eventId: string;
       payload: NormalizedMessage;
       attempts: number;
+      processingReactionId: string | null;
+      replyIdempotencyKey: string | null;
+      replyAttemptedAt: Date | null;
+      preparedReplyText: string | null;
     }>).map((row) => ({
-      ...row,
+      eventId: row.eventId,
+      attempts: row.attempts,
       payload: { ...row.payload, occurredAt: new Date(row.payload.occurredAt) },
+      ...(row.processingReactionId ? { processingReactionId: row.processingReactionId } : {}),
+      ...(row.replyIdempotencyKey ? { replyIdempotencyKey: row.replyIdempotencyKey } : {}),
+      ...(row.replyAttemptedAt ? { replyAttemptedAt: new Date(row.replyAttemptedAt) } : {}),
+      ...(row.preparedReplyText ? { preparedReplyText: row.preparedReplyText } : {}),
     }));
+  }
+
+  async saveProcessingReaction(
+    eventId: string,
+    claimAttempt: number,
+    reactionId: string,
+  ): Promise<void> {
+    const updated = await this.db.update(processedEvents).set({
+      processingReactionId: reactionId,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(processedEvents.eventId, eventId),
+      eq(processedEvents.status, 'processing'),
+      eq(processedEvents.attempts, claimAttempt),
+    )).returning({ eventId: processedEvents.eventId });
+    this.assertClaimUpdated(updated);
+  }
+
+  async clearProcessingReaction(eventId: string, claimAttempt: number): Promise<void> {
+    const updated = await this.db.update(processedEvents).set({
+      processingReactionId: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(processedEvents.eventId, eventId),
+      eq(processedEvents.status, 'processing'),
+      eq(processedEvents.attempts, claimAttempt),
+    )).returning({ eventId: processedEvents.eventId });
+    this.assertClaimUpdated(updated);
   }
 
   async complete(
@@ -123,6 +176,7 @@ export class PostgresEventStore implements EventStore {
     const updated = await this.db.update(processedEvents).set({
       status: 'completed',
       leasedUntil: null,
+      processingReactionId: null,
       replyMessageId: outcome.replyMessageId,
       outcome,
       updatedAt: new Date(),
@@ -139,10 +193,14 @@ export class PostgresEventStore implements EventStore {
     claimAttempt: number,
     key: string,
     attemptedAt: Date,
+    preparedReplyText?: string,
   ): Promise<void> {
     const updated = await this.db.update(processedEvents).set({
       replyIdempotencyKey: key,
       replyAttemptedAt: attemptedAt,
+      ...(preparedReplyText === undefined
+        ? {}
+        : { outcome: { preparedReplyText } }),
       updatedAt: new Date(),
     }).where(and(
       eq(processedEvents.eventId, eventId),
@@ -156,6 +214,7 @@ export class PostgresEventStore implements EventStore {
     const updated = await this.db.update(processedEvents).set({
       status: 'failed',
       leasedUntil: null,
+      processingReactionId: null,
       outcome: { errorCode: 'reply_uncertain' },
       updatedAt: new Date(),
     }).where(and(
@@ -179,7 +238,8 @@ export class PostgresEventStore implements EventStore {
         greatest(${nextAttemptAt}, now() + (${this.minRetryDelayMs} * interval '1 millisecond')),
         now() + (${this.maxRetryDelayMs} * interval '1 millisecond')
       )`,
-      outcome: { errorCode },
+      outcome: sql`coalesce(${processedEvents.outcome}, '{}'::jsonb)
+        || jsonb_build_object('errorCode', ${errorCode}::text)`,
       updatedAt: new Date(),
     }).where(and(
       eq(processedEvents.eventId, eventId),

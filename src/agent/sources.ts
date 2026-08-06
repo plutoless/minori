@@ -54,6 +54,10 @@ export class SourceRegistry {
     return source;
   }
 
+  snapshot(): AgentSource[] {
+    return this.sources.map((source) => ({ ...source }));
+  }
+
   finalize(text: string): { text: string; sources: AgentSource[] } {
     const occurrences = citationOccurrences(text);
     const citedInOrder = occurrences.map((occurrence) => occurrence.id);

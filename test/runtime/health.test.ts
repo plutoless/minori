@@ -23,6 +23,7 @@ describe('buildHealthServer', () => {
     const app = buildHealthServer({
       database: async () => 'ok',
       model: async () => 'unconfigured',
+      worker: async () => 'ok',
     });
 
     const response = await app.inject({ method: 'GET', url: '/health/ready' });
@@ -30,7 +31,7 @@ describe('buildHealthServer', () => {
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({
       status: 'degraded',
-      components: { database: 'ok', model: 'unconfigured' },
+      components: { database: 'ok', model: 'unconfigured', worker: 'ok' },
     });
     await app.close();
   });

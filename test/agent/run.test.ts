@@ -112,6 +112,27 @@ describe('runKnowledgeAgent', () => {
     ]);
   });
 
+  it('returns invalid citation output as structured repair input without trusting it', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_fetch', toolName: 'fetchDocument',
+          input: JSON.stringify({ doc: 'doxcnLaunch', mode: 'relevant' }),
+        }], 'tool-calls'),
+        generated([{ type: 'text', text: 'The beta launch is Friday.' }], 'stop'),
+      ],
+    });
+
+    await expect(runKnowledgeAgent(input, {
+      model, reader: reader(), conversationKey: 'oc_team:om_root',
+      triggerMessageId: 'om_trigger', conversationStore: conversationStore(input.prompt),
+    })).resolves.toMatchObject({
+      text: 'The beta launch is Friday.',
+      sources: [{ id: 1, url: 'https://acme.feishu.cn/docx/launch' }],
+      citationContractValid: false,
+    });
+  });
+
   it('can search only the scoped retained conversation for an older detail', async () => {
     const historySearch = vi.fn().mockResolvedValue([{
       messageId: 'om_old', role: 'user', excerpt: 'codename was Juniper',

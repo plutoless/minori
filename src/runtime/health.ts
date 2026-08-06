@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 
 export type ComponentStatus = 'ok' | 'degraded' | 'unconfigured';
-export type HealthComponent = 'database' | 'feishu' | 'lark' | 'model' | 'retention';
+export type HealthComponent = 'database' | 'feishu' | 'lark' | 'model' | 'retention' | 'worker';
 export type HealthProbes = Partial<Record<HealthComponent, () => Promise<ComponentStatus>>>;
 
 export function buildHealthServer(probes: HealthProbes): FastifyInstance {

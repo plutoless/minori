@@ -51,6 +51,27 @@ describe('MembershipPolicy', () => {
     });
   });
 
+  it('checks private-chat eligibility across allowed groups concurrently', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const listOpenIds = vi.fn(async () => {
+      await gate;
+      return new Set(['ou_member']);
+    });
+    const policy = new MembershipPolicy({
+      allowedChats: {
+        isAllowed: vi.fn(),
+        listAllowedChatIds: vi.fn(async () => ['oc_a', 'oc_b', 'oc_c']),
+      },
+      members: { listOpenIds },
+    });
+
+    const authorization = policy.authorize(message('p2p'));
+    await vi.waitFor(() => expect(listOpenIds).toHaveBeenCalledTimes(3));
+    release();
+    await expect(authorization).resolves.toEqual({ allowed: true });
+  });
+
   it('refreshes cached membership after five minutes', async () => {
     let now = new Date('2026-08-05T00:00:00Z');
     const listOpenIds = vi.fn()

@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { Client } from '@larksuiteoapi/node-sdk';
+import { Client, defaultHttpInstance } from '@larksuiteoapi/node-sdk';
 import type { ChatMemberSource } from './membership.js';
 
 type ApiResponse<T> = { code?: number | undefined; data?: T | undefined };
@@ -152,6 +152,7 @@ export function createOfficialFeishuClient(
   credentials: { appId: string; appSecret: string },
   logger: Logger,
 ) {
+  defaultHttpInstance.defaults.timeout = 30_000;
   const client = new Client(credentials);
   return new FeishuClientAdapter(client, logger);
 }

@@ -17,6 +17,7 @@ export type ModelProbeRunner = (
 
 export type ModelPreflight = {
   initialize(): Promise<void>;
+  refresh(): Promise<void>;
   status(): ComponentStatus;
 };
 
@@ -62,6 +63,7 @@ export function createModelPreflight(
   const timeoutMs = options.timeoutMs ?? 10_000;
   let currentStatus: ComponentStatus = config.openaiApiKey ? 'degraded' : 'unconfigured';
   let initialization: Promise<void> | undefined;
+  let activeProbe: Promise<void> | undefined;
 
   async function performInitialization() {
     if (!config.openaiApiKey) return;
@@ -83,10 +85,20 @@ export function createModelPreflight(
     }
   }
 
+  function runProbeOnce() {
+    activeProbe ??= performInitialization().finally(() => {
+      activeProbe = undefined;
+    });
+    return activeProbe;
+  }
+
   return {
     initialize() {
-      initialization ??= performInitialization();
+      initialization ??= runProbeOnce();
       return initialization;
+    },
+    refresh() {
+      return runProbeOnce();
     },
     status() {
       return currentStatus;

@@ -7,13 +7,14 @@ import type { KnowledgeReader } from '../lark/read-service.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
 import { selectRecentHistory, type AgentHistoryMessage } from './context-window.js';
 import { READ_ONLY_AGENT_INSTRUCTIONS } from './instructions.js';
-import { SourceRegistry, type AgentSource } from './sources.js';
+import { CitationContractError, SourceRegistry, type AgentSource } from './sources.js';
 import { createReadTools, type ScopedHistoryReader } from './tools.js';
 
 export type AgentReply = {
   text: string;
   sources: AgentSource[];
   usage: { inputTokens?: number; outputTokens?: number };
+  citationContractValid?: false;
 };
 
 export type AgentRunInput = {
@@ -113,7 +114,17 @@ export async function runKnowledgeAgent(
     messages: history,
     abortSignal: runSignal,
   });
-  const finalized = sources.finalize(result.text);
+  let finalized: { text: string; sources: AgentSource[]; citationContractValid?: false };
+  try {
+    finalized = sources.finalize(result.text);
+  } catch (error) {
+    if (!(error instanceof CitationContractError)) throw error;
+    finalized = {
+      text: result.text,
+      sources: sources.snapshot(),
+      citationContractValid: false,
+    };
+  }
   return {
     ...finalized,
     usage: {

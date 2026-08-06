@@ -177,4 +177,36 @@ describe('PostgresEventStore', () => {
 
     expect(await store.claimReady(1, new Date(Date.now() + 60_000))).toEqual([]);
   });
+
+  it('returns persisted reaction and reply metadata after lease recovery', async () => {
+    await store.enqueue(event());
+    await store.claimReady(1, new Date(Date.now() - 1));
+    const attemptedAt = new Date('2026-08-05T01:02:03Z');
+
+    await store.saveProcessingReaction('evt_1', 1, 'reaction_1');
+    await store.markReplyStarted('evt_1', 1, 'reply-key-1', attemptedAt, 'prepared reply');
+    await store.retry('evt_1', 1, 'reply_failed', new Date(Date.now() - 1));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const [recovered] = await store.claimReady(1, new Date(Date.now() + 60_000));
+    expect(recovered).toMatchObject({
+      eventId: 'evt_1',
+      attempts: 2,
+      processingReactionId: 'reaction_1',
+      replyIdempotencyKey: 'reply-key-1',
+      preparedReplyText: 'prepared reply',
+    });
+    expect(recovered?.replyAttemptedAt).toEqual(attemptedAt);
+  });
+
+  it('clears a persisted processing reaction under the active claim', async () => {
+    await store.enqueue(event());
+    await store.claimReady(1, new Date(Date.now() - 1));
+    await store.saveProcessingReaction('evt_1', 1, 'reaction_1');
+    await store.clearProcessingReaction('evt_1', 1);
+    await store.recoverExpiredLeases(new Date(), 1);
+
+    const [recovered] = await store.claimReady(1, new Date(Date.now() + 60_000));
+    expect(recovered?.processingReactionId).toBeUndefined();
+  });
 });
