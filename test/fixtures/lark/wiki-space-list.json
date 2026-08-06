@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "identity": "user",
+  "data": {
+    "spaces": [
+      {
+        "space_id": "734000001",
+        "name": "Engineering",
+        "description": "Team knowledge",
+        "space_type": "team",
+        "visibility": "private",
+        "open_sharing": "closed"
+      }
+    ],
+    "has_more": false,
+    "page_token": ""
+  }
+}

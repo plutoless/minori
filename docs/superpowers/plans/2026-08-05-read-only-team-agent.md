@@ -413,7 +413,7 @@ export type LarkCommand =
   | { id: 'wiki.nodeGet'; nodeToken: string };
 ```
 
-Append optional `--space-ids` as a comma-joined literal argument. Always append `--format json --as user` except `auth.status`, which uses `auth status --format json`.
+Append optional `--space-ids` as a comma-joined literal argument. Always append `--format json --as user` except `auth.status`, which uses the pinned CLI's actual syntax: `auth status --json`.
 
 - [ ] **Step 3: Write failing runner tests with an injected spawn function**
 
@@ -439,6 +439,7 @@ export type LarkRunnerOptions = {
   timeoutMs: number;
   maxOutputBytes: number;
   spawn: typeof import('node:child_process').spawn;
+  onExecution?: (metadata: { commandId: LarkCommand['id']; outcome: string; durationMs: number }) => void;
 };
 ```
 
@@ -448,7 +449,10 @@ Implement `run` with this state machine:
 const { args } = buildInvocation(command);
 const child = this.options.spawn(this.options.binary, args, {
   shell: false,
-  env: { ...process.env, LARKSUITE_CLI_CONFIG_DIR: this.options.configDir },
+  env: {
+    ...pickNonSecretRuntimeEnvironment(process.env),
+    LARKSUITE_CLI_CONFIG_DIR: this.options.configDir,
+  },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 const stdout: Buffer[] = [];
@@ -471,7 +475,7 @@ if (code !== 0 || !envelope.ok) throw LarkCliError.fromEnvelope(envelope);
 return envelope.data as T;
 ```
 
-Tests require timeout and caller abort to produce distinct `LarkCliError` codes; store a termination reason before killing the process and check it before parsing output.
+Tests require timeout and caller abort to produce distinct `LarkCliError` codes; store a termination reason before killing the process and check it before parsing output. Cancellation first sends `SIGTERM`, then escalates to `SIGKILL` after a fixed grace period while preserving the `aborted` outcome. Do not pass model, database, Feishu, or other service secrets into the CLI environment. Validate successful knowledge-command envelopes as `identity: 'user'`, require the official error-envelope fields, and record only command ID, stable outcome, and duration through the sanitized execution-metadata hook. The pinned CLI emits a standalone diagnostic object for successful `auth status --json`, not the normal `{ok,data}` envelope; validate that command against its own `identity` and `identities.user/bot` schema while retaining the normal error-envelope parser for failures.
 
 - [ ] **Step 5: Implement domain-shaped read methods**
 
@@ -485,7 +489,7 @@ export interface KnowledgeReader {
 }
 ```
 
-Parse fixture envelopes into these types with Zod. Reject shape drift as `LarkContractError`.
+Parse fixture envelopes into these types with Zod. Reject shape drift as `LarkContractError`. Match the pinned CLI's normalized fields. A search row without a canonical URL is omitted rather than failing the complete result set; title-highlight markup is normalized when plain `title` is absent. When `docs +fetch` starts from a token and returns no URL, build the same brand-standard Feishu `/docx/<document_id>` URL used by the official CLI.
 
 - [ ] **Step 6: Verify and commit**
 

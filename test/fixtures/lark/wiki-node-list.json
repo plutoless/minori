@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "identity": "user",
+  "data": {
+    "nodes": [
+      {
+        "space_id": "734000001",
+        "node_token": "wikcnRoadmap",
+        "obj_token": "doxcnRoadmap",
+        "obj_type": "docx",
+        "parent_node_token": "",
+        "node_type": "origin",
+        "title": "Team Roadmap",
+        "has_child": false
+      }
+    ],
+    "has_more": false,
+    "page_token": ""
+  }
+}

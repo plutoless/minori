@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "identity": "user",
+  "data": {
+    "document": {
+      "document_id": "doxcnRoadmap",
+      "revision_id": 7,
+      "content": "# Team Roadmap\n\nLaunch the read-only agent first."
+    }
+  }
+}

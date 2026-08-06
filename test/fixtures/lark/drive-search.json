@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "identity": "user",
+  "data": {
+    "total": 2,
+    "has_more": false,
+    "page_token": "",
+    "results": [
+      {
+        "title": "Team Roadmap",
+        "entity_type": "DOCX",
+        "entity_id": "doxcnRoadmap",
+        "result_meta": {
+          "url": "https://acme.feishu.cn/docx/doxcnRoadmap"
+        }
+      },
+      {
+        "title_highlighted": "<h>Legacy</h> result without URL",
+        "entity_type": "DOC",
+        "entity_id": "doccnLegacy"
+      }
+    ]
+  }
+}
