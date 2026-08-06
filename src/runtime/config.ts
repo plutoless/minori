@@ -13,6 +13,7 @@ const envSchema = z.object({
   OPENAI_BASE_URL: z.string().url().optional(),
   AI_MODEL: z.string().min(1).default('gpt-5.6-terra'),
   CONVERSATION_CONTEXT_TOKEN_TARGET: z.coerce.number().int().positive().default(24_000),
+  MESSAGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
   ALLOWED_CHAT_IDS: z.string().default(''),
   LARK_CLI_BIN: z.string().default('lark-cli'),
   LARKSUITE_CLI_CONFIG_DIR: z.string().default('/var/lib/minori/lark'),
@@ -34,6 +35,7 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
     openaiBaseUrl: parsed.OPENAI_BASE_URL,
     aiModel: parsed.AI_MODEL,
     conversationContextTokenTarget: parsed.CONVERSATION_CONTEXT_TOKEN_TARGET,
+    messageRetentionDays: parsed.MESSAGE_RETENTION_DAYS,
     allowedChatIds: [...new Set(
       parsed.ALLOWED_CHAT_IDS
         .split(',')

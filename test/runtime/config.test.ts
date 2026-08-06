@@ -11,6 +11,7 @@ describe('loadConfig', () => {
       larkConfigDir: '/var/lib/minori/lark',
       aiModel: 'gpt-5.6-terra',
       conversationContextTokenTarget: 24_000,
+      messageRetentionDays: 30,
     });
   });
 
@@ -27,5 +28,10 @@ describe('loadConfig', () => {
 
   it('rejects an unsupported log level at the configuration boundary', () => {
     expect(() => loadConfig({ LOG_LEVEL: 'verbose-ish' })).toThrow();
+  });
+
+  it('accepts a configurable positive message retention period', () => {
+    expect(loadConfig({ MESSAGE_RETENTION_DAYS: '45' }).messageRetentionDays).toBe(45);
+    expect(() => loadConfig({ MESSAGE_RETENTION_DAYS: '0' })).toThrow();
   });
 });

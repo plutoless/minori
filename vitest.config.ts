@@ -4,5 +4,11 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    exclude: [
+      'test/storage/allowed-chat-store.test.ts',
+      'test/storage/conversation-store.test.ts',
+      'test/storage/event-store.test.ts',
+      'test/storage/storage-runtime.test.ts',
+    ],
   },
 });

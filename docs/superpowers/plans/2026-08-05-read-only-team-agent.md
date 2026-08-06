@@ -237,18 +237,20 @@ git commit -m "chore: bootstrap team agent runtime"
 **Interfaces:**
 - Produces: `EventStore.enqueue(event): Promise<'queued' | 'duplicate'>`
 - Produces: `EventStore.claimReady(limit, leaseUntil): Promise<StoredEvent[]>`
-- Produces: `EventStore.complete(eventId, outcome): Promise<void>`
-- Produces: `EventStore.markReplyStarted(eventId, key, attemptedAt): Promise<void>`
-- Produces: `EventStore.markReplyUncertain(eventId): Promise<void>`
-- Produces: `EventStore.retry(eventId, errorCode, nextAttemptAt): Promise<void>`
+- Produces: `EventStore.complete(eventId, claimAttempt, outcome): Promise<void>`
+- Produces: `EventStore.markReplyStarted(eventId, claimAttempt, key, attemptedAt): Promise<void>`
+- Produces: `EventStore.markReplyUncertain(eventId, claimAttempt): Promise<void>`
+- Produces: `EventStore.retry(eventId, claimAttempt, errorCode, nextAttemptAt): Promise<void>`
 - Produces: `EventStore.recoverExpiredLeases(now, limit): Promise<number>`
 - Produces: `ConversationStore.append(message): Promise<void>`
-- Produces: `ConversationStore.recentWithinBudget(conversationKey, tokenTarget): Promise<StoredMessage[]>`
+- Produces: `ConversationStore.recentWithinBudget(conversationKey, tokenTarget, triggerMessageId): Promise<StoredMessage[]>`
 - Produces: `ConversationStore.search(conversationKey, query, limit): Promise<StoredMessageExcerpt[]>`
 - Produces: `ConversationStore.purgeExpired(before): Promise<number>`
 - Produces: `AllowedChatStore.isAllowed(chatId): Promise<boolean>`
 
 ```ts
+// attempts is also the fencing token for this claim. Every ownership-sensitive
+// update must present the value returned by claimReady.
 export type StoredEvent = { eventId: string; payload: NormalizedMessage; attempts: number };
 export type StoredMessage = {
   messageId: string; conversationId: string; role: 'user' | 'assistant';
@@ -260,15 +262,15 @@ export type StoredMessageExcerpt = Pick<StoredMessage, 'messageId' | 'role' | 'c
 export interface EventStore {
   enqueue(event: NormalizedMessage): Promise<'queued' | 'duplicate'>;
   claimReady(limit: number, leaseUntil: Date): Promise<StoredEvent[]>;
-  complete(eventId: string, outcome: { replyMessageId?: string; errorCode?: string }): Promise<void>;
-  markReplyStarted(eventId: string, key: string, attemptedAt: Date): Promise<void>;
-  markReplyUncertain(eventId: string): Promise<void>;
-  retry(eventId: string, errorCode: string, nextAttemptAt: Date): Promise<void>;
+  complete(eventId: string, claimAttempt: number, outcome: { replyMessageId?: string; errorCode?: string }): Promise<void>;
+  markReplyStarted(eventId: string, claimAttempt: number, key: string, attemptedAt: Date): Promise<void>;
+  markReplyUncertain(eventId: string, claimAttempt: number): Promise<void>;
+  retry(eventId: string, claimAttempt: number, errorCode: string, nextAttemptAt: Date): Promise<void>;
   recoverExpiredLeases(now: Date, limit: number): Promise<number>;
 }
 export interface ConversationStore {
   append(message: StoredMessage): Promise<void>;
-  recentWithinBudget(conversationKey: string, tokenTarget: number): Promise<StoredMessage[]>;
+  recentWithinBudget(conversationKey: string, tokenTarget: number, triggerMessageId: string): Promise<StoredMessage[]>;
   search(conversationKey: string, query: string, limit: number): Promise<StoredMessageExcerpt[]>;
   purgeExpired(before: Date): Promise<number>;
 }
@@ -353,11 +355,11 @@ const inserted = await db.insert(processedEvents).values({
 return inserted.length === 1 ? 'queued' : 'duplicate';
 ```
 
-Implement `claimReady` as one transaction using row locking with `SKIP LOCKED`. It selects due `queued` events whose `conversation_key` has no active `processing` lease, takes at most one event per conversation, changes them to `processing`, increments attempts, and sets `leased_until`. Implement `complete` as an update constrained by `event_id` and current `status='processing'`. Implement `retry` by returning an event to `queued` with a bounded backoff. Implement `recoverExpiredLeases` by returning expired `processing` rows to `queued`; do not wait for an arbitrary age threshold when a valid lease exists.
+Implement `claimReady` as one transaction using row locking with `SKIP LOCKED`. It ranks every unfinished event in each conversation so a delayed retry or expired-but-not-yet-recovered claim cannot be overtaken, then claims only an oldest event that is `queued` and due. It changes claimed rows to `processing`, increments attempts, and sets `leased_until`. Treat the returned `attempts` value as a fencing token: `complete`, reply-state updates, and `retry` must match `event_id`, `status='processing'`, and that claim attempt, rejecting stale workers. Clamp retries to the configured minimum and maximum backoff. Implement `recoverExpiredLeases` by returning expired `processing` rows to `queued`; do not wait for an arbitrary age threshold when a valid lease exists.
 
 - [ ] **Step 5: Add conversation round-trip, scoped search, and retention tests**
 
-Test that `recentWithinBudget(conversationKey, tokenTarget)` selects the newest messages that fit the supplied soft budget and returns them chronologically, always preserving the current trigger. Test that `search(conversationKey, query, limit)` returns matching unexpired messages from that conversation and cannot return messages from another Agent Thread or private chat, even when their text matches exactly. The query supports Chinese and English text without depending on language-specific PostgreSQL tokenization. Also assert that an existing Feishu message ID is not inserted twice. Test that `purgeExpired(before)` deletes message bodies older than the cutoff without deleting newer messages or retaining derived summaries. Implement the unique constraint, scoped repository queries, a conservative injectable token estimator, and an internal retention service that runs once at startup and then daily using the configured retention period. The service is operational maintenance, not a user-created scheduled task.
+Test that `recentWithinBudget(conversationKey, tokenTarget, triggerMessageId)` selects the newest messages at or before the explicit trigger that fit the supplied soft budget and returns them chronologically, always preserving that trigger even when timestamps arrive out of order. Test that `search(conversationKey, query, limit)` returns matching unexpired messages from that conversation and cannot return messages from another Agent Thread or private chat, even when their text matches exactly. The query supports Chinese and English text without depending on language-specific PostgreSQL tokenization. Also assert that an existing Feishu message ID is not inserted twice. Test that `purgeExpired(before)` deletes message bodies older than the cutoff without deleting newer messages or retaining derived summaries. Implement the unique constraint, scoped repository queries, a conservative injectable token estimator, and an internal retention service that runs once at startup and then daily using the configured retention period. Wire it into the application lifecycle and health probes. The service is operational maintenance, not a user-created scheduled task.
 
 - [ ] **Step 6: Generate migrations and verify**
 
