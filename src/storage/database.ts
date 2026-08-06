@@ -11,7 +11,11 @@ export type DatabaseHandle = {
 };
 
 export function createDatabase(connectionString: string): DatabaseHandle {
-  const pool = new Pool({ connectionString });
+  const pool = new Pool({
+    connectionString,
+    statement_timeout: 85_000,
+    query_timeout: 85_000,
+  });
   const db = drizzle(pool, { schema });
 
   return {

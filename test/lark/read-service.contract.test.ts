@@ -55,6 +55,19 @@ describe('LarkKnowledgeReader contract', () => {
     });
   });
 
+  it('passes an Agent abort signal through to the Lark executor', async () => {
+    const { executor, run } = executorReturning(await fixtureData('docs-fetch'));
+    const reader = new LarkKnowledgeReader(executor);
+    const controller = new AbortController();
+
+    await reader.fetchDocument({ doc: 'doxcnRoadmap' }, controller.signal);
+
+    expect(run).toHaveBeenCalledWith(
+      { id: 'docs.fetch', doc: 'doxcnRoadmap' },
+      controller.signal,
+    );
+  });
+
   it('maps wiki spaces, node lists, and node detail output', async () => {
     const spaceFixture = await fixtureData('wiki-space-list');
     const listFixture = await fixtureData('wiki-node-list');

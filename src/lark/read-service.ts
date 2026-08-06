@@ -10,16 +10,16 @@ export type KnowledgeSearchResult = {
 };
 
 export interface KnowledgeReader {
-  search(input: { query: string; spaceIds?: string[] }): Promise<KnowledgeSearchResult[]>;
-  fetchDocument(input: { doc: string }): Promise<{ title: string; url: string; markdown: string }>;
-  listSpaces(): Promise<Array<{ spaceId: string; name: string }>>;
+  search(input: { query: string; spaceIds?: string[] }, signal?: AbortSignal): Promise<KnowledgeSearchResult[]>;
+  fetchDocument(input: { doc: string }, signal?: AbortSignal): Promise<{ title: string; url: string; markdown: string }>;
+  listSpaces(signal?: AbortSignal): Promise<Array<{ spaceId: string; name: string }>>;
   listNodes(input: {
     spaceId: string;
     parentNodeToken?: string;
-  }): Promise<Array<{ nodeToken: string; title: string; objType: string }>>;
+  }, signal?: AbortSignal): Promise<Array<{ nodeToken: string; title: string; objType: string }>>;
   getNode(input: {
     nodeToken: string;
-  }): Promise<{ nodeToken: string; objToken: string; objType: string; title: string }>;
+  }, signal?: AbortSignal): Promise<{ nodeToken: string; objToken: string; objType: string; title: string }>;
 }
 
 const driveSearchSchema = z.object({
@@ -85,12 +85,21 @@ function searchResultTitle(
 export class LarkKnowledgeReader implements KnowledgeReader {
   constructor(private readonly executor: LarkExecutor) {}
 
-  async search(input: { query: string; spaceIds?: string[] }): Promise<KnowledgeSearchResult[]> {
-    const data = await this.executor.run<unknown>({
+  private run<T>(command: Parameters<LarkExecutor['run']>[0], signal?: AbortSignal) {
+    return signal
+      ? this.executor.run<T>(command, signal)
+      : this.executor.run<T>(command);
+  }
+
+  async search(
+    input: { query: string; spaceIds?: string[] },
+    signal?: AbortSignal,
+  ): Promise<KnowledgeSearchResult[]> {
+    const data = await this.run<unknown>({
       id: 'drive.search',
       query: input.query,
       ...(input.spaceIds ? { spaceIds: input.spaceIds } : {}),
-    });
+    }, signal);
     const parsed = parseContract(driveSearchSchema, data);
     return parsed.results.flatMap((result) => {
       const url = result.result_meta?.url;
@@ -104,8 +113,8 @@ export class LarkKnowledgeReader implements KnowledgeReader {
     });
   }
 
-  async fetchDocument(input: { doc: string }) {
-    const data = await this.executor.run<unknown>({ id: 'docs.fetch', doc: input.doc });
+  async fetchDocument(input: { doc: string }, signal?: AbortSignal) {
+    const data = await this.run<unknown>({ id: 'docs.fetch', doc: input.doc }, signal);
     const { document } = parseContract(documentSchema, data);
     return {
       title: document.title ?? titleFromMarkdown(document.content, document.document_id),
@@ -118,18 +127,18 @@ export class LarkKnowledgeReader implements KnowledgeReader {
     };
   }
 
-  async listSpaces() {
-    const data = await this.executor.run<unknown>({ id: 'wiki.spaceList' });
+  async listSpaces(signal?: AbortSignal) {
+    const data = await this.run<unknown>({ id: 'wiki.spaceList' }, signal);
     const parsed = parseContract(spaceListSchema, data);
     return parsed.spaces.map((space) => ({ spaceId: space.space_id, name: space.name }));
   }
 
-  async listNodes(input: { spaceId: string; parentNodeToken?: string }) {
-    const data = await this.executor.run<unknown>({
+  async listNodes(input: { spaceId: string; parentNodeToken?: string }, signal?: AbortSignal) {
+    const data = await this.run<unknown>({
       id: 'wiki.nodeList',
       spaceId: input.spaceId,
       ...(input.parentNodeToken ? { parentNodeToken: input.parentNodeToken } : {}),
-    });
+    }, signal);
     const parsed = parseContract(nodeListSchema, data);
     return parsed.nodes.map((node) => ({
       nodeToken: node.node_token,
@@ -138,10 +147,10 @@ export class LarkKnowledgeReader implements KnowledgeReader {
     }));
   }
 
-  async getNode(input: { nodeToken: string }) {
-    const data = await this.executor.run<unknown>({
+  async getNode(input: { nodeToken: string }, signal?: AbortSignal) {
+    const data = await this.run<unknown>({
       id: 'wiki.nodeGet', nodeToken: input.nodeToken,
-    });
+    }, signal);
     const node = parseContract(nodeSchema, data);
     return {
       nodeToken: node.node_token,
