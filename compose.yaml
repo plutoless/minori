@@ -1,0 +1,32 @@
+services:
+  app:
+    image: minori:local
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      PORT: "3000"
+      LARK_CLI_BIN: /app/node_modules/.bin/lark-cli
+      LARKSUITE_CLI_CONFIG_DIR: /var/lib/minori/lark
+    ports:
+      - "127.0.0.1:${MINORI_HEALTH_PORT:-3000}:3000"
+    volumes:
+      - minori-lark-auth:/var/lib/minori/lark
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+volumes:
+  minori-lark-auth:
