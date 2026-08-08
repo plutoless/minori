@@ -3,7 +3,8 @@ import { MockLanguageModelV4 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
 import { KnowledgeWriteConflict } from '../../src/lark/errors.js';
 import type { KnowledgeService } from '../../src/lark/knowledge-service.js';
-import { runKnowledgeAgent } from '../../src/agent/run.js';
+import { runKnowledgeAgent, type RunKnowledgeAgentDependencies } from '../../src/agent/run.js';
+import type { AgentRunStore } from '../../src/storage/agent-run-store.js';
 
 const usage = {
   inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
@@ -71,6 +72,36 @@ const input = {
   trigger: { kind: 'feishu_member' as const, senderOpenId: 'ou_member', chatId: 'oc_team' },
 };
 
+function agentRunStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
+  return {
+    start: vi.fn().mockResolvedValue({ id: 'run_1' }),
+    beginWrite: vi.fn().mockResolvedValue({ id: 'write_1' }),
+    finishWrite: vi.fn().mockResolvedValue(undefined),
+    finish: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+function dependencies(
+  prompt: string,
+  model: RunKnowledgeAgentDependencies['model'],
+  overrides: Partial<RunKnowledgeAgentDependencies> = {},
+): RunKnowledgeAgentDependencies {
+  return {
+    model,
+    service: service(),
+    conversationKey: 'oc_team:om_root',
+    triggerMessageId: 'om_trigger',
+    conversationStore: conversationStore(prompt),
+    eventId: 'evt_1',
+    modelName: '5.6-terra',
+    maxSteps: 20,
+    timeoutMs: 180_000,
+    agentRunStore: agentRunStore(),
+    ...overrides,
+  };
+}
+
 describe('runKnowledgeAgent', () => {
   it('searches, reads, and returns a source-linked team knowledge answer', async () => {
     const model = new MockLanguageModelV4({
@@ -88,10 +119,9 @@ describe('runKnowledgeAgent', () => {
     });
     const store = conversationStore(input.prompt);
 
-    await expect(runKnowledgeAgent(input, {
-      model, service: service(), conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger', conversationStore: store,
-    })).resolves.toEqual({
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      conversationStore: store,
+    }))).resolves.toEqual({
       text: 'The beta launch is Friday [1].',
       sources: [{ id: 1, title: 'Launch plan', url: 'https://acme.feishu.cn/docx/launch' }],
       usage: { inputTokens: 30, outputTokens: 12 },
@@ -113,11 +143,11 @@ describe('runKnowledgeAgent', () => {
       }], 'stop'),
     });
 
-    await expect(runKnowledgeAgent({ ...input, prompt: 'Rewrite this more briefly.' }, {
-      model, service: service(), conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger',
+    await expect(runKnowledgeAgent({ ...input, prompt: 'Rewrite this more briefly.' }, dependencies(
+      'Rewrite this more briefly.', model, {
       conversationStore: conversationStore('Rewrite this more briefly.'),
-    })).resolves.toEqual({
+      },
+    ))).resolves.toEqual({
       text: 'Shorter version.', sources: [],
       usage: { inputTokens: 10, outputTokens: 4 },
     });
@@ -137,10 +167,8 @@ describe('runKnowledgeAgent', () => {
       ],
     });
 
-    await expect(runKnowledgeAgent(input, {
-      model, service: service(), conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger', conversationStore: conversationStore(input.prompt),
-    })).resolves.toEqual({
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model)))
+      .resolves.toEqual({
       text: 'The beta launch is Friday.',
       sources: [{ id: 1, title: 'Launch plan', url: 'https://acme.feishu.cn/docx/launch' }],
       usage: { inputTokens: 20, outputTokens: 8 },
@@ -164,12 +192,13 @@ describe('runKnowledgeAgent', () => {
       ],
     });
 
-    const reply = await runKnowledgeAgent({ ...input, prompt: 'What codename did I use?' }, {
-      model, service: service(), conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger',
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt: 'What codename did I use?' },
+      dependencies('What codename did I use?', model, {
       conversationStore: conversationStore('What codename did I use?', historySearch),
       contextTokenTarget: 1,
-    });
+      }),
+    );
 
     expect(reply.sources).toEqual([]);
     expect(historySearch).toHaveBeenCalledWith('oc_team:om_root', 'codename', 5);
@@ -196,10 +225,9 @@ describe('runKnowledgeAgent', () => {
       ],
     });
 
-    const reply = await runKnowledgeAgent(input, {
-      model, service: knowledge, conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger', conversationStore: conversationStore(input.prompt),
-    });
+    const reply = await runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      service: knowledge,
+    }));
 
     expect(reply.sources).toHaveLength(1);
     expect(knowledge.fetchDocument).toHaveBeenCalledTimes(1);
@@ -233,11 +261,10 @@ describe('runKnowledgeAgent', () => {
       ],
     });
 
-    const reply = await runKnowledgeAgent({ ...input, prompt: 'Compare doxcnOne and doxcnTwo.' }, {
-      model, service: knowledge, conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger',
-      conversationStore: conversationStore('Compare doxcnOne and doxcnTwo.'),
-    });
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt: 'Compare doxcnOne and doxcnTwo.' },
+      dependencies('Compare doxcnOne and doxcnTwo.', model, { service: knowledge }),
+    );
 
     expect(knowledge.search).not.toHaveBeenCalled();
     expect(reply.text).toBe('Combined natural summary.');
@@ -246,7 +273,7 @@ describe('runKnowledgeAgent', () => {
 
   it('creates a document autonomously and records only sanitized audit metadata', async () => {
     const knowledge = service();
-    const audit = { run: vi.fn((_input, operation) => operation()) };
+    const audit = agentRunStore();
     const model = new MockLanguageModelV4({
       doGenerate: [
         generated([{
@@ -257,21 +284,73 @@ describe('runKnowledgeAgent', () => {
       ],
     });
 
-    const reply = await runKnowledgeAgent({ ...input, prompt: 'Create a plan.' }, {
-      model, service: knowledge, conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger', conversationStore: conversationStore('Create a plan.'),
-      writeAudit: audit,
-    });
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt: 'Create a plan.' },
+      dependencies('Create a plan.', model, { service: knowledge, agentRunStore: audit }),
+    );
 
     expect(reply.text).toBe('Created the plan.');
     expect(knowledge.createDocument).toHaveBeenCalledWith(
       { title: 'Plan', content: '# Plan' }, expect.any(AbortSignal),
     );
-    expect(audit.run.mock.calls[0]?.[0]).toEqual({
+    expect(audit.start).toHaveBeenCalledWith({ eventId: 'evt_1', model: '5.6-terra' });
+    expect(audit.beginWrite).toHaveBeenCalledWith('run_1', {
       toolName: 'createDocument', targetIdentifiers: {},
       sanitizedSummary: 'created one document',
     });
-    expect(JSON.stringify(audit.run.mock.calls[0]?.[0])).not.toContain('# Plan');
+    expect(audit.finishWrite).toHaveBeenCalledWith('write_1', { success: true });
+    expect(audit.finish).toHaveBeenCalledWith('run_1', {
+      inputTokens: 20,
+      outputTokens: 8,
+      toolCallCount: 1,
+      outcome: 'completed',
+    });
+    expect(JSON.stringify(vi.mocked(audit.beginWrite).mock.calls)).not.toContain('# Plan');
+  });
+
+  it('does not write when the pending audit row cannot be persisted', async () => {
+    const knowledge = service();
+    const audit = agentRunStore({
+      beginWrite: vi.fn().mockRejectedValue(new Error('postgres://secret-host')),
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_create', toolName: 'createDocument',
+          input: JSON.stringify({ title: 'Plan', content: '# Sensitive plan' }),
+        }], 'tool-calls'),
+        generated([{ type: 'text', text: 'The write could not be audited.' }], 'stop'),
+      ],
+    });
+
+    await expect(runKnowledgeAgent(
+      { ...input, prompt: 'Create a sensitive plan.' },
+      dependencies('Create a sensitive plan.', model, {
+        service: knowledge,
+        agentRunStore: audit,
+      }),
+    )).resolves.toMatchObject({ text: 'The write could not be audited.' });
+
+    expect(knowledge.createDocument).not.toHaveBeenCalled();
+    const secondPrompt = JSON.stringify(model.doGenerateCalls[1]?.prompt);
+    expect(secondPrompt).toContain('write_audit_unavailable');
+    expect(secondPrompt).not.toContain('postgres://secret-host');
+  });
+
+  it('honors the configured maximum number of Agent steps', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_search', toolName: 'searchKnowledge',
+          input: JSON.stringify({ query: 'launch' }),
+        }], 'tool-calls'),
+        generated([{ type: 'text', text: 'This step must not run.' }], 'stop'),
+      ],
+    });
+
+    await runKnowledgeAgent(input, dependencies(input.prompt, model, { maxSteps: 1 }));
+
+    expect(model.doGenerateCalls).toHaveLength(1);
   });
 
   it('appends and applies one exact patch without a confirmation flow', async () => {
@@ -292,11 +371,10 @@ describe('runKnowledgeAgent', () => {
       ],
     });
 
-    await runKnowledgeAgent({ ...input, prompt: 'Append a step and change the launch day.' }, {
-      model, service: knowledge, conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger',
-      conversationStore: conversationStore('Append a step and change the launch day.'),
-    });
+    await runKnowledgeAgent(
+      { ...input, prompt: 'Append a step and change the launch day.' },
+      dependencies('Append a step and change the launch day.', model, { service: knowledge }),
+    );
 
     expect(knowledge.appendDocument).toHaveBeenCalledWith(
       { doc: 'doxcnLaunch', content: '\nNext step.' }, expect.any(AbortSignal),
@@ -338,15 +416,38 @@ describe('runKnowledgeAgent', () => {
       ],
     });
 
-    const reply = await runKnowledgeAgent({ ...input, prompt: 'Change Friday to Thursday.' }, {
-      model, service: knowledge, conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger',
-      conversationStore: conversationStore('Change Friday to Thursday.'),
-    });
+    const audit = agentRunStore();
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt: 'Change Friday to Thursday.' },
+      dependencies('Change Friday to Thursday.', model, {
+        service: knowledge,
+        agentRunStore: audit,
+      }),
+    );
 
     expect(knowledge.patchDocument).toHaveBeenCalledTimes(2);
     expect(knowledge.fetchDocument).toHaveBeenCalledOnce();
     expect(reply.sources).toHaveLength(1);
+    expect(audit.finishWrite).toHaveBeenNthCalledWith(1, 'write_1', {
+      success: false,
+      errorCategory: 'knowledge_write_conflict',
+    });
+  });
+
+  it('finishes a failed Agent run when model execution fails', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: vi.fn().mockRejectedValue(new Error('model_unavailable')),
+    });
+    const audit = agentRunStore();
+
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      agentRunStore: audit,
+    }))).rejects.toThrow('model_unavailable');
+
+    expect(audit.finish).toHaveBeenCalledWith('run_1', {
+      toolCallCount: 0,
+      outcome: 'failed',
+    });
   });
 
   it('aborts an Agent run at the configured deadline', async () => {
@@ -356,11 +457,15 @@ describe('runKnowledgeAgent', () => {
       }),
     });
 
-    await expect(runKnowledgeAgent(input, {
-      model, service: service(), conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger', conversationStore: conversationStore(input.prompt),
+    const audit = agentRunStore();
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
       timeoutMs: 5,
-    })).rejects.toBeDefined();
+      agentRunStore: audit,
+    }))).rejects.toBeDefined();
+    expect(audit.finish).toHaveBeenCalledWith('run_1', {
+      toolCallCount: 0,
+      outcome: 'aborted',
+    });
   });
 
   it('applies the same wall-clock deadline while loading recent history', async () => {
@@ -368,14 +473,13 @@ describe('runKnowledgeAgent', () => {
       doGenerate: generated([{ type: 'text', text: 'unused' }], 'stop'),
     });
 
-    await expect(runKnowledgeAgent(input, {
-      model, service: service(), conversationKey: 'oc_team:om_root',
-      triggerMessageId: 'om_trigger', timeoutMs: 5,
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      timeoutMs: 5,
       conversationStore: {
         search: vi.fn().mockResolvedValue([]),
         recentWithinBudget: vi.fn(() => new Promise(() => undefined)),
       },
-    })).rejects.toBeDefined();
+    }))).rejects.toBeDefined();
     expect(model.doGenerateCalls).toHaveLength(0);
   });
 });

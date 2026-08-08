@@ -10,9 +10,20 @@ describe('loadConfig', () => {
       larkCliBin: 'lark-cli',
       larkConfigDir: '/var/lib/minori/lark',
       aiModel: 'gpt-5.6-terra',
+      agentMaxSteps: 20,
+      agentTimeoutMs: 180_000,
       conversationContextTokenTarget: 24_000,
       messageRetentionDays: 30,
     });
+  });
+
+  it('accepts bounded Agent execution limits', () => {
+    expect(loadConfig({ AGENT_MAX_STEPS: '30', AGENT_TIMEOUT_MS: '240000' }))
+      .toMatchObject({ agentMaxSteps: 30, agentTimeoutMs: 240_000 });
+    expect(() => loadConfig({ AGENT_MAX_STEPS: '0' })).toThrow();
+    expect(() => loadConfig({ AGENT_MAX_STEPS: '101' })).toThrow();
+    expect(() => loadConfig({ AGENT_TIMEOUT_MS: '999' })).toThrow();
+    expect(() => loadConfig({ AGENT_TIMEOUT_MS: '900001' })).toThrow();
   });
 
   it('splits and deduplicates allowed chat ids', () => {

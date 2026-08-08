@@ -13,6 +13,8 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().min(1).optional(),
   OPENAI_BASE_URL: z.string().url().optional(),
   AI_MODEL: z.string().min(1).default('gpt-5.6-terra'),
+  AGENT_MAX_STEPS: z.coerce.number().int().min(1).max(100).default(20),
+  AGENT_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(900_000).default(180_000),
   CONVERSATION_CONTEXT_TOKEN_TARGET: z.coerce.number().int().positive().default(24_000),
   MESSAGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
   ALLOWED_CHAT_IDS: z.string().default(''),
@@ -36,6 +38,8 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
     openaiApiKey: parsed.OPENAI_API_KEY,
     openaiBaseUrl: parsed.OPENAI_BASE_URL,
     aiModel: parsed.AI_MODEL,
+    agentMaxSteps: parsed.AGENT_MAX_STEPS,
+    agentTimeoutMs: parsed.AGENT_TIMEOUT_MS,
     conversationContextTokenTarget: parsed.CONVERSATION_CONTEXT_TOKEN_TARGET,
     messageRetentionDays: parsed.MESSAGE_RETENTION_DAYS,
     allowedChatIds: [...new Set(

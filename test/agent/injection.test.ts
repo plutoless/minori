@@ -53,6 +53,16 @@ describe('prompt-injection boundary', () => {
     }, {
       model, service, conversationKey: 'oc_team:om_root',
       triggerMessageId: 'om_trigger',
+      eventId: 'evt_1',
+      modelName: '5.6-terra',
+      maxSteps: 20,
+      timeoutMs: 180_000,
+      agentRunStore: {
+        start: vi.fn().mockResolvedValue({ id: 'run_1' }),
+        beginWrite: vi.fn().mockResolvedValue({ id: 'write_1' }),
+        finishWrite: vi.fn().mockResolvedValue(undefined),
+        finish: vi.fn().mockResolvedValue(undefined),
+      },
       conversationStore: {
         search: vi.fn().mockResolvedValue([]),
         recentWithinBudget: vi.fn().mockResolvedValue([{

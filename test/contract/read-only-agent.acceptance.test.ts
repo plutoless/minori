@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createReadTools } from '../../src/agent/tools.js';
+import { SourceRegistry } from '../../src/agent/sources.js';
+import { createKnowledgeTools } from '../../src/agent/tools.js';
 import type { AgentReply } from '../../src/agent/run.js';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import type { FeishuMessenger } from '../../src/feishu/client.js';
@@ -184,12 +185,20 @@ describe('read-only team Agent release contract', () => {
     expect(claimBatches[0]).toEqual(expect.arrayContaining(['evt_group_1', 'evt_private']));
     expect(claimBatches[0]).not.toContain('evt_group_2');
 
-    const toolNames = Object.keys(createReadTools(reader, { search: vi.fn(async () => []) }));
+    const toolNames = Object.keys(createKnowledgeTools(
+      reader,
+      { search: vi.fn(async () => []) },
+      new SourceRegistry(),
+      { run: (_input, operation) => operation() },
+    ));
     expect(toolNames).toEqual([
       'searchKnowledge', 'fetchDocument', 'listKnowledgeSpaces',
-      'listKnowledgeNodes', 'getKnowledgeNode', 'searchConversationHistory',
+      'listKnowledgeNodes', 'getKnowledgeNode', 'createDocument',
+      'appendDocument', 'patchDocument', 'searchConversationHistory',
     ]);
-    expect(toolNames.join(' ')).not.toMatch(/create|update|delete|move|permission|write/iu);
+    expect(toolNames.join(' ')).not.toMatch(
+      /delete|move|overwrite|permission|sharing|raw|shell|http|filesystem/iu,
+    );
   });
 
   it('expires old message bodies and replays a recent uncertain transport result only once', async () => {

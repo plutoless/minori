@@ -94,6 +94,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       || !storage.eventStore
       || !storage.conversationStore
       || !storage.allowedChatStore
+      || !storage.agentRunStore
       || modelPreflight.status() !== 'ok'
       || larkStatus !== 'ok') {
       workerStatus = storage.eventStore ? 'degraded' : 'unconfigured';
@@ -133,6 +134,11 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
         }, {
           model,
           service,
+          eventId: message.eventId,
+          modelName: config.aiModel,
+          maxSteps: config.agentMaxSteps,
+          timeoutMs: config.agentTimeoutMs,
+          agentRunStore: storage.agentRunStore!,
           conversationKey: message.conversationKey,
           triggerMessageId: message.messageId,
           conversationStore: storage.conversationStore!,

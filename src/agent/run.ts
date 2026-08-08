@@ -3,7 +3,9 @@ import {
   stepCountIs,
   type LanguageModel,
 } from 'ai';
+import { KnowledgeWriteConflict } from '../lark/errors.js';
 import type { KnowledgeService } from '../lark/knowledge-service.js';
+import type { AgentRunStore } from '../storage/agent-run-store.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
 import { selectRecentHistory, type AgentHistoryMessage } from './context-window.js';
 import { TEAM_AGENT_INSTRUCTIONS } from './instructions.js';
@@ -55,17 +57,69 @@ export function createTeamAgent(dependencies: TeamAgentDependencies, maxSteps: n
 }
 
 export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' | 'service'> & {
+  eventId: string;
+  modelName: string;
+  maxSteps: number;
+  timeoutMs: number;
+  agentRunStore: AgentRunStore;
   conversationKey: string;
   triggerMessageId: string;
   conversationStore: Pick<ConversationStore, 'search' | 'recentWithinBudget'>;
-  writeAudit?: KnowledgeWriteAudit;
   contextTokenTarget?: number;
-  timeoutMs?: number;
 };
 
-const unpersistedWriteAudit: KnowledgeWriteAudit = {
-  run: (_input, operation) => operation(),
-};
+const WRITE_AUDIT_UNAVAILABLE = 'write_audit_unavailable';
+const AGENT_AUDIT_UNAVAILABLE = 'agent_audit_unavailable';
+
+class WriteAuditUnavailable extends Error {
+  constructor() {
+    super(WRITE_AUDIT_UNAVAILABLE);
+    this.name = 'WriteAuditUnavailable';
+  }
+}
+
+function stableWriteErrorCategory(error: unknown) {
+  return error instanceof KnowledgeWriteConflict
+    ? 'knowledge_write_conflict'
+    : 'knowledge_write_failed';
+}
+
+function createWriteAudit(
+  store: AgentRunStore,
+  agentRunId: string,
+): KnowledgeWriteAudit {
+  return {
+    async run(input, operation) {
+      let write: { id: string };
+      try {
+        write = await store.beginWrite(agentRunId, input);
+      } catch {
+        throw new WriteAuditUnavailable();
+      }
+
+      try {
+        const result = await operation();
+        try {
+          await store.finishWrite(write.id, { success: true });
+        } catch {
+          throw new WriteAuditUnavailable();
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof WriteAuditUnavailable) throw error;
+        try {
+          await store.finishWrite(write.id, {
+            success: false,
+            errorCategory: stableWriteErrorCategory(error),
+          });
+        } catch {
+          throw new WriteAuditUnavailable();
+        }
+        throw error;
+      }
+    },
+  };
+}
 
 function combinedSignal(signal: AbortSignal | undefined, timeoutMs: number) {
   const timeout = AbortSignal.timeout(timeoutMs);
@@ -86,7 +140,7 @@ export async function runKnowledgeAgent(
   dependencies: RunKnowledgeAgentDependencies,
   signal?: AbortSignal,
 ): Promise<AgentReply> {
-  const runSignal = combinedSignal(signal, dependencies.timeoutMs ?? 90_000);
+  const runSignal = combinedSignal(signal, dependencies.timeoutMs);
   const sources = new SourceRegistry();
   const contextTokenTarget = dependencies.contextTokenTarget ?? 24_000;
   const storedHistory = await withAbort(
@@ -108,37 +162,78 @@ export async function runKnowledgeAgent(
     && JSON.stringify(input.history) !== JSON.stringify(authoritativeHistory)) {
     throw new Error('conversation_history_mismatch');
   }
-  const agent = createTeamAgent({
-    model: dependencies.model,
-    service: dependencies.service,
-    sources,
-    writeAudit: dependencies.writeAudit ?? unpersistedWriteAudit,
-    history: {
-      search: (query, limit) => dependencies.conversationStore.search(
-        dependencies.conversationKey,
-        query,
-        limit,
-      ),
-    },
-  }, 12);
-  const history = selectRecentHistory(
-    authoritativeHistory,
-    contextTokenTarget,
-  );
-  const result = await agent.generate({
-    messages: history,
-    abortSignal: runSignal,
-  });
-  const finalized = sources.finalize(result.text);
-  return {
-    ...finalized,
-    usage: {
-      ...(result.usage.inputTokens !== undefined
-        ? { inputTokens: result.usage.inputTokens }
-        : {}),
-      ...(result.usage.outputTokens !== undefined
-        ? { outputTokens: result.usage.outputTokens }
-        : {}),
-    },
-  };
+
+  let run: { id: string };
+  try {
+    run = await dependencies.agentRunStore.start({
+      eventId: dependencies.eventId,
+      model: dependencies.modelName,
+    });
+  } catch {
+    throw new Error(AGENT_AUDIT_UNAVAILABLE);
+  }
+
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let toolCallCount = 0;
+  let outcome: 'completed' | 'failed' | 'aborted' = 'failed';
+
+  try {
+    const agent = createTeamAgent({
+      model: dependencies.model,
+      service: dependencies.service,
+      sources,
+      writeAudit: createWriteAudit(dependencies.agentRunStore, run.id),
+      history: {
+        search: (query, limit) => dependencies.conversationStore.search(
+          dependencies.conversationKey,
+          query,
+          limit,
+        ),
+      },
+    }, dependencies.maxSteps);
+    const history = selectRecentHistory(
+      authoritativeHistory,
+      contextTokenTarget,
+    );
+    const result = await agent.generate({
+      messages: history,
+      abortSignal: runSignal,
+      onStepEnd: (step) => {
+        if (step.usage.inputTokens !== undefined) {
+          inputTokens = (inputTokens ?? 0) + step.usage.inputTokens;
+        }
+        if (step.usage.outputTokens !== undefined) {
+          outputTokens = (outputTokens ?? 0) + step.usage.outputTokens;
+        }
+        toolCallCount += step.toolCalls.length;
+      },
+    });
+    inputTokens = result.usage.inputTokens;
+    outputTokens = result.usage.outputTokens;
+    toolCallCount = result.toolCalls.length;
+    const finalized = sources.finalize(result.text);
+    outcome = 'completed';
+    return {
+      ...finalized,
+      usage: {
+        ...(inputTokens !== undefined ? { inputTokens } : {}),
+        ...(outputTokens !== undefined ? { outputTokens } : {}),
+      },
+    };
+  } catch (error) {
+    outcome = runSignal.aborted ? 'aborted' : 'failed';
+    throw error;
+  } finally {
+    try {
+      await dependencies.agentRunStore.finish(run.id, {
+        ...(inputTokens !== undefined ? { inputTokens } : {}),
+        ...(outputTokens !== undefined ? { outputTokens } : {}),
+        toolCallCount,
+        outcome,
+      });
+    } catch {
+      throw new Error(AGENT_AUDIT_UNAVAILABLE);
+    }
+  }
 }

@@ -32,6 +32,7 @@ describe('createStorageRuntime', () => {
     expect(runtime.eventStore).toBeDefined();
     expect(runtime.conversationStore).toBeDefined();
     expect(runtime.allowedChatStore).toBeDefined();
+    expect(runtime.agentRunStore).toBeDefined();
     expect(runtime.retentionStatus()).toBe('degraded');
 
     await runtime.start();
@@ -54,6 +55,7 @@ describe('createStorageRuntime', () => {
     expect(await runtime.databaseStatus()).toBe('unconfigured');
     expect(runtime.retentionStatus()).toBe('unconfigured');
     expect(runtime.eventStore).toBeUndefined();
+    expect(runtime.agentRunStore).toBeUndefined();
 
     await runtime.stop();
   });
