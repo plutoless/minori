@@ -29,12 +29,21 @@ export async function verifyRuntime(dependencies: RuntimeVerificationDependencie
   };
 }
 
-function larkAuthStatus(binary: string, configDir: string): Promise<RuntimeStatus> {
-  if (!isAbsolute(configDir)) return Promise.resolve('unconfigured');
+export function verifyLarkAuth(
+  binary: string,
+  configDir: string,
+  dataDir: string,
+): Promise<RuntimeStatus> {
+  if (!isAbsolute(configDir) || !isAbsolute(dataDir)) return Promise.resolve('unconfigured');
   return new Promise((resolve) => {
     const child = spawn(binary, ['auth', 'status', '--json', '--verify'], {
       shell: false,
-      env: { PATH: process.env.PATH, LANG: process.env.LANG, LARKSUITE_CLI_CONFIG_DIR: configDir },
+      env: {
+        PATH: process.env.PATH,
+        LANG: process.env.LANG,
+        LARKSUITE_CLI_CONFIG_DIR: configDir,
+        LARKSUITE_CLI_DATA_DIR: dataDir,
+      },
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     const chunks: Buffer[] = [];
@@ -99,9 +108,10 @@ async function main() {
         && process.env.FEISHU_BOT_OPEN_ID
         ? 'ok'
         : 'unconfigured',
-      lark: () => larkAuthStatus(
+      lark: () => verifyLarkAuth(
         process.env.LARK_CLI_BIN ?? 'lark-cli',
-        process.env.LARKSUITE_CLI_CONFIG_DIR ?? '/var/lib/minori/lark',
+        process.env.LARKSUITE_CLI_CONFIG_DIR ?? '/var/lib/minori/lark/config',
+        process.env.LARKSUITE_CLI_DATA_DIR ?? '/var/lib/minori/lark/data',
       ),
       model: async () => {
         if (!apiKey) return 'unconfigured';

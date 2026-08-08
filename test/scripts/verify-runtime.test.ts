@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { verifyRuntime } from '../../scripts/verify-runtime.js';
+import { verifyLarkAuth, verifyRuntime } from '../../scripts/verify-runtime.js';
 
 describe('verifyRuntime', () => {
   it('reports only component categories and succeeds when every dependency is ready', async () => {
@@ -34,5 +34,16 @@ describe('verifyRuntime', () => {
     });
     expect(JSON.stringify(result)).not.toContain('postgres');
     expect(JSON.stringify(result)).not.toContain('secret');
+  });
+
+  it.each([
+    ['a relative config directory', './config', '/var/lib/minori/lark/data'],
+    ['a relative data directory', '/var/lib/minori/lark/config', './data'],
+  ])('marks Lark unconfigured for %s without exposing directory details', async (_label, configDir, dataDir) => {
+    const status = await verifyLarkAuth('lark-cli', configDir, dataDir);
+
+    expect(status).toBe('unconfigured');
+    expect(JSON.stringify({ lark: status })).not.toContain(configDir);
+    expect(JSON.stringify({ lark: status })).not.toContain(dataDir);
   });
 });

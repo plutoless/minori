@@ -1,16 +1,24 @@
+import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { runLarkAuth, type AuthCommandRunner } from '../../scripts/lark-auth.js';
+import {
+  createAuthCommandRunner, runLarkAuth, type AuthCommandRunner,
+} from '../../scripts/lark-auth.js';
+
+vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 
 describe('runLarkAuth', () => {
-  it('prints only verification URLs and a sanitized final identity status', async () => {
-    const calls: string[][] = [];
+  it('binds the existing app and prints only the device URL and sanitized user status', async () => {
+    const calls: Array<{ args: string[]; input?: string }> = [];
+    const stdinValues: string[] = [];
     const runner: AuthCommandRunner = {
-      runStreaming: vi.fn(async (args, onUrl) => {
-        calls.push(args);
-        onUrl('https://open.feishu.cn/config-device');
+      runText: vi.fn(async (args, input) => {
+        calls.push({ args, input });
+        if (input) stdinValues.push(input);
+        return '';
       }),
       runJson: vi.fn(async (args) => {
-        calls.push(args);
+        calls.push({ args });
         if (args.includes('--no-wait')) {
           return {
             verification_uri_complete: 'https://accounts.feishu.cn/device?code=ABCD',
@@ -27,26 +35,132 @@ describe('runLarkAuth', () => {
       }),
     };
     const printed: string[] = [];
+    const config = {
+      configDir: '/var/lib/minori/lark/config',
+      dataDir: '/var/lib/minori/lark/data',
+      appId: 'cli_existing',
+      appSecret: 'secret-from-env',
+    };
 
-    await runLarkAuth(runner, '/var/lib/minori/lark', (line) => printed.push(line));
+    await runLarkAuth(runner, config, printed.push.bind(printed));
 
-    expect(calls).toEqual([
-      ['config', 'init', '--new'],
-      ['auth', 'login', '--recommend', '--no-wait', '--json'],
+    expect(calls.map(({ args }) => args)).toEqual([
+      ['config', 'init', '--app-id', 'cli_existing', '--app-secret-stdin', '--brand', 'feishu'],
+      ['config', 'strict-mode', 'user'],
+      ['auth', 'login', '--domain', 'docs,drive,wiki', '--no-wait', '--json'],
       ['auth', 'login', '--device-code', 'device-secret', '--json'],
       ['auth', 'status', '--json', '--verify'],
     ]);
+    expect(stdinValues).toEqual(['secret-from-env\n']);
     expect(printed).toEqual([
-      'https://open.feishu.cn/config-device',
       'https://accounts.feishu.cn/device?code=ABCD',
-      '{"identity":"user","defaultAs":"user","userAvailable":true}',
+      '{"identity":"user","userAvailable":true}',
     ]);
-    expect(JSON.stringify(printed)).not.toContain('secret');
-    expect(JSON.stringify(printed)).not.toContain('token');
+    expect(JSON.stringify({ args: calls.map(({ args }) => args), printed })).not.toContain('secret-from-env');
+    expect(JSON.stringify(printed)).not.toContain('device-secret');
   });
 
-  it('rejects a relative credential directory', async () => {
-    await expect(runLarkAuth({} as AuthCommandRunner, './lark', vi.fn()))
-      .rejects.toThrow('lark_config_dir_must_be_absolute');
+  it.each([
+    ['missing app ID', { appId: '' }, 'lark_app_id_required'],
+    ['missing app secret', { appSecret: '' }, 'lark_app_secret_required'],
+    ['relative config directory', { configDir: './config' }, 'lark_config_dir_must_be_absolute'],
+    ['relative data directory', { dataDir: './data' }, 'lark_data_dir_must_be_absolute'],
+  ])('fails with a stable code for %s', async (_label, override, code) => {
+    const runner = { runText: vi.fn(), runJson: vi.fn() } as AuthCommandRunner;
+
+    await expect(runLarkAuth(runner, {
+      configDir: '/var/lib/minori/lark/config',
+      dataDir: '/var/lib/minori/lark/data',
+      appId: 'cli_existing',
+      appSecret: 'secret-from-env',
+      ...override,
+    }, vi.fn())).rejects.toThrow(code);
+
+    expect(runner.runText).not.toHaveBeenCalled();
+    expect(runner.runJson).not.toHaveBeenCalled();
+  });
+
+  it('fails with a stable code when the device authorization response is invalid', async () => {
+    const runner: AuthCommandRunner = {
+      runText: vi.fn(async () => ''),
+      runJson: vi.fn(async () => ({ verification_uri_complete: 'https://accounts.feishu.cn/device?code=ABCD' })),
+    };
+
+    await expect(runLarkAuth(runner, {
+      configDir: '/var/lib/minori/lark/config',
+      dataDir: '/var/lib/minori/lark/data',
+      appId: 'cli_existing',
+      appSecret: 'secret-from-env',
+    }, vi.fn())).rejects.toThrow('lark_device_authorization_invalid');
+  });
+
+  it('preserves the stable invalid-JSON code from the command runner', async () => {
+    const runner: AuthCommandRunner = {
+      runText: vi.fn(async () => ''),
+      runJson: vi.fn(async () => { throw new Error('lark_auth_invalid_json'); }),
+    };
+
+    await expect(runLarkAuth(runner, {
+      configDir: '/var/lib/minori/lark/config',
+      dataDir: '/var/lib/minori/lark/data',
+      appId: 'cli_existing',
+      appSecret: 'secret-from-env',
+    }, vi.fn())).rejects.toThrow('lark_auth_invalid_json');
+  });
+
+  it('fails with a stable code when final status is not an available user identity', async () => {
+    const runner: AuthCommandRunner = {
+      runText: vi.fn(async () => ''),
+      runJson: vi.fn(async (args) => {
+        if (args.includes('--no-wait')) {
+          return {
+            verification_uri_complete: 'https://accounts.feishu.cn/device?code=ABCD',
+            device_code: 'device-secret',
+          };
+        }
+        if (args.includes('--verify')) {
+          return { identity: 'bot', identities: { user: { available: true } } };
+        }
+        return { ok: true };
+      }),
+    };
+
+    await expect(runLarkAuth(runner, {
+      configDir: '/var/lib/minori/lark/config',
+      dataDir: '/var/lib/minori/lark/data',
+      appId: 'cli_existing',
+      appSecret: 'secret-from-env',
+    }, vi.fn())).rejects.toThrow('lark_auth_user_identity_required');
+  });
+
+  it('redacts a runner error behind a stable code', async () => {
+    const runner: AuthCommandRunner = {
+      runText: vi.fn(async () => { throw new Error('secret-from-runner'); }),
+      runJson: vi.fn(),
+    };
+
+    await expect(runLarkAuth(runner, {
+      configDir: '/var/lib/minori/lark/config',
+      dataDir: '/var/lib/minori/lark/data',
+      appId: 'cli_existing',
+      appSecret: 'secret-from-env',
+    }, vi.fn())).rejects.toThrow('lark_auth_command_failed');
+  });
+
+  it('converts an early stdin close into a stable runner error', async () => {
+    const stdin = Object.assign(new EventEmitter(), {
+      end: vi.fn(() => stdin.emit('error', new Error('EPIPE'))),
+    });
+    const child = Object.assign(new EventEmitter(), {
+      stdin,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: vi.fn(),
+    });
+    vi.mocked(spawn).mockReturnValue(child as never);
+
+    await expect(createAuthCommandRunner('lark-cli', '/config', '/data').runText(
+      ['config', 'init'], 'secret-from-env\n',
+    )).rejects.toThrow('lark_auth_command_failed');
   });
 });
