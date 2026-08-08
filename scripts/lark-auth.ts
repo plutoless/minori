@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import {
+  closeSync, constants as fsConstants, fchmodSync, fstatSync, lstatSync, mkdirSync,
+  openSync, writeSync,
+} from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export type LarkAuthConfig = {
@@ -22,6 +25,9 @@ const STABLE_RUNNER_ERRORS = new Set([
   'lark_auth_output_limit',
   'lark_auth_command_failed',
   'lark_auth_invalid_json',
+  'lark_auth_home_must_be_absolute',
+  'lark_auth_home_unsafe',
+  'lark_auth_home_unavailable',
 ]);
 
 function findString(value: unknown, keys: Set<string>): string | undefined {
@@ -41,14 +47,86 @@ function stableCommandFailure<T>(operation: () => Promise<T>): Promise<T> {
   });
 }
 
-function prepareLarkHome(home: string | undefined): void {
+function stableHomeFailure(error: unknown): Error {
+  if (error instanceof Error && error.message === 'lark_auth_home_unsafe') return error;
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String(error.code)
+    : '';
+  if (code === 'ELOOP' || code === 'ENOTDIR') return new Error('lark_auth_home_unsafe');
+  return new Error('lark_auth_home_unavailable');
+}
+
+function sameInode(
+  left: { dev: number | bigint; ino: number | bigint },
+  right: { dev: number | bigint; ino: number | bigint },
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+// O_NOFOLLOW prevents following a final HOME symlink, and fchmod applies only to the
+// opened directory inode. The final dev/ino checks detect a changed store root or HOME
+// pathname before spawn. Node exposes no openat2-style atomic path resolution here, so
+// the operator-protected store parent must also prevent a concurrent swap-and-restore.
+function prepareLarkHome(home: string | undefined, dataDir: string): void {
   if (!home || !isAbsolute(home)) throw new Error('lark_auth_home_must_be_absolute');
-  try {
-    mkdirSync(home, { recursive: true, mode: 0o700 });
-    chmodSync(home, 0o700);
-  } catch {
-    throw new Error('lark_auth_home_unavailable');
+  if (!isAbsolute(dataDir)) throw new Error('lark_auth_home_unsafe');
+
+  const storeRoot = dirname(resolve(dataDir));
+  if (resolve(dataDir) !== dataDir || resolve(home) !== home || home !== join(storeRoot, 'home')) {
+    throw new Error('lark_auth_home_unsafe');
   }
+
+  let descriptor: number | undefined;
+  let failure: Error | undefined;
+  try {
+    const rootBefore = lstatSync(storeRoot);
+    if (rootBefore.isSymbolicLink() || !rootBefore.isDirectory()) {
+      throw new Error('lark_auth_home_unsafe');
+    }
+
+    const entryBefore = lstatSync(home, { throwIfNoEntry: false });
+    if (entryBefore && (entryBefore.isSymbolicLink() || !entryBefore.isDirectory())) {
+      throw new Error('lark_auth_home_unsafe');
+    }
+    if (!entryBefore) {
+      try {
+        mkdirSync(home, { mode: 0o700 });
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error
+          ? String(error.code)
+          : '';
+        if (code !== 'EEXIST') throw error;
+      }
+    }
+
+    descriptor = openSync(
+      home,
+      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+    );
+    const opened = fstatSync(descriptor);
+    if (!opened.isDirectory()) throw new Error('lark_auth_home_unsafe');
+    fchmodSync(descriptor, 0o700);
+
+    const rootAfter = lstatSync(storeRoot);
+    const entryAfter = lstatSync(home);
+    if (
+      rootAfter.isSymbolicLink() || !rootAfter.isDirectory()
+      || entryAfter.isSymbolicLink() || !entryAfter.isDirectory()
+      || !sameInode(rootBefore, rootAfter) || !sameInode(opened, entryAfter)
+    ) {
+      throw new Error('lark_auth_home_unsafe');
+    }
+  } catch (error) {
+    failure = stableHomeFailure(error);
+  }
+  if (descriptor !== undefined) {
+    try {
+      closeSync(descriptor);
+    } catch {
+      failure ??= new Error('lark_auth_home_unavailable');
+    }
+  }
+  if (failure) throw failure;
 }
 
 export function writeVerificationUrlToOperatorTerminal(url: string): void {
@@ -135,7 +213,7 @@ export function createAuthCommandRunner(
     input?: string,
     onChunk?: (text: string, stream: 'stdout' | 'stderr') => void,
   ): Promise<string> {
-    prepareLarkHome(environment.HOME);
+    prepareLarkHome(environment.HOME, dataDir);
     return new Promise((resolve, reject) => {
       const child = spawn(binary, args, {
         shell: false,

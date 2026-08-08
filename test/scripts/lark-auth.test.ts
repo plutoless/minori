@@ -1,17 +1,41 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { closeSync, openSync, writeSync } from 'node:fs';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createAuthCommandRunner, runLarkAuth, writeVerificationUrlToOperatorTerminal,
   type AuthCommandRunner,
 } from '../../scripts/lark-auth.js';
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
-vi.mock('node:fs', () => ({
-  chmodSync: vi.fn(), closeSync: vi.fn(), mkdirSync: vi.fn(),
-  openSync: vi.fn(), writeSync: vi.fn(),
-}));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    constants: actual.constants,
+    closeSync: vi.fn(),
+    fchmodSync: vi.fn(),
+    fstatSync: vi.fn(),
+    lstatSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    openSync: vi.fn(),
+    writeSync: vi.fn(),
+  };
+});
+
+beforeEach(async () => {
+  const fs = await import('node:fs');
+  const root = {
+    dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false,
+  };
+  const home = {
+    dev: 1, ino: 11, isDirectory: () => true, isSymbolicLink: () => false,
+  };
+  vi.mocked(fs.lstatSync).mockImplementation((path) => (
+    String(path).endsWith('/home') ? home : root
+  ) as never);
+  vi.mocked(fs.fstatSync).mockReturnValue(home as never);
+  vi.mocked(openSync).mockReturnValue(17 as never);
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -199,6 +223,24 @@ describe('runLarkAuth', () => {
     }, vi.fn())).rejects.toThrow('lark_auth_command_failed');
   });
 
+  it.each([
+    'lark_auth_home_must_be_absolute',
+    'lark_auth_home_unsafe',
+    'lark_auth_home_unavailable',
+  ])('preserves the sanitized operator HOME failure %s', async (code) => {
+    const runner: AuthCommandRunner = {
+      runText: vi.fn(async () => { throw new Error(code); }),
+      runJson: vi.fn(),
+    };
+
+    await expect(runLarkAuth(runner, {
+      configDir: '/var/lib/minori/lark/config',
+      dataDir: '/var/lib/minori/lark/data',
+      appId: 'cli_existing',
+      appSecret: 'secret-from-env',
+    }, vi.fn())).rejects.toThrow(code);
+  });
+
   it('passes the persistent Lark home through to the CLI', async () => {
     vi.stubEnv('HOME', '/var/lib/minori/lark/home');
     const child = Object.assign(new EventEmitter(), {
@@ -208,7 +250,9 @@ describe('runLarkAuth', () => {
     });
     vi.mocked(spawn).mockReturnValue(child as never);
 
-    const result = createAuthCommandRunner('lark-cli', '/config', '/data').runText(['auth', 'status']);
+    const result = createAuthCommandRunner(
+      'lark-cli', '/var/lib/minori/lark/config', '/var/lib/minori/lark/data',
+    ).runText(['auth', 'status']);
     queueMicrotask(() => child.emit('close', 0));
     await result;
 
@@ -217,7 +261,37 @@ describe('runLarkAuth', () => {
     });
   });
 
+  it('rejects a HOME pathname replacement detected before starting the CLI', async () => {
+    vi.stubEnv('HOME', '/var/lib/minori/lark/home');
+    const fs = await import('node:fs');
+    const root = {
+      dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false,
+    };
+    const openedHome = {
+      dev: 1, ino: 11, isDirectory: () => true, isSymbolicLink: () => false,
+    };
+    const replacement = {
+      dev: 1, ino: 12, isDirectory: () => true, isSymbolicLink: () => false,
+    };
+    let homeReads = 0;
+    vi.mocked(fs.lstatSync).mockImplementation((path) => {
+      if (!String(path).endsWith('/home')) return root as never;
+      homeReads += 1;
+      return (homeReads === 1 ? openedHome : replacement) as never;
+    });
+    vi.mocked(fs.fstatSync).mockReturnValue(openedHome as never);
+    vi.mocked(spawn).mockClear();
+
+    await expect(createAuthCommandRunner(
+      'lark-cli', '/var/lib/minori/lark/config', '/var/lib/minori/lark/data',
+    ).runText(['auth', 'status'])).rejects.toThrow('lark_auth_home_unsafe');
+
+    expect(fs.fchmodSync).toHaveBeenCalledWith(17, 0o700);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('converts an early stdin close into a stable runner error', async () => {
+    vi.stubEnv('HOME', '/var/lib/minori/lark/home');
     const stdin = Object.assign(new EventEmitter(), {
       end: vi.fn(() => stdin.emit('error', new Error('EPIPE'))),
     });
@@ -229,7 +303,9 @@ describe('runLarkAuth', () => {
     });
     vi.mocked(spawn).mockReturnValue(child as never);
 
-    await expect(createAuthCommandRunner('lark-cli', '/config', '/data').runText(
+    await expect(createAuthCommandRunner(
+      'lark-cli', '/var/lib/minori/lark/config', '/var/lib/minori/lark/data',
+    ).runText(
       ['config', 'init'], 'secret-from-env\n',
     )).rejects.toThrow('lark_auth_command_failed');
   });
