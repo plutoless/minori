@@ -48,3 +48,12 @@ export class LarkContractError extends Error {
     this.name = 'LarkContractError';
   }
 }
+
+export class KnowledgeWriteConflict extends Error {
+  readonly code = 'knowledge_write_conflict' as const;
+
+  constructor() {
+    super('knowledge_write_conflict');
+    this.name = 'KnowledgeWriteConflict';
+  }
+}

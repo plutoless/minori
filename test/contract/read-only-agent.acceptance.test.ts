@@ -9,7 +9,7 @@ import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import type { FeishuMessenger } from '../../src/feishu/client.js';
 import { MembershipPolicy } from '../../src/feishu/membership.js';
 import { normalizeMessageEvent } from '../../src/feishu/normalize-event.js';
-import { LarkKnowledgeReader } from '../../src/lark/read-service.js';
+import { LarkKnowledgeService } from '../../src/lark/knowledge-service.js';
 import { PostgresAllowedChatStore } from '../../src/storage/allowed-chat-store.js';
 import { PostgresConversationStore } from '../../src/storage/conversation-store.js';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
@@ -93,7 +93,7 @@ describe('read-only team Agent release contract', () => {
         ? searchFixture.data
         : documentFixture.data),
     };
-    const reader = new LarkKnowledgeReader(executor);
+    const reader = new LarkKnowledgeService(executor);
     const fakeModel = vi.fn(async (message: NormalizedMessage): Promise<AgentReply> => {
       const link = message.content.kind === 'text' ? message.content.feishuLinks[0] : undefined;
       const doc = link ?? (await reader.search({ query: 'roadmap' }))[0]!.token;

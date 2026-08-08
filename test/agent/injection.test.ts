@@ -1,7 +1,7 @@
 import type { LanguageModelV4GenerateResult } from '@ai-sdk/provider';
 import { MockLanguageModelV4 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
-import type { KnowledgeReader } from '../../src/lark/read-service.js';
+import type { KnowledgeReader } from '../../src/lark/knowledge-service.js';
 import { runKnowledgeAgent } from '../../src/agent/run.js';
 
 const usage = {

@@ -6,7 +6,7 @@ import { runKnowledgeAgent } from './agent/run.js';
 import { createOfficialFeishuClient } from './feishu/client.js';
 import { createOfficialLongConnection, FeishuGateway } from './feishu/gateway.js';
 import { MembershipPolicy } from './feishu/membership.js';
-import { LarkKnowledgeReader } from './lark/read-service.js';
+import { LarkKnowledgeService } from './lark/knowledge-service.js';
 import { LarkRunner } from './lark/runner.js';
 import type { AppConfig } from './runtime/config.js';
 import { buildHealthServer, type ComponentStatus, type HealthProbes } from './runtime/health.js';
@@ -106,7 +106,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       ...(config.openaiBaseUrl ? { openaiBaseUrl: config.openaiBaseUrl } : {}),
       aiModel: config.aiModel,
     });
-    const reader = new LarkKnowledgeReader(lark);
+    const reader = new LarkKnowledgeService(lark);
     const messenger = createOfficialFeishuClient({
       appId: config.feishuAppId!,
       appSecret: config.feishuAppSecret!,

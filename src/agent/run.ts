@@ -3,7 +3,7 @@ import {
   stepCountIs,
   type LanguageModel,
 } from 'ai';
-import type { KnowledgeReader } from '../lark/read-service.js';
+import type { KnowledgeReader } from '../lark/knowledge-service.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
 import { selectRecentHistory, type AgentHistoryMessage } from './context-window.js';
 import { READ_ONLY_AGENT_INSTRUCTIONS } from './instructions.js';

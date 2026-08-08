@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { LarkContractError } from './errors.js';
+import { KnowledgeWriteConflict, LarkCliError, LarkContractError } from './errors.js';
 import type { LarkExecutor } from './runner.js';
 
 export type KnowledgeSearchResult = {
@@ -11,7 +11,7 @@ export type KnowledgeSearchResult = {
 
 export interface KnowledgeReader {
   search(input: { query: string; spaceIds?: string[] }, signal?: AbortSignal): Promise<KnowledgeSearchResult[]>;
-  fetchDocument(input: { doc: string }, signal?: AbortSignal): Promise<{ title: string; url: string; markdown: string }>;
+  fetchDocument(input: { doc: string }, signal?: AbortSignal): Promise<KnowledgeDocument>;
   listSpaces(signal?: AbortSignal): Promise<Array<{ spaceId: string; name: string }>>;
   listNodes(input: {
     spaceId: string;
@@ -20,6 +20,39 @@ export interface KnowledgeReader {
   getNode(input: {
     nodeToken: string;
   }, signal?: AbortSignal): Promise<{ nodeToken: string; objToken: string; objType: string; title: string }>;
+}
+
+export type KnowledgeDocument = {
+  token: string;
+  title: string;
+  url: string;
+  markdown: string;
+  revisionId: number;
+};
+
+export type KnowledgeWriteResult = {
+  operation: 'create' | 'append' | 'patch';
+  token: string;
+  title: string;
+  url: string;
+  revisionId: number;
+};
+
+export interface KnowledgeService extends KnowledgeReader {
+  createDocument(input: {
+    title: string;
+    content: string;
+    parentToken?: string;
+  }, signal?: AbortSignal): Promise<KnowledgeWriteResult>;
+  appendDocument(input: {
+    doc: string;
+    content: string;
+  }, signal?: AbortSignal): Promise<KnowledgeWriteResult>;
+  patchDocument(input: {
+    doc: string;
+    pattern: string;
+    replacement: string;
+  }, signal?: AbortSignal): Promise<KnowledgeWriteResult>;
 }
 
 const driveSearchSchema = z.object({
@@ -35,9 +68,17 @@ const driveSearchSchema = z.object({
 const documentSchema = z.object({
   document: z.object({
     document_id: z.string(),
+    revision_id: z.number().int(),
     content: z.string(),
     title: z.string().optional(),
     url: z.string().optional(),
+  }).passthrough(),
+}).passthrough();
+
+const writeResultSchema = z.object({
+  document: z.object({
+    document_id: z.string(),
+    revision_id: z.number().int(),
   }).passthrough(),
 }).passthrough();
 
@@ -82,7 +123,28 @@ function searchResultTitle(
   return title || highlighted || fallback;
 }
 
-export class LarkKnowledgeReader implements KnowledgeReader {
+function countExactOccurrences(markdown: string, pattern: string) {
+  if (!pattern) return 0;
+  let count = 0;
+  let index = 0;
+  while (index <= markdown.length - pattern.length) {
+    const foundAt = markdown.indexOf(pattern, index);
+    if (foundAt === -1) break;
+    count += 1;
+    index = foundAt + pattern.length;
+  }
+  return count;
+}
+
+function isRevisionConflict(error: unknown) {
+  if (!(error instanceof LarkCliError) || error.code !== 'cli_error') return false;
+  const details = [error.details.type, error.details.subtype, error.details.upstreamCode]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+  return /revision[ _-]?conflict|conflict[ _-]?revision/iu.test(details);
+}
+
+export class LarkKnowledgeService implements KnowledgeService {
   constructor(private readonly executor: LarkExecutor) {}
 
   private run<T>(command: Parameters<LarkExecutor['run']>[0], signal?: AbortSignal) {
@@ -117,6 +179,7 @@ export class LarkKnowledgeReader implements KnowledgeReader {
     const data = await this.run<unknown>({ id: 'docs.fetch', doc: input.doc }, signal);
     const { document } = parseContract(documentSchema, data);
     return {
+      token: document.document_id,
       title: document.title ?? titleFromMarkdown(document.content, document.document_id),
       url: document.url ?? (
         /^https?:\/\//u.test(input.doc)
@@ -124,7 +187,78 @@ export class LarkKnowledgeReader implements KnowledgeReader {
           : `https://www.feishu.cn/docx/${encodeURIComponent(document.document_id)}`
       ),
       markdown: document.content,
+      revisionId: document.revision_id,
     };
+  }
+
+  private async requireWriteResponse(
+    command: Parameters<LarkExecutor['run']>[0],
+    signal?: AbortSignal,
+  ) {
+    try {
+      const data = await this.run<unknown>(command, signal);
+      return parseContract(writeResultSchema, data).document;
+    } catch (error) {
+      if (isRevisionConflict(error)) throw new KnowledgeWriteConflict();
+      throw error;
+    }
+  }
+
+  private async writeResult(
+    operation: KnowledgeWriteResult['operation'],
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeWriteResult> {
+    const document = await this.fetchDocument({ doc: token }, signal);
+    return {
+      operation,
+      token: document.token,
+      title: document.title,
+      url: document.url,
+      revisionId: document.revisionId,
+    };
+  }
+
+  async createDocument(
+    input: { title: string; content: string; parentToken?: string },
+    signal?: AbortSignal,
+  ): Promise<KnowledgeWriteResult> {
+    const result = await this.requireWriteResponse({
+      id: 'docs.create',
+      title: input.title,
+      content: input.content,
+      ...(input.parentToken ? { parentToken: input.parentToken } : {}),
+    }, signal);
+    return this.writeResult('create', result.document_id, signal);
+  }
+
+  async appendDocument(
+    input: { doc: string; content: string },
+    signal?: AbortSignal,
+  ): Promise<KnowledgeWriteResult> {
+    const current = await this.fetchDocument({ doc: input.doc }, signal);
+    await this.requireWriteResponse({
+      id: 'docs.append', doc: current.token, content: input.content, revisionId: current.revisionId,
+    }, signal);
+    return this.writeResult('append', current.token, signal);
+  }
+
+  async patchDocument(
+    input: { doc: string; pattern: string; replacement: string },
+    signal?: AbortSignal,
+  ): Promise<KnowledgeWriteResult> {
+    const current = await this.fetchDocument({ doc: input.doc }, signal);
+    if (countExactOccurrences(current.markdown, input.pattern) !== 1) {
+      throw new KnowledgeWriteConflict();
+    }
+    await this.requireWriteResponse({
+      id: 'docs.patch',
+      doc: current.token,
+      pattern: input.pattern,
+      content: input.replacement,
+      revisionId: current.revisionId,
+    }, signal);
+    return this.writeResult('patch', current.token, signal);
   }
 
   async listSpaces(signal?: AbortSignal) {

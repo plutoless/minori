@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { KnowledgeReader } from '../../src/lark/read-service.js';
+import type { KnowledgeReader } from '../../src/lark/knowledge-service.js';
 import { createReadTools } from '../../src/agent/tools.js';
 import { SourceRegistry } from '../../src/agent/sources.js';
 

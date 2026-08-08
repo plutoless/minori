@@ -1,6 +1,6 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import type { KnowledgeReader } from '../lark/read-service.js';
+import type { KnowledgeReader } from '../lark/knowledge-service.js';
 import { SourceRegistry } from './sources.js';
 
 export type ScopedHistoryReader = {

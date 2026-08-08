@@ -19,6 +19,7 @@ const AUTH_STATUS = {
 type FakeProcess = SpawnedProcess & {
   emit(event: 'close', code: number | null): boolean;
   kill: ReturnType<typeof vi.fn>;
+  stdin: { end: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
 };
 
 function fakeProcess(output?: { stdout?: string; stderr?: string; code?: number }): FakeProcess {
@@ -28,6 +29,7 @@ function fakeProcess(output?: { stdout?: string; stderr?: string; code?: number 
   const child = Object.assign(emitter, {
     stdout,
     stderr,
+    stdin: { end: vi.fn(), on: vi.fn() },
     kill: vi.fn((_signal?: NodeJS.Signals) => {
       queueMicrotask(() => emitter.emit('close', null));
       return true;
@@ -135,13 +137,40 @@ describe('LarkRunner', () => {
     });
   });
 
-  it('rejects a knowledge result that did not execute as the dedicated user', async () => {
+  it('accepts successful knowledge envelopes with no command identity metadata', async () => {
     const { runner } = runnerWith(fakeProcess({
-      stdout: JSON.stringify({ ok: true, identity: 'bot', data: {} }),
+      stdout: JSON.stringify({ ok: true, data: {} }),
     }));
 
-    await expect(runner.run({ id: 'wiki.spaceList' })).rejects.toMatchObject({
-      code: 'invalid_envelope',
+    await expect(runner.run({ id: 'wiki.spaceList' })).resolves.toEqual({});
+  });
+
+  it('writes document content once to stdin without exposing it in args or execution metadata', async () => {
+    const onExecution = vi.fn();
+    const content = '# Private weekly update\n\n- shipped';
+    const child = fakeProcess({ stdout: JSON.stringify({ ok: true, identity: 'user', data: {} }) });
+    const { runner, spawn } = runnerWith(child, { onExecution });
+
+    await expect(runner.run({
+      id: 'docs.create', title: 'Weekly update', content, parentToken: 'fld_1',
+    })).resolves.toEqual({});
+
+    expect(child.stdin.end).toHaveBeenCalledTimes(1);
+    expect(child.stdin.end).toHaveBeenCalledWith(content);
+    expect(spawn).toHaveBeenCalledWith('/opt/minori/lark-cli', expect.not.arrayContaining([content]),
+      expect.objectContaining({ stdio: ['pipe', 'pipe', 'pipe'] }));
+    expect(JSON.stringify(onExecution.mock.calls)).not.toContain(content);
+  });
+
+  it('passes the persistent Lark credential data directory through to the child', async () => {
+    vi.stubEnv('LARKSUITE_CLI_DATA_DIR', '/var/lib/minori/lark/data');
+    const { runner, spawn } = runnerWith(fakeProcess({ stdout: JSON.stringify(AUTH_STATUS) }));
+
+    await runner.run({ id: 'auth.status' });
+
+    expect(spawn.mock.calls[0]?.[2]?.env).toMatchObject({
+      LARKSUITE_CLI_CONFIG_DIR: '/var/lib/minori/lark',
+      LARKSUITE_CLI_DATA_DIR: '/var/lib/minori/lark/data',
     });
   });
 

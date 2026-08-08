@@ -39,6 +39,10 @@ const authStatusSchema = z.object({
 export interface SpawnedProcess {
   stdout: NodeJS.ReadableStream;
   stderr: NodeJS.ReadableStream;
+  stdin?: {
+    end(input?: string): void;
+    on(event: 'error', listener: () => void): unknown;
+  };
   kill(signal?: NodeJS.Signals): boolean;
   once(event: 'close', listener: (code: number | null) => void): this;
   once(event: 'error', listener: (error: Error) => void): this;
@@ -77,6 +81,8 @@ function buildChildEnvironment(configDir: string): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     LARKSUITE_CLI_CONFIG_DIR: configDir,
   };
+  const dataDir = process.env.LARKSUITE_CLI_DATA_DIR;
+  if (dataDir !== undefined) environment.LARKSUITE_CLI_DATA_DIR = dataDir;
   for (const key of CHILD_ENV_KEYS) {
     const value = process.env[key];
     if (value !== undefined) environment[key] = value;
@@ -108,16 +114,30 @@ export class LarkRunner implements LarkExecutor {
   }
 
   private async execute<T>(command: LarkCommand, signal?: AbortSignal): Promise<T> {
-    const { args } = buildInvocation(command);
+    const invocation = buildInvocation(command);
     let child: SpawnedProcess;
     try {
-      child = this.options.spawn(this.options.binary, args, {
+      child = this.options.spawn(this.options.binary, invocation.args, {
         shell: false,
         env: buildChildEnvironment(this.options.configDir),
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+        stdio: [invocation.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      }) as unknown as SpawnedProcess;
     } catch {
       throw new LarkCliError('spawn_failed');
+    }
+
+    if (invocation.stdin !== undefined) {
+      if (!child.stdin) {
+        child.kill('SIGKILL');
+        throw new LarkCliError('spawn_failed');
+      }
+      child.stdin.on('error', () => undefined);
+      try {
+        child.stdin.end(invocation.stdin);
+      } catch {
+        child.kill('SIGKILL');
+        throw new LarkCliError('spawn_failed');
+      }
     }
 
     const stdout: Buffer[] = [];
@@ -198,12 +218,6 @@ export class LarkRunner implements LarkExecutor {
 
     const envelope = larkEnvelopeSchema.safeParse(parsed);
     if (!envelope.success) throw new LarkCliError('invalid_envelope', { exitCode });
-    if (envelope.data.identity !== undefined && envelope.data.identity !== 'user') {
-      throw new LarkCliError('invalid_envelope', { exitCode });
-    }
-    if (envelope.data.ok && command.id !== 'auth.status' && envelope.data.identity !== 'user') {
-      throw new LarkCliError('invalid_envelope', { exitCode });
-    }
     if (!envelope.data.ok) throw LarkCliError.fromEnvelope(envelope.data.error, exitCode);
     if (exitCode !== 0) throw new LarkCliError('cli_error', { exitCode });
     return envelope.data.data as T;
