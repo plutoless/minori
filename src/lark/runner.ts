@@ -73,7 +73,7 @@ type TerminationReason = Extract<LarkCliErrorCode, 'aborted' | 'output_limit' | 
 
 const ABORT_KILL_GRACE_MS = 1_000;
 const CHILD_ENV_KEYS = [
-  'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'TMP', 'TEMP',
+  'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'TMP', 'TEMP',
   'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
 ] as const;
 

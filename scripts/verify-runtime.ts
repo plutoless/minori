@@ -40,6 +40,7 @@ export function verifyLarkAuth(
       shell: false,
       env: {
         PATH: process.env.PATH,
+        HOME: process.env.HOME,
         LANG: process.env.LANG,
         LARKSUITE_CLI_CONFIG_DIR: configDir,
         LARKSUITE_CLI_DATA_DIR: dataDir,

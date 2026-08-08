@@ -174,6 +174,17 @@ describe('LarkRunner', () => {
     });
   });
 
+  it('passes the persistent Lark home through to the child', async () => {
+    vi.stubEnv('HOME', '/var/lib/minori/lark/home');
+    const { runner, spawn } = runnerWith(fakeProcess({ stdout: JSON.stringify(AUTH_STATUS) }));
+
+    await runner.run({ id: 'auth.status' });
+
+    expect(spawn.mock.calls[0]?.[2]?.env).toMatchObject({
+      HOME: '/var/lib/minori/lark/home',
+    });
+  });
+
   it('rejects an incomplete official error envelope as contract drift', async () => {
     const { runner } = runnerWith(fakeProcess({
       stderr: JSON.stringify({ ok: false, error: {} }),

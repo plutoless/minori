@@ -113,6 +113,7 @@ export function createAuthCommandRunner(
 ): AuthCommandRunner {
   const environment: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
+    HOME: process.env.HOME,
     LANG: process.env.LANG,
     LARKSUITE_CLI_CONFIG_DIR: configDir,
     LARKSUITE_CLI_DATA_DIR: dataDir,

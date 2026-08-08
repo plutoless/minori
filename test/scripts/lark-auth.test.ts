@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { closeSync, openSync, writeSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createAuthCommandRunner, runLarkAuth, writeVerificationUrlToOperatorTerminal,
   type AuthCommandRunner,
@@ -9,6 +9,10 @@ import {
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 vi.mock('node:fs', () => ({ closeSync: vi.fn(), openSync: vi.fn(), writeSync: vi.fn() }));
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('runLarkAuth', () => {
   it('binds the existing app and emits only the device URL and sanitized user status through its callback', async () => {
@@ -148,6 +152,24 @@ describe('runLarkAuth', () => {
       appId: 'cli_existing',
       appSecret: 'secret-from-env',
     }, vi.fn())).rejects.toThrow('lark_auth_command_failed');
+  });
+
+  it('passes the persistent Lark home through to the CLI', async () => {
+    vi.stubEnv('HOME', '/var/lib/minori/lark/home');
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: vi.fn(),
+    });
+    vi.mocked(spawn).mockReturnValue(child as never);
+
+    const result = createAuthCommandRunner('lark-cli', '/config', '/data').runText(['auth', 'status']);
+    queueMicrotask(() => child.emit('close', 0));
+    await result;
+
+    expect(vi.mocked(spawn).mock.lastCall?.[2]?.env).toMatchObject({
+      HOME: '/var/lib/minori/lark/home',
+    });
   });
 
   it('converts an early stdin close into a stable runner error', async () => {
