@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { closeSync, openSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -41,6 +41,16 @@ function stableCommandFailure<T>(operation: () => Promise<T>): Promise<T> {
   });
 }
 
+function prepareLarkHome(home: string | undefined): void {
+  if (!home || !isAbsolute(home)) throw new Error('lark_auth_home_must_be_absolute');
+  try {
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    chmodSync(home, 0o700);
+  } catch {
+    throw new Error('lark_auth_home_unavailable');
+  }
+}
+
 export function writeVerificationUrlToOperatorTerminal(url: string): void {
   let terminal: number | undefined;
   try {
@@ -78,7 +88,8 @@ export async function runLarkAuth(
     'auth', 'login', '--domain', 'docs,drive,wiki', '--no-wait', '--json',
   ]));
   const verificationUrl = findString(login, new Set([
-    'verification_uri_complete', 'verification_uri', 'verificationUrl', 'authorization_url',
+    'verification_url', 'verification_uri_complete', 'verification_uri',
+    'verificationUrl', 'authorization_url',
   ]));
   const deviceCode = findString(login, new Set(['device_code', 'deviceCode']));
   if (!verificationUrl || !deviceCode) throw new Error('lark_device_authorization_invalid');
@@ -124,6 +135,7 @@ export function createAuthCommandRunner(
     input?: string,
     onChunk?: (text: string, stream: 'stdout' | 'stderr') => void,
   ): Promise<string> {
+    prepareLarkHome(environment.HOME);
     return new Promise((resolve, reject) => {
       const child = spawn(binary, args, {
         shell: false,

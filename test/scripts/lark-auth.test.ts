@@ -8,13 +8,58 @@ import {
 } from '../../scripts/lark-auth.js';
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
-vi.mock('node:fs', () => ({ closeSync: vi.fn(), openSync: vi.fn(), writeSync: vi.fn() }));
+vi.mock('node:fs', () => ({
+  chmodSync: vi.fn(), closeSync: vi.fn(), mkdirSync: vi.fn(),
+  openSync: vi.fn(), writeSync: vi.fn(),
+}));
 
 afterEach(() => {
   vi.unstubAllEnvs();
 });
 
 describe('runLarkAuth', () => {
+  it('hands the CLI 1.0.84 verification_url to the operator terminal and completes device auth', async () => {
+    vi.mocked(openSync).mockReturnValue(18 as never);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const runner: AuthCommandRunner = {
+      runText: vi.fn(async () => ''),
+      runJson: vi.fn(async (args) => {
+        if (args.includes('--no-wait')) {
+          return {
+            verification_url: 'https://accounts.feishu.cn/device?code=REAL84',
+            device_code: 'device-secret',
+          };
+        }
+        if (args.includes('--device-code')) return { ok: true };
+        return { identity: 'user', identities: { user: { available: true } } };
+      }),
+    };
+    let logged = '';
+
+    try {
+      await runLarkAuth(runner, {
+        configDir: '/var/lib/minori/lark/config',
+        dataDir: '/var/lib/minori/lark/data',
+        appId: 'cli_existing',
+        appSecret: 'secret-from-env',
+      }, (line) => {
+        if (line.startsWith('https://')) writeVerificationUrlToOperatorTerminal(line);
+        else console.log(line);
+      });
+    } finally {
+      logged = JSON.stringify(log.mock.calls);
+      log.mockRestore();
+    }
+
+    expect(writeSync).toHaveBeenCalledWith(
+      18, 'https://accounts.feishu.cn/device?code=REAL84\n',
+    );
+    expect(runner.runJson).toHaveBeenCalledWith([
+      'auth', 'login', '--device-code', 'device-secret', '--json',
+    ]);
+    expect(logged).not.toContain('REAL84');
+  });
+
   it('binds the existing app and emits only the device URL and sanitized user status through its callback', async () => {
     const calls: Array<{ args: string[]; input?: string }> = [];
     const stdinValues: string[] = [];
