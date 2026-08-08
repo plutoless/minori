@@ -39,4 +39,15 @@ describe('Team Agent release packaging contract', () => {
     expect(plan).toContain('MINORI_ENV_FILE=./env.example');
     expect(plan).toContain('Build the exact commit, bootstrap OAuth, and only then deploy');
   });
+
+  it('installs runtime CA trust and persists the Lark CLI home', async () => {
+    const dockerfile = await text('Dockerfile');
+    const runtime = dockerfile.slice(dockerfile.indexOf('FROM node:22-bookworm-slim AS runtime'));
+
+    expect(runtime).toContain('apt-get install --yes --no-install-recommends ca-certificates');
+    expect(runtime).toContain('HOME=/var/lib/minori/lark/home');
+    expect(runtime).toContain('mkdir -p /var/lib/minori/lark/home');
+    expect(runtime).toContain('chown -R 10001:10001 /app /var/lib/minori/lark /tmp/minori');
+    expect(runtime).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED');
+  });
 });
