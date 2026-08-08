@@ -337,6 +337,39 @@ describe('runKnowledgeAgent', () => {
     expect(secondPrompt).not.toContain('postgres://secret-host');
   });
 
+  it('does not write when pending audit persistence resolves after the Agent deadline', async () => {
+    const knowledge = service();
+    const audit = agentRunStore({
+      beginWrite: vi.fn(() => new Promise<{ id: string }>((resolve) => {
+        setTimeout(() => resolve({ id: 'write_delayed' }), 25);
+      })),
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{
+        type: 'tool-call', toolCallId: 'call_create', toolName: 'createDocument',
+        input: JSON.stringify({ title: 'Plan', content: '# Must not be written' }),
+      }], 'tool-calls'),
+    });
+
+    await expect(runKnowledgeAgent(
+      { ...input, prompt: 'Create a plan before the deadline.' },
+      dependencies('Create a plan before the deadline.', model, {
+        service: knowledge,
+        agentRunStore: audit,
+        timeoutMs: 5,
+      }),
+    )).rejects.toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(knowledge.createDocument).not.toHaveBeenCalled();
+    expect(audit.finish).toHaveBeenCalledWith('run_1', {
+      inputTokens: 10,
+      outputTokens: 4,
+      toolCallCount: 1,
+      outcome: 'aborted',
+    });
+  });
+
   it('honors the configured maximum number of Agent steps', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: [
@@ -473,13 +506,38 @@ describe('runKnowledgeAgent', () => {
       doGenerate: generated([{ type: 'text', text: 'unused' }], 'stop'),
     });
 
+    const audit = agentRunStore();
     await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
       timeoutMs: 5,
+      agentRunStore: audit,
       conversationStore: {
         search: vi.fn().mockResolvedValue([]),
         recentWithinBudget: vi.fn(() => new Promise(() => undefined)),
       },
     }))).rejects.toBeDefined();
     expect(model.doGenerateCalls).toHaveLength(0);
+    expect(audit.start).toHaveBeenCalledWith({ eventId: 'evt_1', model: '5.6-terra' });
+    expect(audit.finish).toHaveBeenCalledWith('run_1', {
+      toolCallCount: 0,
+      outcome: 'aborted',
+    });
+  });
+
+  it('finishes a failed Agent run when stored trigger validation fails', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{ type: 'text', text: 'unused' }], 'stop'),
+    });
+    const audit = agentRunStore();
+
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      agentRunStore: audit,
+      conversationStore: conversationStore('different persisted prompt'),
+    }))).rejects.toThrow('trigger_prompt_mismatch');
+
+    expect(model.doGenerateCalls).toHaveLength(0);
+    expect(audit.finish).toHaveBeenCalledWith('run_1', {
+      toolCallCount: 0,
+      outcome: 'failed',
+    });
   });
 });

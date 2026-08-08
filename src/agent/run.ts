@@ -70,6 +70,7 @@ export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' 
 
 const WRITE_AUDIT_UNAVAILABLE = 'write_audit_unavailable';
 const AGENT_AUDIT_UNAVAILABLE = 'agent_audit_unavailable';
+const AUDIT_FINALIZATION_TIMEOUT_MS = 5_000;
 
 class WriteAuditUnavailable extends Error {
   constructor() {
@@ -87,20 +88,22 @@ function stableWriteErrorCategory(error: unknown) {
 function createWriteAudit(
   store: AgentRunStore,
   agentRunId: string,
+  signal: AbortSignal,
 ): KnowledgeWriteAudit {
   return {
     async run(input, operation) {
       let write: { id: string };
       try {
-        write = await store.beginWrite(agentRunId, input);
+        write = await withAbort(store.beginWrite(agentRunId, input), signal);
       } catch {
         throw new WriteAuditUnavailable();
       }
 
       try {
+        signal.throwIfAborted();
         const result = await operation();
         try {
-          await store.finishWrite(write.id, { success: true });
+          await withAuditFinalization(store.finishWrite(write.id, { success: true }));
         } catch {
           throw new WriteAuditUnavailable();
         }
@@ -108,10 +111,10 @@ function createWriteAudit(
       } catch (error) {
         if (error instanceof WriteAuditUnavailable) throw error;
         try {
-          await store.finishWrite(write.id, {
+          await withAuditFinalization(store.finishWrite(write.id, {
             success: false,
             errorCategory: stableWriteErrorCategory(error),
-          });
+          }));
         } catch {
           throw new WriteAuditUnavailable();
         }
@@ -135,6 +138,10 @@ function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
+function withAuditFinalization<T>(operation: Promise<T>): Promise<T> {
+  return withAbort(operation, AbortSignal.timeout(AUDIT_FINALIZATION_TIMEOUT_MS));
+}
+
 export async function runKnowledgeAgent(
   input: AgentRunInput,
   dependencies: RunKnowledgeAgentDependencies,
@@ -143,32 +150,16 @@ export async function runKnowledgeAgent(
   const runSignal = combinedSignal(signal, dependencies.timeoutMs);
   const sources = new SourceRegistry();
   const contextTokenTarget = dependencies.contextTokenTarget ?? 24_000;
-  const storedHistory = await withAbort(
-    dependencies.conversationStore.recentWithinBudget(
-      dependencies.conversationKey,
-      contextTokenTarget,
-      dependencies.triggerMessageId,
-    ),
-    runSignal,
-  );
-  const authoritativeHistory = storedHistory.map(({ role, content }) => ({ role, content }));
-  const trigger = storedHistory.find(
-    (message) => message.messageId === dependencies.triggerMessageId,
-  );
-  if (trigger?.role !== 'user' || trigger.content !== input.prompt) {
-    throw new Error('trigger_prompt_mismatch');
-  }
-  if (input.history.length > 0
-    && JSON.stringify(input.history) !== JSON.stringify(authoritativeHistory)) {
-    throw new Error('conversation_history_mismatch');
-  }
 
   let run: { id: string };
   try {
-    run = await dependencies.agentRunStore.start({
-      eventId: dependencies.eventId,
-      model: dependencies.modelName,
-    });
+    run = await withAbort(
+      dependencies.agentRunStore.start({
+        eventId: dependencies.eventId,
+        model: dependencies.modelName,
+      }),
+      runSignal,
+    );
   } catch {
     throw new Error(AGENT_AUDIT_UNAVAILABLE);
   }
@@ -179,11 +170,30 @@ export async function runKnowledgeAgent(
   let outcome: 'completed' | 'failed' | 'aborted' = 'failed';
 
   try {
+    const storedHistory = await withAbort(
+      dependencies.conversationStore.recentWithinBudget(
+        dependencies.conversationKey,
+        contextTokenTarget,
+        dependencies.triggerMessageId,
+      ),
+      runSignal,
+    );
+    const authoritativeHistory = storedHistory.map(({ role, content }) => ({ role, content }));
+    const trigger = storedHistory.find(
+      (message) => message.messageId === dependencies.triggerMessageId,
+    );
+    if (trigger?.role !== 'user' || trigger.content !== input.prompt) {
+      throw new Error('trigger_prompt_mismatch');
+    }
+    if (input.history.length > 0
+      && JSON.stringify(input.history) !== JSON.stringify(authoritativeHistory)) {
+      throw new Error('conversation_history_mismatch');
+    }
     const agent = createTeamAgent({
       model: dependencies.model,
       service: dependencies.service,
       sources,
-      writeAudit: createWriteAudit(dependencies.agentRunStore, run.id),
+      writeAudit: createWriteAudit(dependencies.agentRunStore, run.id, runSignal),
       history: {
         search: (query, limit) => dependencies.conversationStore.search(
           dependencies.conversationKey,
@@ -226,12 +236,12 @@ export async function runKnowledgeAgent(
     throw error;
   } finally {
     try {
-      await dependencies.agentRunStore.finish(run.id, {
+      await withAuditFinalization(dependencies.agentRunStore.finish(run.id, {
         ...(inputTokens !== undefined ? { inputTokens } : {}),
         ...(outputTokens !== undefined ? { outputTokens } : {}),
         toolCallCount,
         outcome,
-      });
+      }));
     } catch {
       throw new Error(AGENT_AUDIT_UNAVAILABLE);
     }
