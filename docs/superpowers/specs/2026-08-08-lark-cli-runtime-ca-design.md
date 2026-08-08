@@ -1,32 +1,42 @@
-# Lark CLI Runtime CA Hotfix Design
+# Lark CLI Runtime Trust and Home Hotfix Design
 
 ## Problem
 
-The release candidate can initialize and read its persisted Lark CLI configuration,
-but `lark-cli auth login --domain docs,drive,wiki --no-wait --json` exits before
-device authorization. A sanitized production reproduction reports TLS verification
-failure: the runtime image does not trust the certificate chain used by the Feishu
-device-authorization endpoint.
+The release candidate cannot complete the two steps before interactive device
+authorization:
+
+1. `config init` cannot persist its keychain because the non-root runtime user has no
+   writable home. The sanitized error is `mkdir /home/minori: permission denied`.
+2. `auth login --domain docs,drive,wiki --no-wait --json` cannot verify the Feishu
+   device-authorization endpoint because the final runtime image has no trusted CA
+   bundle.
 
 The `.env not found` line printed by the npm script is informational because the
 container receives production configuration through `--env-file`.
 
 ## Decision
 
-Install Debian's `ca-certificates` package in the final runtime image. Keep normal
-certificate verification enabled. Do not add custom certificates, disable TLS
-verification, or change the Lark OAuth flow.
+Install Debian's `ca-certificates` package in the final runtime image and give Lark CLI
+a persistent writable home at `/var/lib/minori/lark/home`. Keep normal certificate
+verification enabled. Do not add custom certificates, disable TLS verification, or
+change the Lark OAuth flow.
 
 The build stage already installs `ca-certificates`, but multi-stage Docker builds do
 not carry installed operating-system packages into the final stage. The runtime stage
-must install its own trust store explicitly.
+must install its own trust store explicitly. The image deliberately has no writable
+`/home/minori`; placing CLI home inside the existing Lark volume preserves its keychain
+and user authorization across one-off OAuth, production, restart, and image replacement
+containers without making the root filesystem writable.
 
 ## Scope
 
 - Update the runtime stage in `Dockerfile` to install `ca-certificates` with no
   recommended packages and remove the apt package lists afterward.
-- Add a release-contract regression assertion proving the runtime stage installs the
-  trust store, rather than relying on the build stage.
+- Set `HOME=/var/lib/minori/lark/home`, create that directory as UID/GID
+  `10001:10001`, and keep it under the existing `/var/lib/minori/lark` volume.
+- Add release-contract regression assertions proving the runtime stage installs the
+  trust store and supplies the persistent writable home, rather than relying on the
+  build stage or `/home/minori`.
 - Keep the image's non-root runtime user, persistent Lark mount, exact-commit release
   process, and secret handling unchanged.
 - Build and verify a new exact-commit image locally and natively on Vultr.
@@ -39,6 +49,8 @@ must install its own trust store explicitly.
 ## Error Handling and Security
 
 - TLS verification remains mandatory.
+- The CLI home is part of the existing restricted Lark persistence directory; no new
+  host mount or secret copy is introduced.
 - OAuth URLs, device codes, App ID, App Secret, tokens, and environment values remain
   excluded from captured output.
 - If the rebuilt image still fails, report only the sanitized error category and stop;
@@ -48,13 +60,14 @@ must install its own trust store explicitly.
 
 ## Verification
 
-1. The focused release-contract test fails before the Dockerfile change and passes
-   afterward.
+1. The focused release-contract tests fail before the Dockerfile change for both the
+   runtime CA installation and persistent CLI home, then pass afterward.
 2. `npm run verify` and `npm run test:integration` pass.
 3. The new image builds and still runs as UID/GID `10001:10001`.
 4. Secret-free runtime verification remains sanitized and fails closed as designed.
-5. On Vultr, the exact-commit amd64 image completes the sanitized Lark device-flow
-   initiation with exit status 0.
-6. Interactive OAuth is still considered incomplete until the dedicated user finishes
+5. On Vultr, a sanitized `config init` probe succeeds without writing to
+   `/home/minori`, and the persistent home remains after its one-off container exits.
+6. The exact-commit amd64 image completes the sanitized Lark device-flow initiation
+   with exit status 0.
+7. Interactive OAuth is still considered incomplete until the dedicated user finishes
    authorization and `auth status --verify` reports the user identity ready.
-
