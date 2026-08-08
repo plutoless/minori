@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { closeSync, openSync, writeSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -38,6 +39,24 @@ function stableCommandFailure<T>(operation: () => Promise<T>): Promise<T> {
     if (error instanceof Error && STABLE_RUNNER_ERRORS.has(error.message)) throw error;
     throw new Error('lark_auth_command_failed');
   });
+}
+
+export function writeVerificationUrlToOperatorTerminal(url: string): void {
+  let terminal: number | undefined;
+  try {
+    terminal = openSync('/dev/tty', 'w');
+    writeSync(terminal, `${url}\n`);
+  } catch {
+    throw new Error('lark_auth_operator_tty_required');
+  } finally {
+    if (terminal !== undefined) {
+      try {
+        closeSync(terminal);
+      } catch {
+        // The URL handoff already succeeded and must not be reported through stdout or stderr.
+      }
+    }
+  }
 }
 
 export async function runLarkAuth(
@@ -198,7 +217,10 @@ async function main() {
     appSecret: process.env.FEISHU_APP_SECRET ?? '',
   };
   const binary = process.env.LARK_CLI_BIN ?? 'lark-cli';
-  await runLarkAuth(createAuthCommandRunner(binary, config.configDir, config.dataDir), config, console.log);
+  await runLarkAuth(createAuthCommandRunner(binary, config.configDir, config.dataDir), config, (line) => {
+    if (line.startsWith('https://')) writeVerificationUrlToOperatorTerminal(line);
+    else console.log(line);
+  });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

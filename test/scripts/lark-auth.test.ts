@@ -1,14 +1,17 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { closeSync, openSync, writeSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  createAuthCommandRunner, runLarkAuth, type AuthCommandRunner,
+  createAuthCommandRunner, runLarkAuth, writeVerificationUrlToOperatorTerminal,
+  type AuthCommandRunner,
 } from '../../scripts/lark-auth.js';
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
+vi.mock('node:fs', () => ({ closeSync: vi.fn(), openSync: vi.fn(), writeSync: vi.fn() }));
 
 describe('runLarkAuth', () => {
-  it('binds the existing app and prints only the device URL and sanitized user status', async () => {
+  it('binds the existing app and emits only the device URL and sanitized user status through its callback', async () => {
     const calls: Array<{ args: string[]; input?: string }> = [];
     const stdinValues: string[] = [];
     const runner: AuthCommandRunner = {
@@ -162,5 +165,23 @@ describe('runLarkAuth', () => {
     await expect(createAuthCommandRunner('lark-cli', '/config', '/data').runText(
       ['config', 'init'], 'secret-from-env\n',
     )).rejects.toThrow('lark_auth_command_failed');
+  });
+
+  it('hands the verification URL only to the interactive operator terminal', () => {
+    vi.mocked(openSync).mockReturnValue(18 as never);
+
+    writeVerificationUrlToOperatorTerminal('https://accounts.feishu.cn/device?code=ABCD');
+
+    expect(openSync).toHaveBeenCalledWith('/dev/tty', 'w');
+    expect(writeSync).toHaveBeenCalledWith(18, 'https://accounts.feishu.cn/device?code=ABCD\n');
+    expect(closeSync).toHaveBeenCalledWith(18);
+  });
+
+  it('fails with a stable code when no operator terminal is available', () => {
+    vi.mocked(openSync).mockImplementation(() => { throw new Error('ENXIO'); });
+
+    expect(() => writeVerificationUrlToOperatorTerminal(
+      'https://accounts.feishu.cn/device?code=ABCD',
+    )).toThrow('lark_auth_operator_tty_required');
   });
 });

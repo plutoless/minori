@@ -83,8 +83,12 @@ Runtime validation only prevents fabricated or unread source references. It does
 2. Run `config init --app-id ... --app-secret-stdin --brand feishu`, sending the secret through stdin.
 3. Set the profile to `strict-mode=user`.
 4. Start device login with `--domain docs,drive,wiki --no-wait --json`.
-5. Print only the verification URL.
-6. Resume with the returned device code after the operator authorizes the intended user.
+5. Write the verification URL transiently and only to the interactive operator's
+   `/dev/tty`; never send it to stdout, stderr, structured logs, the database, model
+   context, or persistent files. If no operator TTY is available, fail with a stable
+   error rather than falling back to process output.
+6. Resume internally with the returned device code after the operator authorizes the
+   intended user; never display that code separately.
 7. Run one sanitized `auth status --verify` check and report whether the user identity is available.
 
 The first release does not pin the user's Open ID. The operator verifies the account during login. It also does not back up Lark credentials; server loss requires a fresh OAuth grant.

@@ -12,7 +12,7 @@
 
 - The Dedicated Knowledge User's native Feishu permissions are the sole content boundary; do not add a space, folder, or document allowlist.
 - Lark CLI runs in `strict-mode=user`, and every knowledge command explicitly passes `--as user`; never fall back to Bot Authority.
-- Bind the existing app with `--app-secret-stdin`; secrets, tokens, device codes, and authorization URLs never enter model context or logs.
+- Bind the existing app with `--app-secret-stdin`; secrets, tokens, and device codes never enter model context or logs, and the device code is never displayed separately. The authorization URL may be written transiently only to an interactive operator's `/dev/tty`; it never enters stdout, stderr, structured logs, the database, model context, or persistent files, and missing TTY access fails closed.
 - Expose read, create, append, and exact targeted patch tools. Do not expose delete, move, overwrite, permission, sharing, raw API, shell, arbitrary HTTP, or filesystem tools.
 - Reversible writes run without confirmation cards. Append and patch read the latest revision first and fail on a concurrent revision change; patch also fails unless its exact pattern occurs once.
 - The Agent chooses its retrieval and citation behavior. Append only sources actually read; do not classify claims or run a citation-repair model call.
@@ -93,7 +93,7 @@ export interface AuthCommandRunner {
 }
 ```
 
-The child environment must contain both Lark directories. Spawn with `shell: false`; use `stdio: ['pipe', 'pipe', 'pipe']` only when input exists, call `child.stdin.end(input)`, and never echo that input. Print only the device verification URL and `{identity,userAvailable}`. Reject final status unless `identity === 'user'` and `identities.user.available === true`.
+The child environment must contain both Lark directories. Spawn with `shell: false`; use `stdio: ['pipe', 'pipe', 'pipe']` only when input exists, call `child.stdin.end(input)`, and never echo that input. The injected callback remains the test seam, but the executable entrypoint writes the device verification URL only to the interactive operator's `/dev/tty`; it must fail closed when no TTY exists and never fall back to stdout or stderr. It may print only the sanitized `{identity,userAvailable}` status to normal process output. Reject final status unless `identity === 'user'` and `identities.user.available === true`.
 
 - [ ] **Step 4: Persist separate config and credential-data directories**
 
@@ -528,7 +528,7 @@ git commit -m "docs: package open team agent release"
 
 - [ ] **Step 5: Bootstrap OAuth on Vultr**
 
-Build and deploy the exact commit with the existing release script. Run `npm run lark:auth` inside a one-off container sharing `/opt/minori/lark`. Send the printed Feishu verification URL to the operator, wait for authorization of the intended Dedicated Knowledge User, then let the script complete its sanitized status check. Verify `/opt/minori/lark/config` and `/opt/minori/lark/data` survive removal of the one-off container; do not display their contents.
+Build and deploy the exact commit with the existing release script. Run `npm run lark:auth` inside an interactive one-off container sharing `/opt/minori/lark`; the operator reads the Feishu verification URL only from that terminal's `/dev/tty`, not process output. Wait for authorization of the intended Dedicated Knowledge User, then let the script complete its sanitized status check. Verify `/opt/minori/lark/config` and `/opt/minori/lark/data` survive removal of the one-off container; do not display their contents.
 
 - [ ] **Step 6: Perform real Feishu acceptance**
 

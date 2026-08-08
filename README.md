@@ -32,7 +32,7 @@ npm run lark:auth
 npm run runtime:verify
 ```
 
-The operator commands load `.env` when it exists; variables already supplied by the container or shell take precedence. `npm run lark:auth` validates that `LARKSUITE_CLI_CONFIG_DIR` is absolute, initializes the CLI app, prints only browser verification URLs, completes the device-code flow, and prints a sanitized user-identity status. It never prints tokens. The directory must already be writable by the operator. The installed CLI uses `--json`; the script also performs the required `--device-code` continuation after `--no-wait`.
+The operator commands load `.env` when it exists; variables already supplied by the container or shell take precedence. `npm run lark:auth` validates that `LARKSUITE_CLI_CONFIG_DIR` is absolute, initializes the CLI app, writes the browser verification URL only to the interactive operator terminal (`/dev/tty`), completes the device-code flow, and prints a sanitized user-identity status. It never writes the URL to stdout, stderr, logs, or persistent files, and fails closed if no operator TTY is available. The directory must already be writable by the operator. The installed CLI uses `--json`; the script also performs the required `--device-code` continuation after `--no-wait`.
 
 Required environment values:
 
