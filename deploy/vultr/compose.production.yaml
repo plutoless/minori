@@ -1,14 +1,11 @@
 services:
   app:
-    image: ${MINORI_IMAGE:-minori:team-agent-candidate}
+    image: ${MINORI_IMAGE:?MINORI_IMAGE is required}
     container_name: minori
     env_file:
-      - path: /opt/minori/minori.env
-        required: false
+      - ${MINORI_ENV_FILE:?MINORI_ENV_FILE is required}
     environment:
       PORT: "3000"
-      AGENT_MAX_STEPS: "${AGENT_MAX_STEPS:-20}"
-      AGENT_TIMEOUT_MS: "${AGENT_TIMEOUT_MS:-180000}"
       LARK_CLI_BIN: /app/node_modules/.bin/lark-cli
       LARKSUITE_CLI_CONFIG_DIR: /var/lib/minori/lark/config
       LARKSUITE_CLI_DATA_DIR: /var/lib/minori/lark/data

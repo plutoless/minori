@@ -8,6 +8,7 @@ fi
 
 target_image="$1"
 release_dir="/opt/minori/releases"
+env_file="/opt/minori/minori.env"
 health_port="${MINORI_HEALTH_PORT:-3000}"
 previous_image="$(docker inspect --format '{{.Config.Image}}' minori 2>/dev/null || true)"
 target_sha="${target_image#minori:}"
@@ -41,7 +42,7 @@ if [[ -n "$previous_image" && "$previous_image" != "$target_image" ]]; then
   fi
 fi
 
-MINORI_IMAGE="$target_image" docker compose --project-name minori \
+MINORI_IMAGE="$target_image" MINORI_ENV_FILE="$env_file" docker compose --project-name minori \
   -f "$target_compose" up -d --no-build
 if wait_ready; then
   echo "rollback_succeeded ${target_image}"
@@ -49,7 +50,7 @@ if wait_ready; then
 fi
 
 if [[ -n "$previous_image" && "$previous_image" != "$target_image" ]]; then
-  if MINORI_IMAGE="$previous_image" docker compose --project-name minori \
+  if MINORI_IMAGE="$previous_image" MINORI_ENV_FILE="$env_file" docker compose --project-name minori \
     -f "$previous_compose" up -d --no-build \
     && wait_ready; then
     echo "rollback_target_unhealthy_restored_previous" >&2

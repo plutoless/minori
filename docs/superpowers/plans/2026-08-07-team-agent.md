@@ -516,7 +516,9 @@ Run:
 ```bash
 npm run verify
 npm run test:integration
-docker compose -f deploy/vultr/compose.production.yaml config
+MINORI_IMAGE=minori:team-agent-candidate \
+MINORI_ENV_FILE=./env.example \
+  docker compose -f deploy/vultr/compose.production.yaml config --images
 docker build -t minori:team-agent-candidate .
 docker run --rm minori:team-agent-candidate npm run runtime:verify
 ```
@@ -530,9 +532,9 @@ git add README.md .env.example deploy scripts test/contract docs/superpowers/spe
 git commit -m "docs: package open team agent release"
 ```
 
-- [ ] **Step 5: Bootstrap OAuth on Vultr**
+- [ ] **Step 5: Build the exact commit, bootstrap OAuth, and only then deploy**
 
-Build and deploy the exact commit with the existing release script. Run `npm run lark:auth` inside an interactive one-off container sharing `/opt/minori/lark`; the operator reads the Feishu verification URL only from that terminal's `/dev/tty`, not process output. Wait for authorization of the intended Dedicated Knowledge User, then let the script complete its sanitized status check. Verify `/opt/minori/lark/config` and `/opt/minori/lark/data` survive removal of the one-off container; do not display their contents.
+Build an image from a verified exact commit, never from the mutable checkout. Run `npm run lark:auth` in that exact image inside an interactive one-off container sharing `/opt/minori/lark`; the operator reads the Feishu verification URL only from that terminal's `/dev/tty`, not process output. Wait for authorization of the intended Dedicated Knowledge User, then let the script complete its sanitized status check. Verify `/opt/minori/lark/config` and `/opt/minori/lark/data` survive removal of the one-off container; do not display their contents. Only after OAuth is ready, invoke the exact commit's `scripts/deploy-vultr.sh` and require configured runtime readiness before real Feishu acceptance.
 
 - [ ] **Step 6: Perform real Feishu acceptance**
 
@@ -551,7 +553,7 @@ Using one configured group and an eligible private chat:
 
 Record only message IDs, document URLs, commit SHA, image tag, timestamps, readiness categories, and pass/fail outcomes in a gitignored local acceptance log.
 
-- [ ] **Step 7: Finish deployment or roll back**
+- [ ] **Step 7: Keep the accepted release or roll back**
 
 If every readiness and live acceptance check passes, keep the candidate image and append a sanitized successful release record. If any required check fails, invoke `scripts/rollback-vultr.sh`, verify the previous image is healthy, and record the failed category without secret-bearing response bodies.
 

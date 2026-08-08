@@ -1,26 +1,40 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import type { LanguageModelV4GenerateResult } from '@ai-sdk/provider';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { MockLanguageModelV4 } from 'ai/test';
 import { eq } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SourceRegistry } from '../../src/agent/sources.js';
 import { createKnowledgeTools } from '../../src/agent/tools.js';
-import type { AgentReply } from '../../src/agent/run.js';
+import { runKnowledgeAgent, type AgentReply } from '../../src/agent/run.js';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import type { FeishuMessenger } from '../../src/feishu/client.js';
 import { MembershipPolicy } from '../../src/feishu/membership.js';
 import { normalizeMessageEvent } from '../../src/feishu/normalize-event.js';
-import { LarkKnowledgeService } from '../../src/lark/knowledge-service.js';
+import { LarkKnowledgeService, type KnowledgeService } from '../../src/lark/knowledge-service.js';
 import { PostgresAllowedChatStore } from '../../src/storage/allowed-chat-store.js';
 import { PostgresAgentRunStore } from '../../src/storage/agent-run-store.js';
 import { PostgresConversationStore } from '../../src/storage/conversation-store.js';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
 import { PostgresEventStore } from '../../src/storage/event-store.js';
-import { toolRuns } from '../../src/storage/schema.js';
+import { agentRuns, toolRuns } from '../../src/storage/schema.js';
 import { MessageWorker } from '../../src/worker/message-worker.js';
 
 const BOT_OPEN_ID = 'ou_minori';
+
+const modelUsage = {
+  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 4, text: 4, reasoning: 0 },
+};
+
+function generated(
+  content: LanguageModelV4GenerateResult['content'],
+  finish: 'stop' | 'tool-calls',
+): LanguageModelV4GenerateResult {
+  return { content, finishReason: { unified: finish, raw: finish }, usage: modelUsage, warnings: [] };
+}
 
 function rawEvent(overrides: Record<string, unknown> = {}) {
   return {
@@ -210,12 +224,15 @@ describe('open team Agent release contract', () => {
     const canonicalUrl = 'https://acme.feishu.cn/docx/doxcnRelease';
     let document = {
       token: 'doxcnRelease', title: 'Release candidate', url: canonicalUrl,
-      markdown: '# Release candidate\nDraft phrase.', revisionId: 1,
+      markdown: '', revisionId: 0,
     };
     let fetchedRevisionBeforePatch: number | undefined;
-    const knowledge = {
+    const knowledge: KnowledgeService = {
       search: vi.fn(async () => []),
-      fetchDocument: vi.fn(async () => ({ ...document })),
+      fetchDocument: vi.fn(async () => {
+        fetchedRevisionBeforePatch = document.revisionId;
+        return { ...document };
+      }),
       listSpaces: vi.fn(async () => []),
       listNodes: vi.fn(async () => []),
       getNode: vi.fn(),
@@ -227,7 +244,7 @@ describe('open team Agent release contract', () => {
           content: '# Release candidate\nDraft phrase.',
           parentToken: 'fldcnFixture',
         });
-        document = { ...document, title: input.title, markdown: input.content };
+        document = { ...document, title: input.title, markdown: input.content, revisionId: 1 };
         return { operation: 'create' as const, ...document };
       }),
       appendDocument: vi.fn(async (input: { doc: string; content: string }) => {
@@ -258,7 +275,40 @@ describe('open team Agent release contract', () => {
       }),
     };
     const runStore = new PostgresAgentRunStore(database.db);
-    const sources = new SourceRegistry();
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_create', toolName: 'createDocument',
+          input: JSON.stringify({
+            title: 'Release candidate',
+            content: '# Release candidate\nDraft phrase.',
+            parentToken: 'fldcnFixture',
+          }),
+        }], 'tool-calls'),
+        generated([{
+          type: 'tool-call', toolCallId: 'call_append', toolName: 'appendDocument',
+          input: JSON.stringify({
+            doc: 'doxcnRelease', content: '\n## Acceptance\nSecond section.',
+          }),
+        }], 'tool-calls'),
+        generated([{
+          type: 'tool-call', toolCallId: 'call_get_current', toolName: 'fetchDocument',
+          input: JSON.stringify({ doc: 'doxcnRelease', mode: 'full' }),
+        }], 'tool-calls'),
+        generated([{
+          type: 'tool-call', toolCallId: 'call_patch', toolName: 'patchDocument',
+          input: JSON.stringify({
+            doc: 'doxcnRelease',
+            pattern: 'Draft phrase.',
+            replacement: 'Approved phrase.',
+          }),
+        }], 'tool-calls'),
+        generated([{
+          type: 'text',
+          text: `Updated the release candidate: ${canonicalUrl}`,
+        }], 'stop'),
+      ],
+    });
     const messenger = new FakeMessenger();
     const membership = new MembershipPolicy({
       allowedChats,
@@ -270,65 +320,28 @@ describe('open team Agent release contract', () => {
       conversations,
       messenger,
       logger: { warn: vi.fn(), info: vi.fn() },
-      runAgent: async (message) => {
-        const run = await runStore.start({ eventId: message.eventId, model: '5.6-terra' });
-        let toolCallCount = 0;
-        const tools = createKnowledgeTools(
-          knowledge,
-          { search: vi.fn(async () => []) },
-          sources,
-          {
-            run: async (input, operation) => {
-              const audit = await runStore.beginWrite(run.id, input);
-              toolCallCount += 1;
-              try {
-                const result = await operation();
-                await runStore.finishWrite(audit.id, { success: true });
-                return result;
-              } catch (error) {
-                await runStore.finishWrite(audit.id, { success: false, errorCategory: 'write_failed' });
-                throw error;
-              }
-            },
+      runAgent: (message, signal) => {
+        if (message.content.kind !== 'text') throw new Error('unsupported_agent_input');
+        return runKnowledgeAgent({
+          prompt: message.content.text,
+          history: [],
+          trigger: {
+            kind: 'feishu_member',
+            senderOpenId: message.senderOpenId,
+            chatId: message.chatId,
           },
-        );
-        await tools.createDocument.execute?.(
-          {
-            title: 'Release candidate',
-            content: '# Release candidate\nDraft phrase.',
-            parentToken: 'fldcnFixture',
-          },
-          { toolCallId: 'call_create', messages: [] },
-        );
-        await tools.appendDocument.execute?.(
-          { doc: 'doxcnRelease', content: '\n## Acceptance\nSecond section.' },
-          { toolCallId: 'call_append', messages: [] },
-        );
-        const fetched = await tools.fetchDocument.execute?.(
-          { doc: 'doxcnRelease', mode: 'full' },
-          { toolCallId: 'call_fetch', messages: [] },
-        );
-        fetchedRevisionBeforePatch = document.revisionId;
-        expect(fetched?.markdown).toContain('Second section.');
-        await tools.patchDocument.execute?.(
-          {
-            doc: 'doxcnRelease',
-            pattern: 'Draft phrase.',
-            replacement: 'Approved phrase.',
-          },
-          { toolCallId: 'call_patch', messages: [] },
-        );
-        await runStore.finish(run.id, { toolCallCount, outcome: 'completed' });
-
-        expect(Object.keys(tools)).toEqual([
-          'searchKnowledge', 'fetchDocument', 'listKnowledgeSpaces',
-          'listKnowledgeNodes', 'getKnowledgeNode', 'createDocument',
-          'appendDocument', 'patchDocument', 'searchConversationHistory',
-        ]);
-        expect(Object.keys(tools).join(' ')).not.toMatch(
-          /delete|move|overwrite|permission|sharing|raw|shell|http|filesystem/iu,
-        );
-        return sources.finalize(`Updated the release candidate: ${canonicalUrl}`);
+        }, {
+          model,
+          service: knowledge,
+          eventId: message.eventId,
+          modelName: '5.6-terra',
+          maxSteps: 20,
+          timeoutMs: 180_000,
+          agentRunStore: runStore,
+          conversationKey: message.conversationKey,
+          triggerMessageId: message.messageId,
+          conversationStore: conversations,
+        }, signal);
       },
     });
     const incoming = normalizeMessageEvent(rawEvent({
@@ -352,10 +365,25 @@ describe('open team Agent release contract', () => {
     expect(messenger.replies).toHaveLength(1);
     expect(messenger.replies[0]?.text).toContain(canonicalUrl);
     expect(messenger.replies[0]?.text).toContain(`Sources:\n[1] Release candidate — ${canonicalUrl}`);
+    expect(knowledge.fetchDocument).toHaveBeenCalledOnce();
+    expect(model.doGenerateCalls).toHaveLength(5);
+    const toolNames = model.doGenerateCalls[0]?.tools?.map((tool) => tool.name) ?? [];
+    expect(toolNames.sort()).toEqual([
+      'appendDocument', 'createDocument', 'fetchDocument', 'getKnowledgeNode',
+      'listKnowledgeNodes', 'listKnowledgeSpaces', 'patchDocument',
+      'searchConversationHistory', 'searchKnowledge',
+    ]);
+    expect(toolNames.join(' ')).not.toMatch(
+      /delete|move|overwrite|permission|sharing|raw|shell|http|filesystem/iu,
+    );
+    const [run] = await database.db.select().from(agentRuns)
+      .where(eq(agentRuns.eventId, 'evt_write_flow'));
+    expect(run).toMatchObject({
+      model: '5.6-terra', outcome: 'completed', toolCallCount: 4,
+      inputTokens: 50, outputTokens: 20,
+    });
     const audits = await database.db.select().from(toolRuns)
-      .where(eq(toolRuns.agentRunId, (await database.pool.query<{ id: string }>(
-        'select id from agent_runs where event_id = $1', ['evt_write_flow'],
-      )).rows[0]!.id));
+      .where(eq(toolRuns.agentRunId, run!.id));
     expect(audits).toHaveLength(3);
     expect(audits.map((audit) => ({ toolName: audit.toolName, success: audit.success })))
       .toEqual(expect.arrayContaining([

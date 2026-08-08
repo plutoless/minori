@@ -86,7 +86,7 @@ if ! docker build --pull --tag "$candidate_image" "$worktree"; then
   result="build_failed"
   exit 1
 fi
-contract_image="$(MINORI_IMAGE="$candidate_image" docker compose \
+contract_image="$(MINORI_IMAGE="$candidate_image" MINORI_ENV_FILE="$env_file" docker compose \
   -f "$compose_file" config --images 2>/dev/null || true)"
 if [[ "$contract_image" != "$candidate_image" ]]; then
   result="release_contract_image_mismatch"
@@ -115,7 +115,7 @@ if ! install -m 0640 "$compose_file" "$release_dir/${commit_sha}.compose.yaml"; 
 fi
 
 deploy_failed=0
-MINORI_IMAGE="$candidate_image" docker compose --project-name minori \
+MINORI_IMAGE="$candidate_image" MINORI_ENV_FILE="$env_file" docker compose --project-name minori \
   -f "$compose_file" up -d --no-build || deploy_failed=1
 if [[ $deploy_failed -eq 0 ]] && ! wait_ready; then
   deploy_failed=1
@@ -123,7 +123,7 @@ fi
 
 if [[ $deploy_failed -ne 0 ]]; then
   if [[ -n "$previous_image" ]]; then
-    if MINORI_IMAGE="$previous_image" docker compose --project-name minori \
+    if MINORI_IMAGE="$previous_image" MINORI_ENV_FILE="$env_file" docker compose --project-name minori \
       -f "$previous_compose" up -d --no-build \
       && wait_ready; then
       result="rolled_back"
@@ -131,7 +131,7 @@ if [[ $deploy_failed -ne 0 ]]; then
       result="rollback_failed"
     fi
   else
-    MINORI_IMAGE="$candidate_image" docker compose --project-name minori \
+    MINORI_IMAGE="$candidate_image" MINORI_ENV_FILE="$env_file" docker compose --project-name minori \
       -f "$compose_file" down || true
     result="failed_no_previous_release"
   fi

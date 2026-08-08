@@ -82,7 +82,8 @@ Keep the repository checkout on the host. For the first release, build the exact
 
 ```bash
 COMMIT_SHA="$(git rev-parse HEAD)"
-docker build -t "minori:${COMMIT_SHA}" .
+git cat-file -e "${COMMIT_SHA}^{commit}"
+git archive "$COMMIT_SHA" | docker build -t "minori:${COMMIT_SHA}" -
 docker run --rm -it \
   --env-file /opt/minori/minori.env \
   -v /opt/minori/lark:/var/lib/minori/lark \
@@ -90,7 +91,7 @@ docker run --rm -it \
 ./scripts/deploy-vultr.sh "$COMMIT_SHA"
 ```
 
-The deploy command accepts only a full 40-character commit SHA. It builds the image and loads the production Compose contract from that same detached commit, verifies the candidate image, applies backward-compatible migrations, replaces the running service under the stable `minori` Compose project, waits for readiness, and restores and verifies both the previous image and its saved Compose contract on failure. Sanitized release records and commit-addressed `<commit>.compose.yaml` contracts are written under `/opt/minori/releases`. If an already-running Minori image has no saved contract, deployment stops before replacing it.
+The archive build guarantees that the image receiving the App Secret and OAuth mount comes only from the verified commit, never dirty or untracked working-tree files. The deploy command accepts only a full 40-character commit SHA. It builds the image and loads the production Compose contract from that same detached commit, verifies the candidate image, applies backward-compatible migrations, replaces the running service under the stable `minori` Compose project, waits for readiness, and restores and verifies both the previous image and its saved Compose contract on failure. Sanitized release records and commit-addressed `<commit>.compose.yaml` contracts are written under `/opt/minori/releases`. If an already-running Minori image has no saved contract, deployment stops before replacing it.
 
 The Lark mount survives removal of the one-off authorization container. If OAuth expires, credentials are lost, or the Dedicated Knowledge User changes, rerun the same interactive `npm run lark:auth` command; Minori intentionally has no credential backup or silent fallback identity.
 
