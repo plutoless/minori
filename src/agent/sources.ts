@@ -25,11 +25,37 @@ export function normalizeAgentSource(source: AgentSource): AgentSource | undefin
 
 type CitationOccurrence = { id: number; start: number; end: number };
 
+function maskMarkdownCode(text: string, mask: (value: string) => string) {
+  let fence: { character: string; length: number } | undefined;
+  return text.split(/(?<=\n)/u).map((line) => {
+    const content = line.endsWith('\n') ? line.slice(0, -1) : line;
+    if (fence) {
+      const closingFence = new RegExp(
+        `^ {0,3}${fence.character}{${fence.length},}[ \\t]*$`,
+        'u',
+      );
+      const masked = mask(line);
+      if (closingFence.test(content)) fence = undefined;
+      return masked;
+    }
+
+    const openingFence = content.match(/^ {0,3}(`{3,}|~{3,})(.*)$/u);
+    if (openingFence) {
+      const delimiter = openingFence[1]!;
+      const info = openingFence[2]!;
+      if (!delimiter.startsWith('`') || !info.includes('`')) {
+        fence = { character: delimiter[0]!, length: delimiter.length };
+        return mask(line);
+      }
+    }
+    return /^(?: {4}|\t)/u.test(content) ? mask(line) : line;
+  }).join('');
+}
+
 function citationOccurrences(text: string): CitationOccurrence[] {
   // Match UTF-16 code units so removal offsets stay aligned with String.slice/match.index.
   const mask = (value: string) => value.replace(/[^\n]/g, ' ');
-  const visibleText = text
-    .replace(/```[\s\S]*?```/gu, mask)
+  const visibleText = maskMarkdownCode(text, mask)
     .replace(/`[^`\n]*`/gu, mask)
     .replace(/^>.*$/gmu, mask);
   const pattern = /\[(\d+)\](?!\s*(?:\(|:))/gu;

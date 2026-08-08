@@ -74,4 +74,34 @@ describe('SourceRegistry', () => {
       '[^3]: a footnote',
     ].join('\n'));
   });
+
+  it('preserves numeric bracket indexing inside tilde-fenced CommonMark code', () => {
+    const answer = [
+      '~~~ts',
+      'const item = values[7];',
+      '~~~',
+      'Unread source [8].',
+    ].join('\n');
+
+    expect(new SourceRegistry().finalize(answer).text).toBe([
+      '~~~ts',
+      'const item = values[7];',
+      '~~~',
+      'Unread source.',
+    ].join('\n'));
+  });
+
+  it('preserves numeric bracket indexing inside space- and tab-indented code', () => {
+    const answer = [
+      '    const first = values[7];',
+      '\tconst second = values[8];',
+      'Unread source [9].',
+    ].join('\n');
+
+    expect(new SourceRegistry().finalize(answer).text).toBe([
+      '    const first = values[7];',
+      '\tconst second = values[8];',
+      'Unread source.',
+    ].join('\n'));
+  });
 });
