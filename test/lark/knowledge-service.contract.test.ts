@@ -231,6 +231,93 @@ describe('LarkKnowledgeService contract', () => {
     ]);
   });
 
+  it('maps a numeric-only Lark revision conflict without retrying', async () => {
+    const before = await fixtureData('docs-fetch');
+    const revisionConflict = new LarkCliError('cli_error', { upstreamCode: 177003 });
+    const run = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'docs.fetch') return before;
+      throw revisionConflict;
+    });
+    const service = new LarkKnowledgeService({ run } as unknown as LarkExecutor);
+
+    await expect(service.appendDocument({ doc: 'doxcnRoadmap', content: '\n- shipped' }))
+      .rejects.toMatchObject({ code: 'knowledge_write_conflict' });
+    expect(run.mock.calls.map(([command]) => command)).toEqual([
+      { id: 'docs.fetch', doc: 'doxcnRoadmap' },
+      { id: 'docs.append', doc: 'doxcnRoadmap', content: '\n- shipped', revisionId: 7 },
+    ]);
+  });
+
+  it('rejects a write response for a different document without a receipt', async () => {
+    const before = await fixtureData('docs-fetch');
+    const run = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'docs.fetch') return before;
+      return { document: { document_id: 'doxcnOther', revision_id: 8 } };
+    });
+    const service = new LarkKnowledgeService({ run } as unknown as LarkExecutor);
+
+    await expect(service.appendDocument({ doc: 'doxcnRoadmap', content: '\n- shipped' }))
+      .rejects.toMatchObject({ code: 'contract_error' });
+    expect(run.mock.calls.map(([command]) => command)).toEqual([
+      { id: 'docs.fetch', doc: 'doxcnRoadmap' },
+      { id: 'docs.append', doc: 'doxcnRoadmap', content: '\n- shipped', revisionId: 7 },
+    ]);
+  });
+
+  it('rejects a write response that does not advance its revision', async () => {
+    const before = await fixtureData('docs-fetch');
+    const run = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'docs.fetch') return before;
+      return { document: { document_id: 'doxcnRoadmap', revision_id: 7 } };
+    });
+    const service = new LarkKnowledgeService({ run } as unknown as LarkExecutor);
+
+    await expect(service.appendDocument({ doc: 'doxcnRoadmap', content: '\n- shipped' }))
+      .rejects.toMatchObject({ code: 'contract_error' });
+    expect(run.mock.calls.map(([command]) => command)).toEqual([
+      { id: 'docs.fetch', doc: 'doxcnRoadmap' },
+      { id: 'docs.append', doc: 'doxcnRoadmap', content: '\n- shipped', revisionId: 7 },
+    ]);
+  });
+
+  it('rejects a canonical re-fetch that regresses behind the accepted revision', async () => {
+    const before = await fixtureData('docs-fetch');
+    const appended = await fixtureData('docs-append');
+    const run = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'docs.fetch') return before;
+      if (command.id === 'docs.append') return appended;
+      throw new Error('unexpected_command');
+    });
+    const service = new LarkKnowledgeService({ run } as unknown as LarkExecutor);
+
+    await expect(service.appendDocument({ doc: 'doxcnRoadmap', content: '\n- shipped' }))
+      .rejects.toMatchObject({ code: 'contract_error' });
+    expect(run.mock.calls.map(([command]) => command)).toEqual([
+      { id: 'docs.fetch', doc: 'doxcnRoadmap' },
+      { id: 'docs.append', doc: 'doxcnRoadmap', content: '\n- shipped', revisionId: 7 },
+      { id: 'docs.fetch', doc: 'doxcnRoadmap' },
+    ]);
+  });
+
+  it('rejects a canonical re-fetch for a different document', async () => {
+    const before = await fixtureData('docs-fetch');
+    const appended = await fixtureData('docs-append');
+    const wrongDocument = {
+      document: {
+        document_id: 'doxcnOther', revision_id: 8, content: '# Other document',
+      },
+    };
+    const run = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'docs.fetch') return run.mock.calls.length === 1 ? before : wrongDocument;
+      if (command.id === 'docs.append') return appended;
+      throw new Error('unexpected_command');
+    });
+    const service = new LarkKnowledgeService({ run } as unknown as LarkExecutor);
+
+    await expect(service.appendDocument({ doc: 'doxcnRoadmap', content: '\n- shipped' }))
+      .rejects.toMatchObject({ code: 'contract_error' });
+  });
+
   it('rejects a malformed write response without claiming a successful receipt', async () => {
     const before = await fixtureData('docs-fetch');
     const run = vi.fn(async (command: LarkCommand) => {

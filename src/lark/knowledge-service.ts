@@ -138,6 +138,7 @@ function countExactOccurrences(markdown: string, pattern: string) {
 
 function isRevisionConflict(error: unknown) {
   if (!(error instanceof LarkCliError) || error.code !== 'cli_error') return false;
+  if (error.details.upstreamCode === 177003) return true;
   const details = [error.details.type, error.details.subtype, error.details.upstreamCode]
     .filter((value): value is string => typeof value === 'string')
     .join(' ');
@@ -207,9 +208,13 @@ export class LarkKnowledgeService implements KnowledgeService {
   private async writeResult(
     operation: KnowledgeWriteResult['operation'],
     token: string,
+    acceptedRevisionId: number,
     signal?: AbortSignal,
   ): Promise<KnowledgeWriteResult> {
     const document = await this.fetchDocument({ doc: token }, signal);
+    if (document.token !== token || document.revisionId < acceptedRevisionId) {
+      throw new LarkContractError();
+    }
     return {
       operation,
       token: document.token,
@@ -217,6 +222,16 @@ export class LarkKnowledgeService implements KnowledgeService {
       url: document.url,
       revisionId: document.revisionId,
     };
+  }
+
+  private validateWriteResponse(
+    result: { document_id: string; revision_id: number },
+    token: string,
+    previousRevisionId: number,
+  ) {
+    if (result.document_id !== token || result.revision_id <= previousRevisionId) {
+      throw new LarkContractError();
+    }
   }
 
   async createDocument(
@@ -229,7 +244,7 @@ export class LarkKnowledgeService implements KnowledgeService {
       content: input.content,
       ...(input.parentToken ? { parentToken: input.parentToken } : {}),
     }, signal);
-    return this.writeResult('create', result.document_id, signal);
+    return this.writeResult('create', result.document_id, result.revision_id, signal);
   }
 
   async appendDocument(
@@ -237,10 +252,11 @@ export class LarkKnowledgeService implements KnowledgeService {
     signal?: AbortSignal,
   ): Promise<KnowledgeWriteResult> {
     const current = await this.fetchDocument({ doc: input.doc }, signal);
-    await this.requireWriteResponse({
+    const result = await this.requireWriteResponse({
       id: 'docs.append', doc: current.token, content: input.content, revisionId: current.revisionId,
     }, signal);
-    return this.writeResult('append', current.token, signal);
+    this.validateWriteResponse(result, current.token, current.revisionId);
+    return this.writeResult('append', current.token, result.revision_id, signal);
   }
 
   async patchDocument(
@@ -251,14 +267,15 @@ export class LarkKnowledgeService implements KnowledgeService {
     if (countExactOccurrences(current.markdown, input.pattern) !== 1) {
       throw new KnowledgeWriteConflict();
     }
-    await this.requireWriteResponse({
+    const result = await this.requireWriteResponse({
       id: 'docs.patch',
       doc: current.token,
       pattern: input.pattern,
       content: input.replacement,
       revisionId: current.revisionId,
     }, signal);
-    return this.writeResult('patch', current.token, signal);
+    this.validateWriteResponse(result, current.token, current.revisionId);
+    return this.writeResult('patch', current.token, result.revision_id, signal);
   }
 
   async listSpaces(signal?: AbortSignal) {
