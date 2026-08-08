@@ -362,12 +362,65 @@ describe('runKnowledgeAgent', () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(knowledge.createDocument).not.toHaveBeenCalled();
+    expect(audit.finishWrite).toHaveBeenCalledWith('write_delayed', {
+      success: false,
+      errorCategory: 'agent_run_aborted',
+    });
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       inputTokens: 10,
       outputTokens: 4,
       toolCallCount: 1,
       outcome: 'aborted',
     });
+  });
+
+  it('finalizes an Agent run that starts after its deadline', async () => {
+    const audit = agentRunStore({
+      start: vi.fn(() => new Promise<{ id: string }>((resolve) => {
+        setTimeout(() => resolve({ id: 'run_delayed' }), 25);
+      })),
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{ type: 'text', text: 'must not run' }], 'stop'),
+    });
+
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      agentRunStore: audit,
+      timeoutMs: 5,
+    }))).rejects.toThrow('agent_audit_unavailable');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(model.doGenerateCalls).toHaveLength(0);
+    expect(audit.finish).toHaveBeenCalledWith('run_delayed', {
+      toolCallCount: 0,
+      outcome: 'aborted',
+    });
+  });
+
+  it('handles a store rejection after an already-aborted signal without an unhandled rejection', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('already_aborted'));
+    const audit = agentRunStore({
+      start: vi.fn().mockRejectedValue(new Error('postgres://secret-host')),
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{ type: 'text', text: 'must not run' }], 'stop'),
+    });
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+
+    try {
+      await expect(runKnowledgeAgent(
+        input,
+        dependencies(input.prompt, model, { agentRunStore: audit }),
+        controller.signal,
+      )).rejects.toThrow('agent_audit_unavailable');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(model.doGenerateCalls).toHaveLength(0);
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
 
   it('honors the configured maximum number of Agent steps', async () => {

@@ -70,6 +70,7 @@ export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' 
 
 const WRITE_AUDIT_UNAVAILABLE = 'write_audit_unavailable';
 const AGENT_AUDIT_UNAVAILABLE = 'agent_audit_unavailable';
+const AGENT_RUN_ABORTED_CATEGORY = 'agent_run_aborted';
 const AUDIT_FINALIZATION_TIMEOUT_MS = 5_000;
 
 class WriteAuditUnavailable extends Error {
@@ -94,7 +95,14 @@ function createWriteAudit(
     async run(input, operation) {
       let write: { id: string };
       try {
-        write = await withAbort(store.beginWrite(agentRunId, input), signal);
+        write = await withAbort(
+          () => store.beginWrite(agentRunId, input),
+          signal,
+          (lateWrite) => withAuditFinalization(() => store.finishWrite(lateWrite.id, {
+            success: false,
+            errorCategory: AGENT_RUN_ABORTED_CATEGORY,
+          })),
+        );
       } catch {
         throw new WriteAuditUnavailable();
       }
@@ -103,7 +111,9 @@ function createWriteAudit(
         signal.throwIfAborted();
         const result = await operation();
         try {
-          await withAuditFinalization(store.finishWrite(write.id, { success: true }));
+          await withAuditFinalization(
+            () => store.finishWrite(write.id, { success: true }),
+          );
         } catch {
           throw new WriteAuditUnavailable();
         }
@@ -111,7 +121,7 @@ function createWriteAudit(
       } catch (error) {
         if (error instanceof WriteAuditUnavailable) throw error;
         try {
-          await withAuditFinalization(store.finishWrite(write.id, {
+          await withAuditFinalization(() => store.finishWrite(write.id, {
             success: false,
             errorCategory: stableWriteErrorCategory(error),
           }));
@@ -129,16 +139,59 @@ function combinedSignal(signal: AbortSignal | undefined, timeoutMs: number) {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
+function withAbort<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal,
+  onLateSuccess?: (value: T) => Promise<void>,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
+    let aborted = false;
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      aborted = true;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      reject(signal.reason);
+    };
+    let pending: Promise<T>;
+    try {
+      pending = operation();
+    } catch (error) {
+      settled = true;
+      reject(error);
+      return;
+    }
+    pending.then(
+      (value) => {
+        if (aborted) {
+          if (onLateSuccess) {
+            try {
+              void onLateSuccess(value).catch(() => undefined);
+            } catch {
+              // Late audit reconciliation is best-effort and already independently bounded.
+            }
+          }
+          return;
+        }
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
     signal.addEventListener('abort', onAbort, { once: true });
-    operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    if (signal.aborted) onAbort();
   });
 }
 
-function withAuditFinalization<T>(operation: Promise<T>): Promise<T> {
+function withAuditFinalization<T>(operation: () => Promise<T>): Promise<T> {
   return withAbort(operation, AbortSignal.timeout(AUDIT_FINALIZATION_TIMEOUT_MS));
 }
 
@@ -154,11 +207,15 @@ export async function runKnowledgeAgent(
   let run: { id: string };
   try {
     run = await withAbort(
-      dependencies.agentRunStore.start({
+      () => dependencies.agentRunStore.start({
         eventId: dependencies.eventId,
         model: dependencies.modelName,
       }),
       runSignal,
+      (lateRun) => withAuditFinalization(() => dependencies.agentRunStore.finish(lateRun.id, {
+        toolCallCount: 0,
+        outcome: 'aborted',
+      })),
     );
   } catch {
     throw new Error(AGENT_AUDIT_UNAVAILABLE);
@@ -171,7 +228,7 @@ export async function runKnowledgeAgent(
 
   try {
     const storedHistory = await withAbort(
-      dependencies.conversationStore.recentWithinBudget(
+      () => dependencies.conversationStore.recentWithinBudget(
         dependencies.conversationKey,
         contextTokenTarget,
         dependencies.triggerMessageId,
@@ -236,7 +293,7 @@ export async function runKnowledgeAgent(
     throw error;
   } finally {
     try {
-      await withAuditFinalization(dependencies.agentRunStore.finish(run.id, {
+      await withAuditFinalization(() => dependencies.agentRunStore.finish(run.id, {
         ...(inputTokens !== undefined ? { inputTokens } : {}),
         ...(outputTokens !== undefined ? { outputTokens } : {}),
         toolCallCount,
