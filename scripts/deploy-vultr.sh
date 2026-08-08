@@ -20,6 +20,7 @@ worktree="$worktree_parent/source"
 compose_file="$worktree/deploy/vultr/compose.production.yaml"
 previous_image="$(docker inspect --format '{{.Config.Image}}' minori 2>/dev/null || true)"
 previous_compose=""
+contract_image=""
 result="failed"
 record_written=0
 
@@ -83,6 +84,12 @@ if [[ -n "$previous_image" ]]; then
 fi
 if ! docker build --pull --tag "$candidate_image" "$worktree"; then
   result="build_failed"
+  exit 1
+fi
+contract_image="$(MINORI_IMAGE="$candidate_image" docker compose \
+  -f "$compose_file" config --images 2>/dev/null || true)"
+if [[ "$contract_image" != "$candidate_image" ]]; then
+  result="release_contract_image_mismatch"
   exit 1
 fi
 if ! docker run --rm \

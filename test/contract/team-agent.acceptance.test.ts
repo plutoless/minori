@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { eq } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SourceRegistry } from '../../src/agent/sources.js';
@@ -12,9 +13,11 @@ import { MembershipPolicy } from '../../src/feishu/membership.js';
 import { normalizeMessageEvent } from '../../src/feishu/normalize-event.js';
 import { LarkKnowledgeService } from '../../src/lark/knowledge-service.js';
 import { PostgresAllowedChatStore } from '../../src/storage/allowed-chat-store.js';
+import { PostgresAgentRunStore } from '../../src/storage/agent-run-store.js';
 import { PostgresConversationStore } from '../../src/storage/conversation-store.js';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
 import { PostgresEventStore } from '../../src/storage/event-store.js';
+import { toolRuns } from '../../src/storage/schema.js';
 import { MessageWorker } from '../../src/worker/message-worker.js';
 
 const BOT_OPEN_ID = 'ou_minori';
@@ -56,7 +59,7 @@ class FakeMessenger implements FeishuMessenger {
   }
 }
 
-describe('read-only team Agent release contract', () => {
+describe('open team Agent release contract', () => {
   let container: StartedPostgreSqlContainer;
   let database: DatabaseHandle;
   let allowedChats: PostgresAllowedChatStore;
@@ -73,7 +76,9 @@ describe('read-only team Agent release contract', () => {
   });
 
   beforeEach(async () => {
-    await database.pool.query('truncate table processed_events, messages, conversations, allowed_chats cascade');
+    await database.pool.query(
+      'truncate table tool_runs, agent_runs, processed_events, messages, conversations, allowed_chats cascade',
+    );
     await allowedChats.configure(['oc_team']);
   });
 
@@ -100,7 +105,7 @@ describe('read-only team Agent release contract', () => {
       const doc = link ?? (await reader.search({ query: 'roadmap' }))[0]!.token;
       const fetched = await reader.fetchDocument({ doc });
       return {
-        text: 'The read-only Agent launches first [1].',
+        text: 'The Team Agent launches first [1].',
         sources: [{ id: 1, title: fetched.title, url: fetched.url }],
         usage: {},
       };
@@ -199,6 +204,165 @@ describe('read-only team Agent release contract', () => {
     expect(toolNames.join(' ')).not.toMatch(
       /delete|move|overwrite|permission|sharing|raw|shell|http|filesystem/iu,
     );
+  });
+
+  it('accepts an eligible group request and completes an audited create-append-patch flow', async () => {
+    const canonicalUrl = 'https://acme.feishu.cn/docx/doxcnRelease';
+    let document = {
+      token: 'doxcnRelease', title: 'Release candidate', url: canonicalUrl,
+      markdown: '# Release candidate\nDraft phrase.', revisionId: 1,
+    };
+    let fetchedRevisionBeforePatch: number | undefined;
+    const knowledge = {
+      search: vi.fn(async () => []),
+      fetchDocument: vi.fn(async () => ({ ...document })),
+      listSpaces: vi.fn(async () => []),
+      listNodes: vi.fn(async () => []),
+      getNode: vi.fn(),
+      createDocument: vi.fn(async (input: {
+        title: string; content: string; parentToken?: string;
+      }) => {
+        expect(input).toEqual({
+          title: 'Release candidate',
+          content: '# Release candidate\nDraft phrase.',
+          parentToken: 'fldcnFixture',
+        });
+        document = { ...document, title: input.title, markdown: input.content };
+        return { operation: 'create' as const, ...document };
+      }),
+      appendDocument: vi.fn(async (input: { doc: string; content: string }) => {
+        expect(input).toEqual({
+          doc: 'doxcnRelease', content: '\n## Acceptance\nSecond section.',
+        });
+        document = {
+          ...document,
+          markdown: `${document.markdown}${input.content}`,
+          revisionId: 2,
+        };
+        return { operation: 'append' as const, ...document };
+      }),
+      patchDocument: vi.fn(async (input: {
+        doc: string; pattern: string; replacement: string;
+      }) => {
+        expect(input).toEqual({
+          doc: 'doxcnRelease', pattern: 'Draft phrase.', replacement: 'Approved phrase.',
+        });
+        expect(fetchedRevisionBeforePatch).toBe(document.revisionId);
+        expect(document.markdown.split(input.pattern)).toHaveLength(2);
+        document = {
+          ...document,
+          markdown: document.markdown.replace(input.pattern, input.replacement),
+          revisionId: 3,
+        };
+        return { operation: 'patch' as const, ...document };
+      }),
+    };
+    const runStore = new PostgresAgentRunStore(database.db);
+    const sources = new SourceRegistry();
+    const messenger = new FakeMessenger();
+    const membership = new MembershipPolicy({
+      allowedChats,
+      members: { listOpenIds: vi.fn(async () => new Set(['ou_member'])) },
+    });
+    const worker = new MessageWorker({
+      eventStore: events,
+      membership,
+      conversations,
+      messenger,
+      logger: { warn: vi.fn(), info: vi.fn() },
+      runAgent: async (message) => {
+        const run = await runStore.start({ eventId: message.eventId, model: '5.6-terra' });
+        let toolCallCount = 0;
+        const tools = createKnowledgeTools(
+          knowledge,
+          { search: vi.fn(async () => []) },
+          sources,
+          {
+            run: async (input, operation) => {
+              const audit = await runStore.beginWrite(run.id, input);
+              toolCallCount += 1;
+              try {
+                const result = await operation();
+                await runStore.finishWrite(audit.id, { success: true });
+                return result;
+              } catch (error) {
+                await runStore.finishWrite(audit.id, { success: false, errorCategory: 'write_failed' });
+                throw error;
+              }
+            },
+          },
+        );
+        await tools.createDocument.execute?.(
+          {
+            title: 'Release candidate',
+            content: '# Release candidate\nDraft phrase.',
+            parentToken: 'fldcnFixture',
+          },
+          { toolCallId: 'call_create', messages: [] },
+        );
+        await tools.appendDocument.execute?.(
+          { doc: 'doxcnRelease', content: '\n## Acceptance\nSecond section.' },
+          { toolCallId: 'call_append', messages: [] },
+        );
+        const fetched = await tools.fetchDocument.execute?.(
+          { doc: 'doxcnRelease', mode: 'full' },
+          { toolCallId: 'call_fetch', messages: [] },
+        );
+        fetchedRevisionBeforePatch = document.revisionId;
+        expect(fetched?.markdown).toContain('Second section.');
+        await tools.patchDocument.execute?.(
+          {
+            doc: 'doxcnRelease',
+            pattern: 'Draft phrase.',
+            replacement: 'Approved phrase.',
+          },
+          { toolCallId: 'call_patch', messages: [] },
+        );
+        await runStore.finish(run.id, { toolCallCount, outcome: 'completed' });
+
+        expect(Object.keys(tools)).toEqual([
+          'searchKnowledge', 'fetchDocument', 'listKnowledgeSpaces',
+          'listKnowledgeNodes', 'getKnowledgeNode', 'createDocument',
+          'appendDocument', 'patchDocument', 'searchConversationHistory',
+        ]);
+        expect(Object.keys(tools).join(' ')).not.toMatch(
+          /delete|move|overwrite|permission|sharing|raw|shell|http|filesystem/iu,
+        );
+        return sources.finalize(`Updated the release candidate: ${canonicalUrl}`);
+      },
+    });
+    const incoming = normalizeMessageEvent(rawEvent({
+      event_id: 'evt_write_flow',
+      message: {
+        message_id: 'om_write_flow', chat_id: 'oc_team', chat_type: 'group',
+        message_type: 'text', create_time: '1785888002000',
+        content: JSON.stringify({ text: '@_user_1 update the release candidate' }),
+        mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }],
+      },
+    }), { botOpenId: BOT_OPEN_ID })!;
+
+    expect(await events.enqueue(incoming)).toBe('queued');
+    const [claimed] = await events.claimReady(1, new Date(Date.now() + 60_000));
+    await worker.process(claimed!);
+
+    expect(document).toMatchObject({
+      markdown: '# Release candidate\nApproved phrase.\n## Acceptance\nSecond section.',
+      revisionId: 3,
+    });
+    expect(messenger.replies).toHaveLength(1);
+    expect(messenger.replies[0]?.text).toContain(canonicalUrl);
+    expect(messenger.replies[0]?.text).toContain(`Sources:\n[1] Release candidate — ${canonicalUrl}`);
+    const audits = await database.db.select().from(toolRuns)
+      .where(eq(toolRuns.agentRunId, (await database.pool.query<{ id: string }>(
+        'select id from agent_runs where event_id = $1', ['evt_write_flow'],
+      )).rows[0]!.id));
+    expect(audits).toHaveLength(3);
+    expect(audits.map((audit) => ({ toolName: audit.toolName, success: audit.success })))
+      .toEqual(expect.arrayContaining([
+        { toolName: 'createDocument', success: true },
+        { toolName: 'appendDocument', success: true },
+        { toolName: 'patchDocument', success: true },
+      ]));
   });
 
   it('expires old message bodies and replays a recent uncertain transport result only once', async () => {

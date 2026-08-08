@@ -8,6 +8,10 @@
 
 **Tech Stack:** Node.js 22 LTS, TypeScript ESM, npm, Vercel AI SDK 7, `@ai-sdk/openai`, OpenAI Responses API, Feishu Node SDK, `@larksuite/cli` 1.0.84, Neon PostgreSQL, Drizzle ORM, Zod 4, Vitest 4, Docker Compose, Ubuntu 24.04 LTS x86_64.
 
+**Execution status:** Tasks 1–4 are implemented and independently reviewed. Task 5
+packages the exact release candidate locally first; interactive OAuth and real Feishu
+acceptance remain explicit production gates and cannot be inferred from local checks.
+
 ## Global Constraints
 
 - The Dedicated Knowledge User's native Feishu permissions are the sole content boundary; do not add a space, folder, or document allowlist.

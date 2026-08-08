@@ -6,6 +6,11 @@
 
 **Active implementation plan:** `docs/superpowers/plans/2026-08-07-team-agent.md`
 
+**Release state:** The code and local release contract cover existing-app OAuth,
+revision-safe create/append/patch tools, authentic sources, PostgreSQL write audits,
+and configurable Agent limits. Production readiness still requires interactive OAuth
+for the Dedicated Knowledge User plus real group/private Feishu acceptance.
+
 ## Summary
 
 Minori is one always-on Team Agent running on the existing Vultr Ubuntu host. Approved Feishu group members interact with it in configured groups and private chat. One Feishu custom app supplies Bot Authority for messaging and Delegated Knowledge Authority through a dedicated logged-in user for Lark CLI knowledge operations.
@@ -117,6 +122,11 @@ The native Lark CLI Linux credential store keeps its master key and encrypted se
 - The health endpoint binds to host loopback only.
 - Deployment builds an explicit Git commit, runs migrations and preflight checks, replaces the service, and rolls back when readiness fails.
 - Live acceptance must cover one allowed group thread, an eligible private chat, a real knowledge read with a working source link, create, append, targeted patch, restart recovery, and Lark credential persistence.
+- Release artifacts are commit-addressed. A candidate is not considered live merely
+  because local tests and image verification pass; the configured Vultr runtime must
+  report every readiness category healthy and the real Feishu acceptance must finish.
+- Acceptance evidence is local and gitignored. It records identifiers, URLs, image and
+  commit references, timestamps, readiness categories, and pass/fail outcomes only.
 
 ## Deferred scope
 
