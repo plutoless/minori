@@ -44,7 +44,7 @@ function dependencies(overrides: Record<string, unknown> = {}) {
   const eventStore = new FakeEventStore();
   const appended: Array<{ messageId: string; role: string; content: string }> = [];
   const runAgent = vi.fn(async (): Promise<AgentReply> => ({
-    text: '先读发布说明 [2]，再看设计稿 [1]。',
+    text: '发布说明和设计稿都已核对。',
     sources: [
       { id: 1, title: '设计稿', url: 'https://example.com/design' },
       { id: 2, title: '发布说明', url: 'https://example.com/release' },
@@ -124,11 +124,11 @@ describe('MessageWorker.process', () => {
     expect(setup.eventStore.marked?.key).toMatch(/^minori-[a-f0-9]{32}$/u);
     expect(setup.messenger.replyText).toHaveBeenCalledWith(
       'om_1',
-      expect.stringContaining('[1] 发布说明 — https://example.com/release'),
+      expect.stringContaining('[1] 设计稿 — https://example.com/design'),
       setup.eventStore.marked?.key,
     );
     expect(setup.messenger.replyText.mock.calls[0]?.[1])
-      .toContain('[2] 设计稿 — https://example.com/design');
+      .toContain('[2] 发布说明 — https://example.com/release');
     expect(setup.appended.map(({ messageId, role }) => ({ messageId, role }))).toEqual([
       { messageId: 'om_1', role: 'user' },
       { messageId: 'om_reply_1', role: 'assistant' },
@@ -230,41 +230,19 @@ describe('MessageWorker.process', () => {
     expect(text).not.toContain('知识库没有');
   });
 
-  it('uses one citation repair pass and otherwise suppresses unattributed claims', async () => {
-    const invalid: AgentReply = {
-      text: '这是没有可验证标注的结论。',
-      sources: [{ id: 1, title: '文档', url: 'https://example.com/doc' }], usage: {},
-    };
-    const repairCitations = vi.fn(async () => invalid);
-    const setup = dependencies({ runAgent: vi.fn(async () => invalid), repairCitations });
-    await new MessageWorker(setup.options).process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
-    });
-    expect(repairCitations).toHaveBeenCalledOnce();
-    expect(setup.messenger.replyText.mock.calls[0]?.[1]).toContain('无法可靠对应');
-    expect(setup.messenger.replyText.mock.calls[0]?.[1]).not.toContain('没有可验证标注的结论');
-  });
-
-  it('accepts one validated repair for an Agent citation-contract failure', async () => {
-    const invalid: AgentReply = {
+  it('sends a natural source-linked answer without a citation repair flow', async () => {
+    const natural: AgentReply = {
       text: '发布是在周五。',
-      sources: [{ id: 1, title: '发布计划', url: 'https://example.com/plan' }],
-      usage: {},
-      citationContractValid: false,
+      sources: [{ id: 1, title: '发布计划', url: 'https://example.com/plan' }], usage: {},
     };
-    const repairCitations = vi.fn(async () => ({
-      text: '发布是在周五 [1]。',
-      sources: invalid.sources,
-      usage: {},
-    }));
-    const setup = dependencies({ runAgent: vi.fn(async () => invalid), repairCitations });
+    const setup = dependencies({ runAgent: vi.fn(async () => natural) });
 
     await new MessageWorker(setup.options).process({
       eventId: 'evt_1', payload: message(), attempts: 1,
     });
 
-    expect(repairCitations).toHaveBeenCalledOnce();
-    expect(setup.messenger.replyText.mock.calls[0]?.[1])
-      .toContain('[1] 发布计划 — https://example.com/plan');
+    expect(setup.messenger.replyText.mock.calls[0]?.[1]).toBe([
+      '发布是在周五。', '', 'Sources:', '[1] 发布计划 — https://example.com/plan',
+    ].join('\n'));
   });
 });

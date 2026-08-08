@@ -1,6 +1,8 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import type { KnowledgeReader } from '../lark/knowledge-service.js';
+import type {
+  KnowledgeService, KnowledgeWriteResult,
+} from '../lark/knowledge-service.js';
 import { SourceRegistry } from './sources.js';
 
 export type ScopedHistoryReader = {
@@ -25,7 +27,17 @@ function withAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
 const MAX_DOCUMENT_PAGE_CHARS = 12_000;
 const TOKEN_SCHEMA = z.string().min(1).max(200).regex(/^[A-Za-z0-9_-]+$/u);
 
-type FetchedDocument = Awaited<ReturnType<KnowledgeReader['fetchDocument']>>;
+type FetchedDocument = Awaited<ReturnType<KnowledgeService['fetchDocument']>>;
+
+export type KnowledgeWriteAuditInput = {
+  toolName: 'createDocument' | 'appendDocument' | 'patchDocument';
+  targetIdentifiers: Record<string, string>;
+  sanitizedSummary: string;
+};
+
+export interface KnowledgeWriteAudit {
+  run<T>(input: KnowledgeWriteAuditInput, operation: () => Promise<T>): Promise<T>;
+}
 
 function splitSections(markdown: string) {
   const sections = markdown.split(/(?=^#{1,6}\s+)/gmu).filter(Boolean);
@@ -74,20 +86,44 @@ function paginate(sections: string[]) {
   return pages.length > 0 ? pages : [''];
 }
 
-export function createReadTools(
-  reader: KnowledgeReader,
+function writeReceipt(result: KnowledgeWriteResult) {
+  const verb = {
+    create: 'Created',
+    append: 'Appended to',
+    patch: 'Patched',
+  }[result.operation];
+  return {
+    url: result.url,
+    receipt: `${verb} "${result.title}" (revision ${result.revisionId}).`,
+  };
+}
+
+export function createKnowledgeTools(
+  service: KnowledgeService,
   history: ScopedHistoryReader,
   sources = new SourceRegistry(),
+  writeAudit: KnowledgeWriteAudit,
 ) {
   const documents = new Map<string, Promise<FetchedDocument>>();
   const pageSets = new Map<string, string[]>();
   const cursors = new Map<string, { key: string; index: number }>();
   let cursorSequence = 0;
 
+  const invalidateDocument = (doc: string) => {
+    const keyPrefix = `["${doc}",`;
+    documents.delete(doc);
+    for (const key of [...pageSets.keys()]) {
+      if (key.startsWith(keyPrefix)) pageSets.delete(key);
+    }
+    for (const [cursor, continuation] of cursors) {
+      if (continuation.key.startsWith(keyPrefix)) cursors.delete(cursor);
+    }
+  };
+
   const getDocument = (doc: string, signal?: AbortSignal) => {
     let fetching = documents.get(doc);
     if (!fetching) {
-      fetching = reader.fetchDocument({ doc }, signal);
+      fetching = service.fetchDocument({ doc }, signal);
       documents.set(doc, fetching);
     }
     return fetching;
@@ -100,7 +136,7 @@ export function createReadTools(
         query: z.string().min(1).max(500),
         spaceIds: z.array(TOKEN_SCHEMA).max(20).optional(),
       }).strict(),
-      execute: ({ query, spaceIds }, { abortSignal }) => reader.search({
+      execute: ({ query, spaceIds }, { abortSignal }) => service.search({
         query,
         ...(spaceIds ? { spaceIds } : {}),
       }, abortSignal),
@@ -150,7 +186,7 @@ export function createReadTools(
     listKnowledgeSpaces: tool({
       description: 'List knowledge spaces visible to the dedicated Feishu user.',
       inputSchema: z.object({}).strict(),
-      execute: (_input, { abortSignal }) => reader.listSpaces(abortSignal),
+      execute: (_input, { abortSignal }) => service.listSpaces(abortSignal),
     }),
     listKnowledgeNodes: tool({
       description: 'List nodes in one authorized knowledge space.',
@@ -158,7 +194,7 @@ export function createReadTools(
         spaceId: TOKEN_SCHEMA,
         parentNodeToken: TOKEN_SCHEMA.optional(),
       }).strict(),
-      execute: ({ spaceId, parentNodeToken }, { abortSignal }) => reader.listNodes({
+      execute: ({ spaceId, parentNodeToken }, { abortSignal }) => service.listNodes({
         spaceId,
         ...(parentNodeToken ? { parentNodeToken } : {}),
       }, abortSignal),
@@ -166,7 +202,63 @@ export function createReadTools(
     getKnowledgeNode: tool({
       description: 'Resolve one authorized knowledge node to its document metadata.',
       inputSchema: z.object({ nodeToken: TOKEN_SCHEMA }).strict(),
-      execute: (input, { abortSignal }) => reader.getNode(input, abortSignal),
+      execute: (input, { abortSignal }) => service.getNode(input, abortSignal),
+    }),
+    createDocument: tool({
+      description: 'Create one Markdown document with the dedicated Feishu user.',
+      inputSchema: z.object({
+        title: z.string().min(1).max(500),
+        content: z.string().max(500_000),
+        parentToken: TOKEN_SCHEMA.optional(),
+      }).strict(),
+      execute: async ({ title, content, parentToken }, { abortSignal }) => writeReceipt(
+        await writeAudit.run({
+          toolName: 'createDocument',
+          targetIdentifiers: parentToken ? { parentToken } : {},
+          sanitizedSummary: 'created one document',
+        }, () => service.createDocument({
+          title,
+          content,
+          ...(parentToken ? { parentToken } : {}),
+        }, abortSignal)),
+      ),
+    }),
+    appendDocument: tool({
+      description: 'Append Markdown to one document using its current revision.',
+      inputSchema: z.object({
+        doc: TOKEN_SCHEMA,
+        content: z.string().max(500_000),
+      }).strict(),
+      execute: async ({ doc, content }, { abortSignal }) => {
+        try {
+          return writeReceipt(await writeAudit.run({
+            toolName: 'appendDocument',
+            targetIdentifiers: { doc },
+            sanitizedSummary: 'appended content to one document',
+          }, () => service.appendDocument({ doc, content }, abortSignal)));
+        } finally {
+          invalidateDocument(doc);
+        }
+      },
+    }),
+    patchDocument: tool({
+      description: 'Replace one exact uniquely matched text range using the current revision.',
+      inputSchema: z.object({
+        doc: TOKEN_SCHEMA,
+        pattern: z.string().min(1).max(500_000),
+        replacement: z.string().max(500_000),
+      }).strict(),
+      execute: async ({ doc, pattern, replacement }, { abortSignal }) => {
+        try {
+          return writeReceipt(await writeAudit.run({
+            toolName: 'patchDocument',
+            targetIdentifiers: { doc },
+            sanitizedSummary: 'replaced one exact text range',
+          }, () => service.patchDocument({ doc, pattern, replacement }, abortSignal)));
+        } finally {
+          invalidateDocument(doc);
+        }
+      },
     }),
     searchConversationHistory: tool({
       description: 'Search older retained messages in this conversation only.',

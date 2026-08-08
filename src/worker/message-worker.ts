@@ -5,11 +5,10 @@ import type { FeishuMessenger } from '../feishu/client.js';
 import type { AuthorizationResult } from '../feishu/membership.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
 import type { EventStore, StoredEvent } from '../storage/event-store.js';
-import { CitationFormatError, formatAgentReply } from './source-format.js';
+import { formatAgentReply } from './source-format.js';
 
 const UNSUPPORTED_REPLY = '我暂不支持直接读取这种消息类型。请发送文字、富文本，或粘贴飞书文档链接。';
 const TEMPORARY_ERROR_REPLY = '我暂时无法完成这次查询，请稍后重试。';
-const ATTRIBUTION_ERROR_REPLY = '我找到了相关信息，但目前无法可靠对应到可验证的来源，因此这次不直接给出结论。请稍后重试。';
 const DEADLINE_DRAIN_MS = 2 * 60 * 1_000;
 
 type WorkerLogger = {
@@ -22,7 +21,6 @@ export type MessageWorkerOptions = {
   membership: { authorize(message: NormalizedMessage): Promise<AuthorizationResult> };
   conversations: Pick<ConversationStore, 'getOrCreateConversation' | 'append'>;
   runAgent(message: NormalizedMessage, signal?: AbortSignal): Promise<AgentReply>;
-  repairCitations?: (reply: AgentReply, signal?: AbortSignal) => Promise<AgentReply>;
   messenger: FeishuMessenger;
   logger: WorkerLogger;
   now?: () => Date;
@@ -289,22 +287,7 @@ export class MessageWorker {
         text = TEMPORARY_ERROR_REPLY;
         return this.persistPreparedReply(event, text, signal, state);
       }
-      try {
-        text = formatAgentReply(reply);
-      } catch (error) {
-        if (!(error instanceof CitationFormatError)) throw error;
-        let repaired: AgentReply | undefined;
-        if (this.options.repairCitations && reply.sources.length > 0) {
-          try {
-            repaired = await this.options.repairCitations(reply, signal);
-            text = formatAgentReply(repaired);
-          } catch {
-            text = ATTRIBUTION_ERROR_REPLY;
-          }
-        } else {
-          text = ATTRIBUTION_ERROR_REPLY;
-        }
-      }
+      text = formatAgentReply(reply);
     }
     return this.persistPreparedReply(event, text, signal, state);
   }

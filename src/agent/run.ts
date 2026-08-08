@@ -3,18 +3,21 @@ import {
   stepCountIs,
   type LanguageModel,
 } from 'ai';
-import type { KnowledgeReader } from '../lark/knowledge-service.js';
+import type { KnowledgeService } from '../lark/knowledge-service.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
 import { selectRecentHistory, type AgentHistoryMessage } from './context-window.js';
-import { READ_ONLY_AGENT_INSTRUCTIONS } from './instructions.js';
-import { CitationContractError, SourceRegistry, type AgentSource } from './sources.js';
-import { createReadTools, type ScopedHistoryReader } from './tools.js';
+import { TEAM_AGENT_INSTRUCTIONS } from './instructions.js';
+import { SourceRegistry, type AgentSource } from './sources.js';
+import {
+  createKnowledgeTools,
+  type KnowledgeWriteAudit,
+  type ScopedHistoryReader,
+} from './tools.js';
 
 export type AgentReply = {
   text: string;
   sources: AgentSource[];
   usage: { inputTokens?: number; outputTokens?: number };
-  citationContractValid?: false;
 };
 
 export type AgentRunInput = {
@@ -27,30 +30,41 @@ export interface KnowledgeAgent {
   run(input: AgentRunInput, signal?: AbortSignal): Promise<AgentReply>;
 }
 
-export type ReadOnlyAgentDependencies = {
+export type TeamAgentDependencies = {
   model: LanguageModel;
-  reader: KnowledgeReader;
+  service: KnowledgeService;
   history: ScopedHistoryReader;
   sources: SourceRegistry;
+  writeAudit: KnowledgeWriteAudit;
 };
 
-export function createReadOnlyAgent(dependencies: ReadOnlyAgentDependencies) {
+export function createTeamAgent(dependencies: TeamAgentDependencies, maxSteps: number) {
   return new ToolLoopAgent({
-    id: 'minori-read-only-knowledge-agent',
+    id: 'minori-team-agent',
     model: dependencies.model,
-    instructions: READ_ONLY_AGENT_INSTRUCTIONS,
-    tools: createReadTools(dependencies.reader, dependencies.history, dependencies.sources),
-    stopWhen: stepCountIs(12),
+    instructions: TEAM_AGENT_INSTRUCTIONS,
+    tools: createKnowledgeTools(
+      dependencies.service,
+      dependencies.history,
+      dependencies.sources,
+      dependencies.writeAudit,
+    ),
+    stopWhen: stepCountIs(maxSteps),
     providerOptions: { openai: { store: false } },
   });
 }
 
-export type RunKnowledgeAgentDependencies = Pick<ReadOnlyAgentDependencies, 'model' | 'reader'> & {
+export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' | 'service'> & {
   conversationKey: string;
   triggerMessageId: string;
   conversationStore: Pick<ConversationStore, 'search' | 'recentWithinBudget'>;
+  writeAudit?: KnowledgeWriteAudit;
   contextTokenTarget?: number;
   timeoutMs?: number;
+};
+
+const unpersistedWriteAudit: KnowledgeWriteAudit = {
+  run: (_input, operation) => operation(),
 };
 
 function combinedSignal(signal: AbortSignal | undefined, timeoutMs: number) {
@@ -94,10 +108,11 @@ export async function runKnowledgeAgent(
     && JSON.stringify(input.history) !== JSON.stringify(authoritativeHistory)) {
     throw new Error('conversation_history_mismatch');
   }
-  const agent = createReadOnlyAgent({
+  const agent = createTeamAgent({
     model: dependencies.model,
-    reader: dependencies.reader,
+    service: dependencies.service,
     sources,
+    writeAudit: dependencies.writeAudit ?? unpersistedWriteAudit,
     history: {
       search: (query, limit) => dependencies.conversationStore.search(
         dependencies.conversationKey,
@@ -105,7 +120,7 @@ export async function runKnowledgeAgent(
         limit,
       ),
     },
-  });
+  }, 12);
   const history = selectRecentHistory(
     authoritativeHistory,
     contextTokenTarget,
@@ -114,17 +129,7 @@ export async function runKnowledgeAgent(
     messages: history,
     abortSignal: runSignal,
   });
-  let finalized: { text: string; sources: AgentSource[]; citationContractValid?: false };
-  try {
-    finalized = sources.finalize(result.text);
-  } catch (error) {
-    if (!(error instanceof CitationContractError)) throw error;
-    finalized = {
-      text: result.text,
-      sources: sources.snapshot(),
-      citationContractValid: false,
-    };
-  }
+  const finalized = sources.finalize(result.text);
   return {
     ...finalized,
     usage: {
