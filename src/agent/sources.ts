@@ -28,7 +28,9 @@ type CitationOccurrence = { id: number; start: number; end: number };
 function maskMarkdownCode(text: string, mask: (value: string) => string) {
   let fence: { character: string; length: number } | undefined;
   return text.split(/(?<=\n)/u).map((line) => {
-    const content = line.endsWith('\n') ? line.slice(0, -1) : line;
+    const content = line.endsWith('\r\n')
+      ? line.slice(0, -2)
+      : line.endsWith('\n') ? line.slice(0, -1) : line;
     if (fence) {
       const closingFence = new RegExp(
         `^ {0,3}${fence.character}{${fence.length},}[ \\t]*$`,

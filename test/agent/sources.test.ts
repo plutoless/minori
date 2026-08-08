@@ -91,6 +91,38 @@ describe('SourceRegistry', () => {
     ].join('\n'));
   });
 
+  it('preserves CRLF backtick-fenced code and its original offsets', () => {
+    const answer = [
+      '```ts',
+      'const item = values[7];',
+      '```',
+      'Unread source [8].',
+    ].join('\r\n');
+
+    expect(new SourceRegistry().finalize(answer).text).toBe([
+      '```ts',
+      'const item = values[7];',
+      '```',
+      'Unread source.',
+    ].join('\r\n'));
+  });
+
+  it('preserves CRLF tilde-fenced code and its original offsets', () => {
+    const answer = [
+      '~~~ts',
+      'const item = values[7];',
+      '~~~',
+      'Unread source [8].',
+    ].join('\r\n');
+
+    expect(new SourceRegistry().finalize(answer).text).toBe([
+      '~~~ts',
+      'const item = values[7];',
+      '~~~',
+      'Unread source.',
+    ].join('\r\n'));
+  });
+
   it('preserves numeric bracket indexing inside space- and tab-indented code', () => {
     const answer = [
       '    const first = values[7];',
