@@ -34,9 +34,18 @@ The Agent remains open-ended: it may answer directly, search and read knowledge,
 - A **Feishu Delivered Member** is any user whose private or group message Feishu
   delivers to the Minori App. This explicitly includes external collaborators in a
   mixed group when Feishu delivers their message event.
-- In any group where the bot is present, a member within that app availability may
-  start an Agent Thread by mentioning Minori or replying to a Minori message.
-- Members continue naturally inside that reply thread without repeating the mention.
+- In an ordinary-message group where the bot is present, a member invokes Minori by
+  directly mentioning it or directly replying to one of its ordinary messages.
+- Minori never intentionally creates a Feishu topic. Private and group answers use
+  ordinary replies; Feishu topic-mode groups are outside this release's supported
+  interaction surface.
+- The group chat ID is the shared **Group Context**. When invoked, Minori reads up to
+  20 recent messages before the Current Invocation and may page earlier history with
+  a read-only tool bound to that group and cutoff. Real group display names are
+  resolved through the group-member API.
+- Live Group History is background for the Current Invocation, not a backlog of
+  independently authorized commands. It is sent transiently to the model and is not
+  mirrored into Neon.
 - Unrelated group-timeline messages do not activate Minori.
 - Private messages from any Feishu Delivered Member are accepted without requiring
   membership in a separate configured group.
@@ -46,7 +55,7 @@ The Agent remains open-ended: it may answer directly, search and read knowledge,
 
 - One Vercel AI SDK `ToolLoopAgent` decides whether and how to use tools.
 - There is no intent router, scenario classifier, fixed search sequence, evidence-token target, or per-write confirmation.
-- Agent runs default to at most 20 model/tool steps and 180 seconds. Both values are configurable technical runaway limits, not restrictions on the kinds of work the Agent may attempt.
+- Agent runs default to at most 40 model/tool steps and 300 seconds. Both values are configurable technical runaway limits, not restrictions on the kinds of work the Agent may attempt.
 - Reaching either limit is **Execution Budget Exhaustion**, not successful completion or a generic transient failure. No subsequent model step, tool call, or write may start after the limit is observed.
 - Minori does not automatically rerun an exhausted task. Writes completed before exhaustion remain committed and audited; Minori does not attempt an unsafe compensating rollback.
 - The reply states that the run reached its step limit or timeout, lists confirmed completed operations and affected resource links, and invites the member to say `continue` (or the natural-language equivalent). Step exhaustion and timeout are recorded as distinct audit outcomes rather than `completed` or a generic `aborted` outcome.
@@ -55,7 +64,9 @@ The Agent remains open-ended: it may answer directly, search and read knowledge,
 - Recovery inside that new run is Agent-managed. Runtime supplies durable operation outcomes, receipts, resource links, and the normal knowledge tools; the Agent decides whether to inspect, search, retry, change approach, or ask the member. Minori does not hard-code an operation-specific reconciliation workflow or mandatory confirmation step.
 - Idempotent retry of the Feishu reply transport is independent of Agent-run replay and remains allowed under the reply deduplication contract.
 - Individual tool results remain bounded and paginated so one document cannot consume the entire context.
-- Recent messages from the same Feishu thread or private conversation are supplied automatically. Older retained messages may be searched only within that same conversation.
+- Private conversations use retained history. Group runs receive bounded Live Group
+  History from the current chat, and the Agent may page earlier messages only within
+  that same Group Context and Invocation Context Cutoff.
 - Conversation content expires after 30 days by default. Opt-in long-term memory is future scope.
 
 ### Knowledge authority
@@ -135,9 +146,13 @@ The native Lark CLI Linux credential store keeps its master key and encrypted se
 - Feishu long connection persists normalized events to Neon before slow model work.
 - Accepted events enter a PostgreSQL-backed Durable Conversation Queue; queued events do not consume a model execution slot.
 - Processing Reactions are created after durable acceptance rather than after an execution slot becomes available, so queued members receive immediate lightweight acknowledgement without a separate queue message or status card.
-- Messages are serialized in order within one Agent Thread or private conversation. Different conversations run concurrently, with a configurable global limit of four by default; additional conversations remain durably queued.
+- Messages are serialized in order within one Group Context or private conversation. Different groups and private conversations run concurrently, with a configurable global limit of four by default; additional conversations remain durably queued.
 - Minori applies no per-user or per-group request quota. The global concurrency limit controls active resource and model usage without becoming another admission boundary.
-- Neon PostgreSQL is a trusted Persistence Data Boundary. It stores plaintext user and assistant message bodies for 30 days so Minori can rebuild context and search retained conversation history; expiration clears the body while preserving structural identifiers and timestamps needed for idempotency and audit continuity.
+- Neon PostgreSQL is a trusted Persistence Data Boundary. It stores accepted trigger
+  and assistant message bodies for 30 days so Minori can rebuild retained context;
+  ordinary non-triggering Live Group History is not copied into Neon. Expiration
+  clears retained bodies while preserving structural identifiers and timestamps
+  needed for idempotency and audit continuity.
 - Agent and tool audit metadata is retained without an initial automatic expiry. It contains model and usage data, timing, tool name, target identifiers, outcome, error category, and sanitized summaries—not hidden reasoning or complete retrieved document bodies.
 - Minori does not maintain a PostgreSQL mirror of Feishu knowledge and does not add application-level encryption that would prevent server-side conversation search. Audit retention may be revised after real usage or a concrete compliance requirement exists.
 - OpenAI Responses requests use the configured `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `AI_MODEL`; every request uses `store: false`.
@@ -154,10 +169,11 @@ The native Lark CLI Linux credential store keeps its master key and encrypted se
 - The health endpoint binds to host loopback only.
 - Deployment builds an explicit Git commit, runs migrations and preflight checks, replaces the service, and rolls back when readiness fails. Because migrations run before replacement and rollback restores the previous image without downgrading the database, every candidate migration must remain compatible with that supported previous image.
 - The open-admission release removes the legacy allowlist from configuration and the runtime call graph but temporarily retains the physical `allowed_chats` table as inert rollback compatibility. The current runtime never reads or writes it. A later contract migration may remove it only after the production rollback floor advances beyond `4f936ab`.
-- Live acceptance must cover one group thread where the bot is present, one private
-  chat from a member within the Feishu App availability, a real knowledge read with a
-  working source link, create, append, targeted patch, restart recovery, and Lark
-  credential persistence.
+- Live acceptance must cover one ordinary-message group where the bot can load recent
+  history and real member names, one private chat from a member within the Feishu App
+  availability, ordinary non-topic replies, a real knowledge read with a working
+  source link, create, append, targeted patch, restart recovery, and Lark credential
+  persistence.
 - Release artifacts are commit-addressed. A candidate is not considered live merely
   because local tests and image verification pass; the configured Vultr runtime must
   report every readiness category healthy and the real Feishu acceptance must finish.

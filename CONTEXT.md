@@ -44,9 +44,21 @@ _Avoid_: Retry every failure, completed-write boundary, reply retry
 A user whose message Feishu delivers to the Minori Feishu App from private chat or a group where the bot is present. Minori treats the delivered event as sufficient admission and does not distinguish internal members from external collaborators.
 _Avoid_: Eligible Member, allowed-group member, internal-only user
 
-**Agent Thread**:
-A Feishu reply thread started when a Feishu Delivered Member mentions Minori or replies to a Minori message. Members may continue inside the same thread without mentioning Minori again; unrelated messages on the group timeline do not activate the Agent.
-_Avoid_: Global group session, always-on listening
+**Group Context**:
+The ordinary Feishu group chat identified by its chat ID and used as shared context when a member explicitly invokes Minori. Recent group messages may inform an Agent run even when they did not invoke Minori; Minori never intentionally creates a topic or treats every group message as a trigger.
+_Avoid_: Agent Thread, Group Reply Chain, Feishu topic, always-on Agent
+
+**Live Group History**:
+A bounded window of ordinary messages read from the current Group Context only when Minori is invoked. It may be sent to the model for that run but is not copied wholesale into Minori's persistence; Feishu remains its source of truth.
+_Avoid_: Retained Conversation History, group mirror, always-on ingestion
+
+**Current Invocation**:
+The delivered private message, direct group mention, or direct reply to Minori that explicitly starts one Agent run. Live Group History is background for interpreting this request; historical instructions do not independently authorize actions unless the Current Invocation adopts or refers to them.
+_Avoid_: Latest group message, historical command, always-active session
+
+**Invocation Context Cutoff**:
+The occurrence time of the Current Invocation, which is the upper bound for Live Group History supplied to that run. Messages sent while the invocation waits in the Durable Conversation Queue belong only to later invocations.
+_Avoid_: Execution-start context, live tail, future messages
 
 **Durable Conversation Queue**:
 The PostgreSQL-backed queue of accepted Feishu events waiting for Agent execution. Minori runs at most four different conversations concurrently by default, serializes messages within each conversation, and lets additional conversations wait without imposing per-user or per-group quotas.
@@ -88,6 +100,6 @@ _Avoid_: Every model-generated statement, general knowledge
 A reply whose Feishu send was attempted but whose success was not durably recorded before the one-hour Feishu deduplication window expired. Minori does not resend an Uncertain Reply automatically because avoiding a duplicate takes priority over recovering the old answer.
 _Avoid_: Failed reply, queued reply
 
-**Retained Thread History**:
-Unexpired messages from the current Agent Thread or private conversation. Minori automatically supplies a recent context window and lets the Agent search older messages from that same conversation; it does not summarize them into long-term memory or expose another conversation.
-_Avoid_: Global chat search, durable memory, hidden summary
+**Retained Conversation History**:
+Unexpired messages from the current Group Context or private conversation that Minori has durably retained. Minori automatically supplies a recent context window and may read additional live history only from that same conversation; it does not summarize messages into long-term memory or expose another conversation.
+_Avoid_: Retained Thread History, Live Group History, global chat search, durable memory, hidden summary
