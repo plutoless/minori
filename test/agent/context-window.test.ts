@@ -16,4 +16,21 @@ describe('selectRecentHistory', () => {
     const newest = { role: 'user' as const, content: 'a very large current prompt' };
     expect(selectRecentHistory([newest], 1, () => 100)).toEqual([newest]);
   });
+
+  it('always retains Current Invocation and prefers the newest large prior messages', () => {
+    const history = Array.from({ length: 20 }, (_, index) => ({
+      role: 'user' as const,
+      content: `[Live Group History][Member ${index}] ${'x'.repeat(5_000)}`,
+    }));
+    const currentInvocation = {
+      role: 'user' as const,
+      content: '[Current Invocation][Carol] summarize above',
+    };
+
+    expect(selectRecentHistory([...history, currentInvocation], 2_600)).toEqual([
+      history[18],
+      history[19],
+      currentInvocation,
+    ]);
+  });
 });

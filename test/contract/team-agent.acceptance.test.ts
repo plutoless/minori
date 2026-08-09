@@ -14,6 +14,7 @@ import { budgetExhaustedText } from '../../src/agent/run-outcome.js';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import type { FeishuMessenger } from '../../src/feishu/client.js';
 import { FeishuGateway } from '../../src/feishu/gateway.js';
+import type { GroupContextSource } from '../../src/feishu/group-context.js';
 import { normalizeMessageEvent } from '../../src/feishu/normalize-event.js';
 import { LarkKnowledgeService, type KnowledgeService } from '../../src/lark/knowledge-service.js';
 import { PostgresAgentRunStore } from '../../src/storage/agent-run-store.js';
@@ -250,6 +251,194 @@ describe('open team Agent release contract', () => {
     );
   });
 
+  it('uses transient paginated Group Context while persisting only invocations and replies', async () => {
+    const groupContextSource: GroupContextSource = {
+      open: vi.fn((input) => {
+        let pageCallCount = 1;
+        const initialMessages = input.triggerMessageId === 'om_context_1'
+          ? [
+            {
+              speakerName: 'Alice', role: 'user' as const, content: 'Initial Alice context.',
+              occurredAt: new Date('2026-08-08T09:55:00.000Z'),
+            },
+            {
+              speakerName: 'Bob', role: 'user' as const,
+              content: '[未读取：image 消息]',
+              occurredAt: new Date('2026-08-08T09:56:00.000Z'),
+            },
+            {
+              speakerName: 'Minori', role: 'assistant' as const,
+              content: 'Earlier Minori context.',
+              occurredAt: new Date('2026-08-08T09:57:00.000Z'),
+            },
+          ]
+          : [{
+            speakerName: 'Alice', role: 'user' as const, content: 'Second invocation context.',
+            occurredAt: new Date('2026-08-08T10:00:30.000Z'),
+          }];
+        return {
+          loadInitial: vi.fn(async (signal?: AbortSignal) => {
+            signal?.throwIfAborted();
+            return {
+              messages: initialMessages,
+              currentSenderName: input.triggerMessageId === 'om_context_1' ? 'Carol' : 'Dave',
+              audit: {
+                status: 'loaded' as const,
+                messageCount: initialMessages.length,
+                pageCallCount,
+                cutoff: new Date(input.cutoff),
+              },
+            };
+          }),
+          readEarlier: vi.fn(async (_page, signal?: AbortSignal) => {
+            signal?.throwIfAborted();
+            pageCallCount += 1;
+            return {
+              messages: [{
+                speakerName: 'Eve', role: 'user' as const,
+                content: 'Transient older-page decision.',
+                occurredAt: new Date('2026-08-08T09:00:00.000Z'),
+              }],
+              audit: {
+                status: 'loaded' as const,
+                messageCount: initialMessages.length + 1,
+                pageCallCount,
+                cutoff: new Date(input.cutoff),
+              },
+            };
+          }),
+        };
+      }),
+    };
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_earlier_group',
+          toolName: 'readEarlierGroupHistory', input: JSON.stringify({ limit: 20 }),
+        }], 'tool-calls'),
+        generated([{ type: 'text', text: 'First group answer.' }], 'stop'),
+        generated([{ type: 'text', text: 'Second group answer.' }], 'stop'),
+      ],
+    });
+    const knowledge: KnowledgeService = {
+      search: vi.fn(async () => []),
+      fetchDocument: vi.fn(),
+      listSpaces: vi.fn(async () => []),
+      listNodes: vi.fn(async () => []),
+      getNode: vi.fn(),
+      createDocument: vi.fn(),
+      appendDocument: vi.fn(),
+      patchDocument: vi.fn(),
+    };
+    const runStore = new PostgresAgentRunStore(database.db);
+    const messenger = new FakeMessenger();
+    const worker = new MessageWorker({
+      eventStore: events,
+      conversations,
+      messenger,
+      loadWriteAttempts: (eventId) => runStore.listWriteAttempts(eventId),
+      logger: { warn: vi.fn(), info: vi.fn() },
+      runAgent: (message, claimAttempt, signal) => {
+        if (message.content.kind !== 'text') throw new Error('unsupported_agent_input');
+        return runKnowledgeAgent({
+          prompt: message.content.text,
+          history: [],
+          trigger: {
+            kind: 'feishu_member',
+            senderOpenId: message.senderOpenId,
+            chatId: message.chatId,
+            chatType: message.chatType,
+            occurredAt: message.occurredAt,
+          },
+        }, {
+          model,
+          service: knowledge,
+          eventId: message.eventId,
+          claimAttempt,
+          modelName: '5.6-terra',
+          maxSteps: 40,
+          timeoutMs: 300_000,
+          botOpenId: BOT_OPEN_ID,
+          botAppId: 'cli_minori',
+          groupContextSource,
+          agentRunStore: runStore,
+          conversationKey: message.conversationKey,
+          triggerMessageId: message.messageId,
+          conversationStore: conversations,
+        }, signal);
+      },
+    });
+    const first = normalizeMessageEvent(rawEvent({
+      event_id: 'evt_context_1',
+      sender: { sender_type: 'user', sender_id: { open_id: 'ou_current_1' } },
+      message: {
+        message_id: 'om_context_1', parent_id: 'om_root_a',
+        chat_id: 'oc_team', chat_type: 'group',
+        message_type: 'text', create_time: '1786202400000',
+        content: JSON.stringify({ text: '@_user_1 summarize above' }),
+        mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }],
+      },
+    }), { botOpenId: BOT_OPEN_ID })!;
+    const second = normalizeMessageEvent(rawEvent({
+      event_id: 'evt_context_2',
+      sender: { sender_type: 'user', sender_id: { open_id: 'ou_current_2' } },
+      message: {
+        message_id: 'om_context_2', parent_id: 'om_root_b',
+        chat_id: 'oc_team', chat_type: 'group',
+        message_type: 'text', create_time: '1786202460000',
+        content: JSON.stringify({ text: '@_user_1 what changed?' }),
+        mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }],
+      },
+    }), { botOpenId: BOT_OPEN_ID })!;
+
+    expect(first.conversationKey).toBe('oc_team');
+    expect(second.conversationKey).toBe('oc_team');
+    await events.enqueue(first);
+    await events.enqueue(second);
+    const firstBatch = await events.claimReady(4, new Date(Date.now() + 60_000));
+    expect(firstBatch.map(({ eventId }) => eventId)).toEqual(['evt_context_1']);
+    await worker.process(firstBatch[0]!);
+    const secondBatch = await events.claimReady(4, new Date(Date.now() + 60_000));
+    expect(secondBatch.map(({ eventId }) => eventId)).toEqual(['evt_context_2']);
+    await worker.process(secondBatch[0]!);
+
+    expect(groupContextSource.open).toHaveBeenCalledTimes(2);
+    const modelContext = JSON.stringify(model.doGenerateCalls);
+    expect(modelContext).toContain('[Live Group History][Alice]');
+    expect(modelContext).toContain('[Live Group History][Bob]');
+    expect(modelContext).toContain('[Current Invocation][Carol] summarize above');
+    expect(modelContext).toContain('Transient older-page decision.');
+    expect(modelContext).not.toContain('ou_current');
+
+    const persisted = await database.pool.query<{
+      messageId: string; role: string; content: string | null;
+    }>(`select message_id as "messageId", role, content
+        from messages order by sequence`);
+    expect(persisted.rows.map(({ messageId, role }) => ({ messageId, role }))).toEqual([
+      { messageId: 'om_context_1', role: 'user' },
+      { messageId: 'reply_1', role: 'assistant' },
+      { messageId: 'om_context_2', role: 'user' },
+      { messageId: 'reply_2', role: 'assistant' },
+    ]);
+    const persistedBodies = JSON.stringify(persisted.rows);
+    expect(persistedBodies).not.toContain('Initial Alice context.');
+    expect(persistedBodies).not.toContain('Transient older-page decision.');
+    expect(persistedBodies).not.toContain('Alice');
+    expect(persistedBodies).not.toContain('Bob');
+    expect(persistedBodies).not.toContain('Carol');
+
+    const runs = await database.db.select().from(agentRuns);
+    expect(runs.map((run) => ({
+      eventId: run.eventId,
+      status: run.groupHistoryStatus,
+      messages: run.groupHistoryMessageCount,
+      pages: run.groupHistoryPageCount,
+    }))).toEqual(expect.arrayContaining([
+      { eventId: 'evt_context_1', status: 'loaded', messages: 4, pages: 2 },
+      { eventId: 'evt_context_2', status: 'loaded', messages: 1, pages: 1 },
+    ]));
+  });
+
   it('keeps durable Typing through retry and restart until the terminal reply', async () => {
     const messenger = new FakeMessenger();
     const gateway = new FeishuGateway({
@@ -404,6 +593,8 @@ describe('open team Agent release contract', () => {
             kind: 'feishu_member',
             senderOpenId: message.senderOpenId,
             chatId: message.chatId,
+            chatType: message.chatType,
+            occurredAt: message.occurredAt,
           },
         }, {
           model,
@@ -413,6 +604,8 @@ describe('open team Agent release contract', () => {
           modelName: '5.6-terra',
           maxSteps: 20,
           timeoutMs: 180_000,
+          botOpenId: BOT_OPEN_ID,
+          botAppId: 'cli_minori',
           agentRunStore: runStore,
           conversationKey: message.conversationKey,
           triggerMessageId: message.messageId,

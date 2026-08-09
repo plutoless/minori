@@ -4,6 +4,12 @@ import {
 } from 'ai';
 import { KnowledgeWriteConflict } from '../lark/errors.js';
 import type { KnowledgeService, KnowledgeWriteResult } from '../lark/knowledge-service.js';
+import type {
+  GroupContextSource,
+  GroupHistoryAudit,
+  InitialGroupContext,
+  ScopedGroupContextReader,
+} from '../feishu/group-context.js';
 import type { AgentRunStore } from '../storage/agent-run-store.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
 import { selectRecentHistory, type AgentHistoryMessage } from './context-window.js';
@@ -18,6 +24,7 @@ import {
 import { SourceRegistry, type AgentSource } from './sources.js';
 import {
   createKnowledgeTools,
+  type GroupHistoryToolContext,
   type KnowledgeWriteAudit,
   type ScopedHistoryReader,
 } from './tools.js';
@@ -33,7 +40,13 @@ export type AgentReply = {
 export type AgentRunInput = {
   prompt: string;
   history: AgentHistoryMessage[];
-  trigger: { kind: 'feishu_member'; senderOpenId: string; chatId: string };
+  trigger: {
+    kind: 'feishu_member';
+    senderOpenId: string;
+    chatId: string;
+    chatType: 'group' | 'p2p';
+    occurredAt: Date;
+  };
 };
 
 export interface KnowledgeAgent {
@@ -46,6 +59,7 @@ export type TeamAgentDependencies = {
   history: ScopedHistoryReader;
   sources: SourceRegistry;
   writeAudit: KnowledgeWriteAudit;
+  groupHistory?: GroupHistoryToolContext;
 };
 
 function createStepBudget(maxSteps: number) {
@@ -74,6 +88,7 @@ function createTeamAgentWithBudget(
       dependencies.history,
       dependencies.sources,
       dependencies.writeAudit,
+      dependencies.groupHistory,
     ),
     stopWhen: budget.stopWhen,
     providerOptions: { openai: { store: false } },
@@ -90,10 +105,13 @@ export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' 
   modelName: string;
   maxSteps: number;
   timeoutMs: number;
+  botOpenId: string;
+  botAppId: string;
   agentRunStore: AgentRunStore;
   conversationKey: string;
   triggerMessageId: string;
   conversationStore: Pick<ConversationStore, 'search' | 'recentWithinBudget'>;
+  groupContextSource?: GroupContextSource;
   contextTokenTarget?: number;
 };
 
@@ -101,6 +119,7 @@ const WRITE_AUDIT_UNAVAILABLE = 'write_audit_unavailable';
 const AGENT_AUDIT_UNAVAILABLE = 'agent_audit_unavailable';
 const AGENT_RUN_ABORTED_CATEGORY = 'agent_run_aborted';
 const AUDIT_FINALIZATION_TIMEOUT_MS = 5_000;
+const CURRENT_SENDER_NAME_UNAVAILABLE = '姓名不可用的成员';
 
 class WriteAuditUnavailable extends Error {
   constructor() {
@@ -253,6 +272,35 @@ function withAuditFinalization<T>(operation: () => Promise<T>): Promise<T> {
   return withAbort(operation, AbortSignal.timeout(AUDIT_FINALIZATION_TIMEOUT_MS));
 }
 
+function unavailableGroupContext(cutoff: Date): InitialGroupContext {
+  return {
+    messages: [],
+    currentSenderName: CURRENT_SENDER_NAME_UNAVAILABLE,
+    audit: {
+      status: 'unavailable',
+      messageCount: 0,
+      pageCallCount: 1,
+      cutoff: new Date(cutoff),
+      errorCategory: 'group_history_unavailable',
+    },
+  };
+}
+
+function groupModelMessages(initial: InitialGroupContext): AgentHistoryMessage[] {
+  const messages: AgentHistoryMessage[] = initial.messages.map((message) => ({
+    role: message.role,
+    content: `[Live Group History][${message.speakerName}]`
+      + `[${message.occurredAt.toISOString()}] ${message.content}`,
+  }));
+  if (initial.audit.errorCategory) {
+    messages.push({
+      role: 'user',
+      content: `[Live Group History][Context Limitation] ${initial.audit.errorCategory}`,
+    });
+  }
+  return messages;
+}
+
 function createRunAbortSignals(signal: AbortSignal | undefined, timeoutMs: number) {
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   let firstAbortSource: 'external' | 'timeout' | undefined;
@@ -329,6 +377,58 @@ export async function runKnowledgeAgent(
       && JSON.stringify(input.history) !== JSON.stringify(authoritativeHistory)) {
       throw new Error('conversation_history_mismatch');
     }
+
+    let groupReader: ScopedGroupContextReader | undefined;
+    let initialGroupContext: InitialGroupContext | undefined;
+    if (input.trigger.chatType === 'group') {
+      const cutoff = new Date(input.trigger.occurredAt);
+      if (dependencies.groupContextSource) {
+        try {
+          groupReader = dependencies.groupContextSource.open({
+            chatId: input.trigger.chatId,
+            cutoff,
+            triggerMessageId: dependencies.triggerMessageId,
+            currentSenderOpenId: input.trigger.senderOpenId,
+            botOpenId: dependencies.botOpenId,
+            botAppId: dependencies.botAppId,
+          });
+          initialGroupContext = await withAbort(
+            () => groupReader!.loadInitial(runSignal),
+            runSignal,
+          );
+        } catch (error) {
+          if (runSignal.aborted) throw error;
+          groupReader = undefined;
+          initialGroupContext = unavailableGroupContext(cutoff);
+        }
+      } else {
+        initialGroupContext = unavailableGroupContext(cutoff);
+      }
+      try {
+        await withAbort(
+          () => dependencies.agentRunStore.recordGroupHistory(
+            run.id,
+            initialGroupContext!.audit,
+          ),
+          runSignal,
+        );
+      } catch (error) {
+        if (runSignal.aborted) throw error;
+        throw new Error(AGENT_AUDIT_UNAVAILABLE);
+      }
+    }
+
+    const recordGroupHistory = async (audit: GroupHistoryAudit) => {
+      try {
+        await withAbort(
+          () => dependencies.agentRunStore.recordGroupHistory(run.id, audit),
+          runSignal,
+        );
+      } catch (error) {
+        if (runSignal.aborted) throw error;
+        throw new Error(AGENT_AUDIT_UNAVAILABLE);
+      }
+    };
     const agent = createTeamAgentWithBudget({
       model: dependencies.model,
       service: dependencies.service,
@@ -347,11 +447,19 @@ export async function runKnowledgeAgent(
           limit,
         ),
       },
+      ...(groupReader ? {
+        groupHistory: { reader: groupReader, recordAudit: recordGroupHistory },
+      } : {}),
     }, stepBudget);
-    const history = selectRecentHistory(
-      authoritativeHistory,
-      contextTokenTarget,
-    );
+    const history = input.trigger.chatType === 'group'
+      ? selectRecentHistory([
+        ...groupModelMessages(initialGroupContext!),
+        {
+          role: 'user',
+          content: `[Current Invocation][${initialGroupContext!.currentSenderName}] ${input.prompt}`,
+        },
+      ], contextTokenTarget)
+      : selectRecentHistory(authoritativeHistory, contextTokenTarget);
     const result = await agent.generate({
       messages: history,
       abortSignal: runSignal,

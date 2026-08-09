@@ -3,6 +3,10 @@ import { z } from 'zod';
 import type {
   KnowledgeService, KnowledgeWriteResult,
 } from '../lark/knowledge-service.js';
+import type {
+  GroupHistoryAudit,
+  ScopedGroupContextReader,
+} from '../feishu/group-context.js';
 import { SourceRegistry } from './sources.js';
 
 export type ScopedHistoryReader = {
@@ -41,6 +45,11 @@ export interface KnowledgeWriteAudit {
     operation: () => Promise<KnowledgeWriteResult>,
   ): Promise<KnowledgeWriteResult>;
 }
+
+export type GroupHistoryToolContext = {
+  reader: ScopedGroupContextReader;
+  recordAudit(audit: GroupHistoryAudit): Promise<void>;
+};
 
 function splitSections(markdown: string) {
   const sections = markdown.split(/(?=^#{1,6}\s+)/gmu).filter(Boolean);
@@ -106,6 +115,7 @@ export function createKnowledgeTools(
   history: ScopedHistoryReader,
   sources = new SourceRegistry(),
   writeAudit: KnowledgeWriteAudit,
+  groupHistory?: GroupHistoryToolContext,
 ) {
   const documents = new Map<string, Promise<FetchedDocument>>();
   const pageSets = new Map<string, string[]>();
@@ -281,5 +291,29 @@ export function createKnowledgeTools(
         }));
       },
     }),
+    ...(groupHistory ? {
+      readEarlierGroupHistory: tool({
+        description: 'Read an older page from this run\'s current Feishu group context.',
+        inputSchema: z.object({
+          cursor: z.string().min(1).max(200).optional(),
+          limit: z.number().int().min(1).max(50).default(20),
+        }).strict(),
+        execute: async (input, { abortSignal }) => {
+          const page = await groupHistory.reader.readEarlier({
+            limit: input.limit,
+            ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+          }, abortSignal);
+          await groupHistory.recordAudit(page.audit);
+          return {
+            status: page.audit.status,
+            messages: page.messages,
+            ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+            ...(page.audit.errorCategory
+              ? { errorCategory: page.audit.errorCategory }
+              : {}),
+          };
+        },
+      }),
+    } : {}),
   };
 }

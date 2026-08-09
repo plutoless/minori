@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import type { Logger } from 'pino';
 import { createAgentModel } from './agent/model.js';
 import { runKnowledgeAgent } from './agent/run.js';
-import { createOfficialFeishuClient } from './feishu/client.js';
+import { createOfficialFeishuRuntime } from './feishu/client.js';
 import { createOfficialLongConnection, FeishuGateway } from './feishu/gateway.js';
 import { LarkKnowledgeService } from './lark/knowledge-service.js';
 import { LarkRunner } from './lark/runner.js';
@@ -102,10 +102,11 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       aiModel: config.aiModel,
     });
     const service = new LarkKnowledgeService(lark);
-    const messenger = createOfficialFeishuClient({
+    const feishu = createOfficialFeishuRuntime({
       appId: config.feishuAppId!,
       appSecret: config.feishuAppSecret!,
     }, logger);
+    const { messenger } = feishu;
     const nextWorker = new MessageWorker({
       eventStore: storage.eventStore,
       conversations: storage.conversationStore,
@@ -121,6 +122,8 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
             kind: 'feishu_member',
             senderOpenId: message.senderOpenId,
             chatId: message.chatId,
+            chatType: message.chatType,
+            occurredAt: message.occurredAt,
           },
         }, {
           model,
@@ -130,6 +133,9 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
           modelName: config.aiModel,
           maxSteps: config.agentMaxSteps,
           timeoutMs: config.agentTimeoutMs,
+          botOpenId: config.feishuBotOpenId!,
+          botAppId: config.feishuAppId!,
+          groupContextSource: feishu.groupContext,
           agentRunStore: storage.agentRunStore!,
           conversationKey: message.conversationKey,
           triggerMessageId: message.messageId,

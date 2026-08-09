@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { KnowledgeService } from '../../src/lark/knowledge-service.js';
 import { createKnowledgeTools } from '../../src/agent/tools.js';
 import { SourceRegistry } from '../../src/agent/sources.js';
+import type {
+  GroupHistoryAudit,
+  ScopedGroupContextReader,
+} from '../../src/feishu/group-context.js';
 
 function service(): KnowledgeService {
   return {
@@ -177,6 +181,78 @@ describe('createKnowledgeTools', () => {
       { toolCallId: 'call_1', messages: [] },
     );
     expect(search).toHaveBeenCalledWith('launch', 5);
+  });
+
+  it('adds only a scoped, strict, audited earlier-group-history reader for group runs', async () => {
+    const audit: GroupHistoryAudit = {
+      status: 'loaded', messageCount: 22, pageCallCount: 2,
+      cutoff: new Date('2026-08-08T10:00:00.000Z'),
+    };
+    const reader: ScopedGroupContextReader = {
+      loadInitial: vi.fn(),
+      readEarlier: vi.fn().mockResolvedValue({
+        messages: [
+          {
+            speakerName: 'Alice', role: 'user', content: 'Earlier decision.',
+            occurredAt: new Date('2026-08-08T09:00:00.000Z'),
+          },
+          {
+            speakerName: 'Bob', role: 'user', content: '[未读取：image 消息]',
+            occurredAt: new Date('2026-08-08T09:01:00.000Z'),
+          },
+        ],
+        nextCursor: 'group_cursor_2',
+        audit,
+      }),
+    };
+    const recordAudit = vi.fn().mockResolvedValue(undefined);
+    const controller = new AbortController();
+    const tools = createKnowledgeTools(
+      service(),
+      { search: vi.fn().mockResolvedValue([]) },
+      new SourceRegistry(),
+      { run: (_input, operation) => operation() },
+      { reader, recordAudit },
+    );
+    const groupTool = tools.readEarlierGroupHistory;
+    expect(groupTool).toBeDefined();
+    const schema = groupTool!.inputSchema as {
+      safeParse(value: unknown): { success: boolean };
+    };
+
+    expect(schema.safeParse({ limit: 50 }).success).toBe(true);
+    expect(schema.safeParse({ cursor: 'group_cursor_1', limit: 20 }).success)
+      .toBe(true);
+    expect(schema.safeParse({ chatId: 'oc_other', limit: 20 }).success)
+      .toBe(false);
+    expect(schema.safeParse({ cutoff: '2027-01-01', limit: 20 }).success)
+      .toBe(false);
+
+    const result = await groupTool!.execute?.(
+      { cursor: 'group_cursor_1', limit: 20 },
+      { toolCallId: 'call_group_history', messages: [], abortSignal: controller.signal },
+    );
+
+    expect(reader.readEarlier).toHaveBeenCalledWith(
+      { cursor: 'group_cursor_1', limit: 20 }, controller.signal,
+    );
+    expect(recordAudit).toHaveBeenCalledWith(audit);
+    expect(result).toEqual({
+      status: 'loaded',
+      messages: [
+        {
+          speakerName: 'Alice', role: 'user', content: 'Earlier decision.',
+          occurredAt: new Date('2026-08-08T09:00:00.000Z'),
+        },
+        {
+          speakerName: 'Bob', role: 'user', content: '[未读取：image 消息]',
+          occurredAt: new Date('2026-08-08T09:01:00.000Z'),
+        },
+      ],
+      nextCursor: 'group_cursor_2',
+    });
+    expect(JSON.stringify(result)).not.toContain('ou_');
+    expect(JSON.stringify(result)).not.toContain('provider_secret_error');
   });
 
   it('returns bounded relevant document pages, source metadata, and cached continuation', async () => {

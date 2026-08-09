@@ -3,7 +3,16 @@ import { MockLanguageModelV4 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
 import { KnowledgeWriteConflict } from '../../src/lark/errors.js';
 import type { KnowledgeService } from '../../src/lark/knowledge-service.js';
-import { runKnowledgeAgent, type RunKnowledgeAgentDependencies } from '../../src/agent/run.js';
+import {
+  runKnowledgeAgent,
+  type AgentRunInput,
+  type RunKnowledgeAgentDependencies,
+} from '../../src/agent/run.js';
+import type {
+  GroupContextSource,
+  GroupHistoryAudit,
+  ScopedGroupContextReader,
+} from '../../src/feishu/group-context.js';
 import type { AgentRunStore } from '../../src/storage/agent-run-store.js';
 
 const usage = {
@@ -69,8 +78,59 @@ function conversationStore(
 const input = {
   prompt: 'When is the beta launch?',
   history: [],
-  trigger: { kind: 'feishu_member' as const, senderOpenId: 'ou_member', chatId: 'oc_team' },
-};
+  trigger: {
+    kind: 'feishu_member',
+    senderOpenId: 'ou_member',
+    chatId: 'oc_team',
+    chatType: 'p2p',
+    occurredAt: new Date('2026-08-08T10:00:00.000Z'),
+  },
+} satisfies AgentRunInput;
+
+const groupInput = {
+  prompt: 'summarize above',
+  history: [],
+  trigger: {
+    kind: 'feishu_member',
+    senderOpenId: 'ou_current',
+    chatId: 'oc_team',
+    chatType: 'group',
+    occurredAt: new Date('2026-08-08T10:00:00.000Z'),
+  },
+} satisfies AgentRunInput;
+
+function groupContext(
+  initialOverrides: Partial<Awaited<ReturnType<ScopedGroupContextReader['loadInitial']>>> = {},
+) {
+  const cutoff = new Date('2026-08-08T10:00:00.000Z');
+  const audit: GroupHistoryAudit = {
+    status: 'loaded', messageCount: 3, pageCallCount: 1, cutoff,
+  };
+  const reader: ScopedGroupContextReader = {
+    loadInitial: vi.fn().mockResolvedValue({
+      messages: [
+        {
+          speakerName: 'Alice', role: 'user', content: 'Launch on Friday.',
+          occurredAt: new Date('2026-08-08T09:55:00.000Z'),
+        },
+        {
+          speakerName: 'Bob', role: 'user', content: 'Please capture the risks.',
+          occurredAt: new Date('2026-08-08T09:56:00.000Z'),
+        },
+        {
+          speakerName: 'Minori', role: 'assistant', content: 'I can help when invoked.',
+          occurredAt: new Date('2026-08-08T09:57:00.000Z'),
+        },
+      ],
+      currentSenderName: 'Carol',
+      audit,
+      ...initialOverrides,
+    }),
+    readEarlier: vi.fn().mockResolvedValue({ messages: [], audit }),
+  };
+  const source: GroupContextSource = { open: vi.fn().mockReturnValue(reader) };
+  return { source, reader };
+}
 
 function agentRunStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
   return {
@@ -78,6 +138,7 @@ function agentRunStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
     beginWrite: vi.fn().mockResolvedValue({ id: 'write_1' }),
     finishWrite: vi.fn().mockResolvedValue(undefined),
     listWriteAttempts: vi.fn().mockResolvedValue([]),
+    recordGroupHistory: vi.fn().mockResolvedValue(undefined),
     finish: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -99,12 +160,95 @@ function dependencies(
     modelName: '5.6-terra',
     maxSteps: 20,
     timeoutMs: 180_000,
+    botOpenId: 'ou_minori',
+    botAppId: 'cli_minori',
     agentRunStore: agentRunStore(),
     ...overrides,
   };
 }
 
 describe('runKnowledgeAgent', () => {
+  it('supplies transient named group history before one distinct Current Invocation', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{ type: 'text', text: 'Friday, with risks noted.' }], 'stop'),
+    });
+    const group = groupContext();
+    const audit = agentRunStore();
+
+    await runKnowledgeAgent(groupInput, dependencies(groupInput.prompt, model, {
+      groupContextSource: group.source,
+      agentRunStore: audit,
+    }));
+
+    expect(group.source.open).toHaveBeenCalledWith({
+      chatId: 'oc_team',
+      cutoff: new Date('2026-08-08T10:00:00.000Z'),
+      triggerMessageId: 'om_trigger',
+      currentSenderOpenId: 'ou_current',
+      botOpenId: 'ou_minori',
+      botAppId: 'cli_minori',
+    });
+    expect(group.reader.loadInitial).toHaveBeenCalledWith(expect.any(AbortSignal));
+    expect(audit.recordGroupHistory).toHaveBeenCalledWith('run_1', {
+      status: 'loaded', messageCount: 3, pageCallCount: 1,
+      cutoff: new Date('2026-08-08T10:00:00.000Z'),
+    });
+    const serializedMessages = JSON.stringify(model.doGenerateCalls[0]?.prompt);
+    expect(serializedMessages).toContain('[Live Group History][Alice]');
+    expect(serializedMessages).toContain('[Live Group History][Bob]');
+    expect(serializedMessages).toContain('[Live Group History][Minori]');
+    expect(serializedMessages).toContain('[Current Invocation][Carol] summarize above');
+    expect(serializedMessages).not.toContain('Earlier context');
+    expect(serializedMessages).not.toContain('ou_');
+    expect(serializedMessages.lastIndexOf('[Current Invocation]'))
+      .toBeGreaterThan(serializedMessages.lastIndexOf('[Live Group History]'));
+    expect(model.doGenerateCalls[0]?.tools?.map(({ name }) => name))
+      .toContain('readEarlierGroupHistory');
+  });
+
+  it('keeps retained private history and never opens Group Context for p2p', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{ type: 'text', text: 'Private answer.' }], 'stop'),
+    });
+    const group = groupContext();
+
+    await runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      groupContextSource: group.source,
+    }));
+
+    expect(group.source.open).not.toHaveBeenCalled();
+    expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain('Earlier context');
+    expect(model.doGenerateCalls[0]?.tools?.map(({ name }) => name))
+      .not.toContain('readEarlierGroupHistory');
+  });
+
+  it('runs once with Current Invocation and a stable fact when group history is unavailable', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{ type: 'text', text: 'I can answer from the request.' }], 'stop'),
+    });
+    const unavailableAudit: GroupHistoryAudit = {
+      status: 'unavailable', messageCount: 0, pageCallCount: 1,
+      cutoff: new Date('2026-08-08T10:00:00.000Z'),
+      errorCategory: 'group_history_unavailable',
+    };
+    const group = groupContext({
+      messages: [], currentSenderName: 'Carol', audit: unavailableAudit,
+    });
+    const audit = agentRunStore();
+
+    await expect(runKnowledgeAgent(groupInput, dependencies(groupInput.prompt, model, {
+      groupContextSource: group.source,
+      agentRunStore: audit,
+    }))).resolves.toMatchObject({ outcome: 'completed' });
+
+    expect(model.doGenerateCalls).toHaveLength(1);
+    const serializedMessages = JSON.stringify(model.doGenerateCalls[0]?.prompt);
+    expect(serializedMessages).toContain('group_history_unavailable');
+    expect(serializedMessages).toContain('[Current Invocation][Carol] summarize above');
+    expect(serializedMessages).not.toContain('provider denied history for oc_team');
+    expect(audit.recordGroupHistory).toHaveBeenCalledWith('run_1', unavailableAudit);
+  });
+
   it('searches, reads, and returns a source-linked team knowledge answer', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: [
