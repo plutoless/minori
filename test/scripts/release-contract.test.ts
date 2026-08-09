@@ -40,6 +40,18 @@ describe('Team Agent release packaging contract', () => {
     expect(plan).toContain('Build the exact commit, bootstrap OAuth, and only then deploy');
   });
 
+  it('keeps candidate migrations compatible with the fixed-point rollback image', async () => {
+    const migration = await text('drizzle/0002_open_admission.sql');
+    const schema = await text('src/storage/schema.ts');
+    const readme = await text('README.md');
+
+    expect(migration).not.toMatch(/drop\s+table\s+"?allowed_chats/iu);
+    expect(migration).toContain('rollback floor advances beyond 4f936ab');
+    expect(schema).toContain("rollbackCompatibilityAdmission = pgTable('allowed_chats'");
+    expect(readme).toContain('rollback does not downgrade the database');
+    expect(readme).toContain('current runtime never reads or writes that table');
+  });
+
   it('installs runtime CA trust and persists the Lark CLI home', async () => {
     const dockerfile = await text('Dockerfile');
     const runtime = dockerfile.slice(dockerfile.indexOf('FROM node:22-bookworm-slim AS runtime'));

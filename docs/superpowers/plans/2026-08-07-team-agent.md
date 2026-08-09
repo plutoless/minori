@@ -24,6 +24,7 @@
 - Neon remains the trusted Persistence Data Boundary. Conversation bodies remain searchable for 30 days; do not persist complete retrieved documents, raw tool output, hidden reasoning, credentials, or prompt/model bodies in audit metadata.
 - Preserve the verified Lark runtime contract: one existing Feishu App, `strict-mode=user`, `HOME=/var/lib/minori/lark/home`, TLS verification, UID/GID `10001:10001`, and the existing protected Lark volume.
 - Preserve the release ordering contract: Build the exact commit, bootstrap OAuth, and only then deploy. OAuth is already healthy for this release, so Task 5 verifies the persisted identity instead of repeating device authorization.
+- Keep every candidate migration backward compatible with the supported previous image because deployment migrates before replacement and rollback does not downgrade the database. Destructive contract cleanup waits until the rollback floor has advanced.
 - Local Compose contract checks use `MINORI_ENV_FILE=./env.example`; production always uses `/opt/minori/minori.env`.
 - Never print or commit API keys, App Secret, OAuth URLs, device codes, tokens, database URLs, environment values, or credential-file contents.
 - Every implementation slice uses red-green TDD, runs its focused tests, runs `npm run verify`, and commits before the next slice begins.
@@ -49,7 +50,7 @@
 
 **Schema and release**
 
-- `drizzle/0002_open_admission.sql` removes the obsolete `allowed_chats` table.
+- `drizzle/0002_open_admission.sql` records the open-admission release without dropping the obsolete `allowed_chats` table. The new runtime never reads it; the physical table remains inert until the supported rollback floor advances beyond the fixed-point image.
 - `drizzle/0003_write_replay_boundary.sql` adds `processed_events.write_started_at` and `tool_runs.result_identifiers`.
 - Unit and integration tests prove open admission, reaction timing, explicit budget outcomes, safe pre-write retry, blocked post-write replay, and restart recovery.
 - README, environment examples, canonical design, and release acceptance describe one open-admission runtime and one exact-commit Vultr deployment.
@@ -164,19 +165,21 @@ In `src/feishu/client.ts` remove `ChatMemberSource`, `chatMembers.get` from `Fei
 
 Delete `ALLOWED_CHAT_IDS` from the Zod schema and delete `allowedChatIds` from `loadConfig`. Remove `PostgresAllowedChatStore` and `allowedChatStore` from `StorageRuntime` and `createStorageRuntime`.
 
-Delete `allowedChats` from `src/storage/schema.ts`, then run:
+Rename the `allowedChats` schema export to an explicitly deprecated rollback-compatibility export, but retain the physical `allowed_chats` table. No current runtime module may import or use it. It exists only because deployment applies migrations before candidate replacement and the supported fixed-point image still writes this table during initialization.
+
+Keep the journal tag `0002_open_admission` and make the migration an intentional no-op with a comment explaining the deferred contract cleanup. The `0002` snapshot must continue to include `public.allowed_chats`. Do not edit prior migrations.
+
+Add an integration regression that applies all candidate migrations, then proves the fixed-point store's startup contract can still update and upsert `allowed_chats`. This protects both the still-running previous image during migration and automatic rollback after candidate readiness failure.
+
+The destructive cleanup is deferred until the supported rollback floor advances beyond `4f936ab`; only that later contract migration may drop the table.
+
+Use Drizzle generation/checking to verify schema metadata remains consistent:
 
 ```bash
-npm exec drizzle-kit generate -- --name open_admission
+npm exec drizzle-kit generate -- --name verify_open_admission_compatibility
 ```
 
-Verify the generated `drizzle/0002_open_admission.sql` contains exactly the destructive schema change:
-
-```sql
-DROP TABLE "allowed_chats";
-```
-
-The generated journal entry must use tag `0002_open_admission`. Do not edit prior migrations.
+Expected: no schema changes. The journal entry remains tagged `0002_open_admission`.
 
 - [ ] **Step 5: Update integration fixtures and operator documentation**
 

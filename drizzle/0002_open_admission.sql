@@ -1,1 +1,3 @@
-DROP TABLE "allowed_chats";
+-- Open admission is a runtime-only change in this release. The legacy allowed_chats table
+-- remains physically present so the supported previous image can still initialize after
+-- this migration. Drop it only after the production rollback floor advances beyond 4f936ab.

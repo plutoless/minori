@@ -151,7 +151,8 @@ The native Lark CLI Linux credential store keeps its master key and encrypted se
 - Neon remains external; Redis and a separate worker service are unnecessary.
 - Feishu uses outbound long connection, so no public inbound webhook is opened.
 - The health endpoint binds to host loopback only.
-- Deployment builds an explicit Git commit, runs migrations and preflight checks, replaces the service, and rolls back when readiness fails.
+- Deployment builds an explicit Git commit, runs migrations and preflight checks, replaces the service, and rolls back when readiness fails. Because migrations run before replacement and rollback restores the previous image without downgrading the database, every candidate migration must remain compatible with that supported previous image.
+- The open-admission release removes the legacy allowlist from configuration and the runtime call graph but temporarily retains the physical `allowed_chats` table as inert rollback compatibility. The current runtime never reads or writes it. A later contract migration may remove it only after the production rollback floor advances beyond `4f936ab`.
 - Live acceptance must cover one group thread where the bot is present, one private
   chat from a member within the Feishu App availability, a real knowledge read with a
   working source link, create, append, targeted patch, restart recovery, and Lark
@@ -170,6 +171,7 @@ The native Lark CLI Linux credential store keeps its master key and encrypted se
 - Opt-in long-term memory.
 - Attachments, audio, image, and video understanding.
 - Multiple specialized Agents or subagents.
+- Destructive cleanup of the inert `allowed_chats` compatibility table after its fixed-point rollback obligation ends.
 - GitHub, repository, CI, or pull-request operations.
 - Administrative web dashboard or multi-tenant hosting.
 - Delete, move, permission, sharing, raw API, arbitrary shell, or arbitrary HTTP tools.

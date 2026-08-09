@@ -96,6 +96,26 @@ describe('open team Agent release contract', () => {
     await container?.stop();
   });
 
+  it('keeps the legacy admission table writable for previous-release rollback', async () => {
+    const relation = await database.pool.query<{ tableName: string | null }>(
+      `select to_regclass('public.allowed_chats')::text as "tableName"`,
+    );
+    expect(relation.rows[0]?.tableName).toBe('allowed_chats');
+
+    // Mirrors the fixed-point admission-store configuration startup contract.
+    await database.pool.query('update allowed_chats set enabled = false, updated_at = now()');
+    await database.pool.query(`
+      insert into allowed_chats (chat_id, enabled, updated_at)
+      values ('oc_rollback_probe', true, now())
+      on conflict (chat_id) do update
+      set enabled = excluded.enabled, updated_at = excluded.updated_at
+    `);
+    const configured = await database.pool.query<{ enabled: boolean }>(
+      `select enabled from allowed_chats where chat_id = 'oc_rollback_probe'`,
+    );
+    expect(configured.rows).toEqual([{ enabled: true }]);
+  });
+
   it('answers delivered external group and private messages with fixture-backed sources', async () => {
     const searchFixture = JSON.parse(await readFile(
       resolve('test/fixtures/lark/drive-search.json'), 'utf8',

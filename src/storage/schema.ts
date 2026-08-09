@@ -44,6 +44,19 @@ export const processedEvents = pgTable('processed_events', {
   ),
 ]);
 
+/**
+ * @deprecated Physical compatibility only for rollback to releases at or before 4f936ab.
+ * The current runtime must not read or write this table. Remove it in a later contract
+ * migration only after the supported rollback floor has advanced beyond those releases.
+ */
+export const rollbackCompatibilityAdmission = pgTable('allowed_chats', {
+  chatId: text('chat_id').primaryKey(),
+  name: text('name'),
+  enabled: boolean('enabled').default(true).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const conversations = pgTable('conversations', {
   id: uuid('id').defaultRandom().primaryKey(),
   conversationKey: text('conversation_key').notNull(),

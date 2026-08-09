@@ -1,6 +1,6 @@
 # Use One Feishu App for Two Authorities
 
-Minori uses one custom Feishu application for both Bot Authority and Delegated Knowledge Authority to avoid a second app lifecycle and duplicate permission review. The authorities remain separate: app credentials authorize messaging and membership calls, while the Dedicated Knowledge User's OAuth grant is the only authority accepted for knowledge operations; Minori never falls back from user identity to bot identity.
+Minori uses one custom Feishu application for both Bot Authority and Delegated Knowledge Authority to avoid a second app lifecycle and duplicate permission review. The authorities remain separate: app credentials authorize messaging and event-context lookups, while the Dedicated Knowledge User's OAuth grant is the only authority accepted for knowledge operations; Minori never falls back from user identity to bot identity.
 
 ## Consequences
 
