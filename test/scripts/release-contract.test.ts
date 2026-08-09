@@ -47,13 +47,41 @@ describe('Team Agent release packaging contract', () => {
 
   it('keeps active product guidance on ordinary replies and Group Context', async () => {
     const readme = await text('README.md');
-
-    expect(readme).toContain('ordinary private and group replies');
-    expect(readme).toContain('topic-mode groups are unsupported');
-    expect(readme).toContain('Group Context');
-    expect(readme).not.toMatch(
-      /Agent Threads?|known Agent Thread|(?:supports?|creates?|sends?) topic replies/iu,
+    const activeDesign = await text(
+      'docs/superpowers/specs/2026-08-07-team-agent-design.md',
     );
+
+    for (const guidance of [readme, activeDesign]) {
+      expect(guidance).toMatch(/ordinary (?:private and group )?replies/u);
+      expect(guidance).toContain('topic-mode groups');
+      expect(guidance).toContain('Group Context');
+      expect(guidance).toContain('Live Group History');
+      expect(guidance).not.toMatch(
+        /Agent Threads?|known Agent Thread|(?:supports?|creates?|sends?) (?:topic|thread) replies|does not provide Live Group History/iu,
+      );
+    }
+  });
+
+  it('keeps active acceptance guidance on the exact sanitized evidence whitelist', async () => {
+    const readme = await text('README.md');
+    const activeDesign = await text(
+      'docs/superpowers/specs/2026-08-07-team-agent-design.md',
+    );
+
+    for (const guidance of [readme, activeDesign]) {
+      expect(guidance).toContain(
+        'Records may contain only the check name, exact full commit and image, trigger/reply IDs for invoked messages, cutoff timestamp, history status/count/page count, readiness category, timestamp, and pass/fail result.',
+      );
+      expect(guidance).toContain(
+        'Never record group-history bodies, member names, Open IDs, prompts, provider output, OAuth data, environment values, credentials, or document contents.',
+      );
+    }
+
+    const activeDesignEvidence = activeDesign.slice(
+      activeDesign.indexOf('- Acceptance evidence is local and gitignored.'),
+      activeDesign.indexOf('## Deferred scope'),
+    );
+    expect(activeDesignEvidence).not.toMatch(/\bURLs?\b/u);
   });
 
   it('passes the fixed production env file through deploy and rollback Compose calls', async () => {

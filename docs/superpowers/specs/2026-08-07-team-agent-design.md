@@ -6,11 +6,11 @@
 
 **Active implementation plan:** `docs/superpowers/plans/2026-08-08-live-group-context.md`
 
-**Release state:** The currently deployed exact image is healthy and has passed the
-ordinary private-message functional path, while live group/write/restart acceptance
-is incomplete. It still creates thread replies and does not provide Live Group
-History; the active plan replaces that interaction model and repeats exact-image
-acceptance before declaring the new release complete.
+**Release state:** The currently deployed image is healthy, uses ordinary private and
+group replies without creating topics, and provides bounded Live Group History for
+Group Context. The ordinary private-message path has passed live acceptance. Live
+ordinary-group, knowledge-write, and restart acceptance is deferred and remains
+unverified; those deferred checks are not treated as passed.
 
 ## Summary
 
@@ -176,8 +176,7 @@ The native Lark CLI Linux credential store keeps its master key and encrypted se
 - Release artifacts are commit-addressed. A candidate is not considered live merely
   because local tests and image verification pass; the configured Vultr runtime must
   report every readiness category healthy and the real Feishu acceptance must finish.
-- Acceptance evidence is local and gitignored. It records identifiers, URLs, image and
-  commit references, timestamps, readiness categories, and pass/fail outcomes only.
+- Acceptance evidence is local and gitignored. Records may contain only the check name, exact full commit and image, trigger/reply IDs for invoked messages, cutoff timestamp, history status/count/page count, readiness category, timestamp, and pass/fail result. Never record group-history bodies, member names, Open IDs, prompts, provider output, OAuth data, environment values, credentials, or document contents.
 
 ## Deferred scope
 
