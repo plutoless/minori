@@ -86,6 +86,7 @@ export function createTeamAgent(dependencies: TeamAgentDependencies, maxSteps: n
 
 export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' | 'service'> & {
   eventId: string;
+  claimAttempt: number;
   modelName: string;
   maxSteps: number;
   timeoutMs: number;
@@ -289,6 +290,7 @@ export async function runKnowledgeAgent(
     run = await withAbort(
       () => dependencies.agentRunStore.start({
         eventId: dependencies.eventId,
+        claimAttempt: dependencies.claimAttempt,
         model: dependencies.modelName,
       }),
       runSignal,

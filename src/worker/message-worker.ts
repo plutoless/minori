@@ -19,7 +19,11 @@ type WorkerLogger = {
 export type MessageWorkerOptions = {
   eventStore: EventStore;
   conversations: Pick<ConversationStore, 'getOrCreateConversation' | 'append'>;
-  runAgent(message: NormalizedMessage, signal?: AbortSignal): Promise<AgentReply>;
+  runAgent(
+    message: NormalizedMessage,
+    claimAttempt: number,
+    signal?: AbortSignal,
+  ): Promise<AgentReply>;
   loadWriteAttempts(eventId: string): Promise<WriteAttemptReceipt[]>;
   messenger: FeishuMessenger;
   logger: WorkerLogger;
@@ -269,7 +273,7 @@ export class MessageWorker {
         const runSignal = this.options.signal
           ? AbortSignal.any([this.options.signal, signal])
           : signal;
-        reply = await this.options.runAgent(event.payload, runSignal);
+        reply = await this.options.runAgent(event.payload, event.attempts, runSignal);
       } catch {
         if (signal.aborted) throw signal.reason;
         if (event.attempts < 3) throw new RetryableProcessingError('agent_failed');

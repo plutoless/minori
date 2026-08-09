@@ -112,7 +112,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       loadWriteAttempts: (eventId) => storage.agentRunStore!.listWriteAttempts(eventId),
       messenger,
       logger,
-      runAgent: (message, signal) => {
+      runAgent: (message, claimAttempt, signal) => {
         if (message.content.kind !== 'text') throw new Error('unsupported_agent_input');
         return runKnowledgeAgent({
           prompt: message.content.text,
@@ -126,6 +126,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
           model,
           service,
           eventId: message.eventId,
+          claimAttempt,
           modelName: config.aiModel,
           maxSteps: config.agentMaxSteps,
           timeoutMs: config.agentTimeoutMs,

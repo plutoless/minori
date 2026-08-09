@@ -6,7 +6,7 @@ import { agentRuns, toolRuns } from './schema.js';
 const WRITE_RESULT_UNKNOWN = 'write_result_unknown';
 
 export interface AgentRunStore {
-  start(input: { eventId: string; model: string }): Promise<{ id: string }>;
+  start(input: { eventId: string; claimAttempt: number; model: string }): Promise<{ id: string }>;
   beginWrite(agentRunId: string, input: {
     toolName: 'createDocument' | 'appendDocument' | 'patchDocument';
     targetIdentifiers: Record<string, string>;
@@ -34,9 +34,14 @@ export interface AgentRunStore {
 export class PostgresAgentRunStore implements AgentRunStore {
   constructor(private readonly db: Database) {}
 
-  async start(input: { eventId: string; model: string }): Promise<{ id: string }> {
+  async start(input: {
+    eventId: string;
+    claimAttempt: number;
+    model: string;
+  }): Promise<{ id: string }> {
     const [created] = await this.db.insert(agentRuns).values({
       eventId: input.eventId,
+      claimAttempt: input.claimAttempt,
       model: input.model,
       outcome: 'running',
     }).returning({ id: agentRuns.id });
@@ -69,6 +74,7 @@ export class PostgresAgentRunStore implements AgentRunStore {
         where run.id = ${agentRunId}
           and event.event_id = run.event_id
           and event.status = 'processing'
+          and event.attempts = run.claim_attempt
         returning event.event_id
       `);
       if (marked.rows.length !== 1) throw new Error('write_replay_boundary_not_marked');

@@ -2,10 +2,11 @@ import { resolve } from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { eq } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import { PostgresAgentRunStore } from '../../src/storage/agent-run-store.js';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
+import { PostgresEventStore } from '../../src/storage/event-store.js';
 import { agentRuns, processedEvents, toolRuns } from '../../src/storage/schema.js';
 
 describe('PostgresAgentRunStore', () => {
@@ -47,7 +48,7 @@ describe('PostgresAgentRunStore', () => {
   });
 
   it('persists a completed write audit without document or credential content', async () => {
-    const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     const write = await store.beginWrite(run.id, {
       toolName: 'patchDocument',
       targetIdentifiers: { doc: 'dox_1' },
@@ -81,6 +82,7 @@ describe('PostgresAgentRunStore', () => {
     expect(runRow).toMatchObject({
       id: run.id,
       eventId: 'evt_1',
+      claimAttempt: 0,
       model: '5.6-terra',
       inputTokens: 120,
       outputTokens: 45,
@@ -124,7 +126,7 @@ describe('PostgresAgentRunStore', () => {
   });
 
   it('persists a stable failure category for a conflicted write', async () => {
-    const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     const write = await store.beginWrite(run.id, {
       toolName: 'patchDocument',
       targetIdentifiers: { doc: 'dox_1' },
@@ -147,7 +149,7 @@ describe('PostgresAgentRunStore', () => {
   });
 
   it('returns an unfinished write as an unknown sanitized receipt', async () => {
-    const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     await store.beginWrite(run.id, {
       toolName: 'createDocument',
       targetIdentifiers: { parentToken: 'fldcnParent' },
@@ -166,7 +168,7 @@ describe('PostgresAgentRunStore', () => {
   });
 
   it('persists a stable category when a finished write result is unknown', async () => {
-    const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     const write = await store.beginWrite(run.id, {
       toolName: 'appendDocument',
       targetIdentifiers: { doc: 'dox_1' },
@@ -185,7 +187,7 @@ describe('PostgresAgentRunStore', () => {
   });
 
   it('rolls back the pending audit when the event cannot be marked processing', async () => {
-    const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     await database.db.update(processedEvents).set({ status: 'queued' })
       .where(eq(processedEvents.eventId, 'evt_1'));
 
@@ -200,10 +202,56 @@ describe('PostgresAgentRunStore', () => {
     expect(rows).toEqual([]);
   });
 
+  it('fences a stale lease holder after a replacement claim is admitted', async () => {
+    const events = new PostgresEventStore(database.db, {
+      minRetryDelayMs: 0,
+      maxRetryDelayMs: 0,
+    });
+    await database.db.update(processedEvents).set({
+      status: 'queued',
+      attempts: 0,
+      leasedUntil: null,
+      writeStartedAt: null,
+    }).where(eq(processedEvents.eventId, 'evt_1'));
+
+    const [attempt1] = await events.claimReady(1, new Date(Date.now() - 1));
+    const run1 = await store.start({
+      eventId: 'evt_1', model: '5.6-terra', claimAttempt: attempt1!.attempts,
+    });
+    expect(await events.recoverExpiredLeases(new Date(), 1)).toBe(1);
+    const [attempt2] = await events.claimReady(1, new Date(Date.now() + 60_000));
+    const run2 = await store.start({
+      eventId: 'evt_1', model: '5.6-terra', claimAttempt: attempt2!.attempts,
+    });
+    const larkWrite = vi.fn(async () => undefined);
+    const invokeWrite = async (agentRunId: string) => {
+      await store.beginWrite(agentRunId, {
+        toolName: 'createDocument',
+        targetIdentifiers: {},
+        sanitizedSummary: 'created one document',
+      });
+      await larkWrite();
+    };
+
+    await expect(invokeWrite(run1.id)).rejects.toThrow('write_replay_boundary_not_marked');
+    expect(larkWrite).not.toHaveBeenCalled();
+    const [afterStale] = await database.db.select().from(processedEvents)
+      .where(eq(processedEvents.eventId, 'evt_1'));
+    expect(afterStale?.writeStartedAt).toBeNull();
+    await expect(invokeWrite(run2.id)).resolves.toBeUndefined();
+
+    expect(larkWrite).toHaveBeenCalledOnce();
+    const writes = await database.db.select().from(toolRuns);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.agentRunId).toBe(run2.id);
+  });
+
   it.each(['step_limit_reached', 'timeout_reached'] as const)(
     'persists the explicit %s run outcome',
     async (outcome) => {
-      const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+      const run = await store.start({
+        eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra',
+      });
 
       await store.finish(run.id, { toolCallCount: 1, outcome });
 

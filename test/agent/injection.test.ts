@@ -54,6 +54,7 @@ describe('prompt-injection boundary', () => {
       model, service, conversationKey: 'oc_team:om_root',
       triggerMessageId: 'om_trigger',
       eventId: 'evt_1',
+      claimAttempt: 1,
       modelName: '5.6-terra',
       maxSteps: 20,
       timeoutMs: 180_000,

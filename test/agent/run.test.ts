@@ -95,6 +95,7 @@ function dependencies(
     triggerMessageId: 'om_trigger',
     conversationStore: conversationStore(prompt),
     eventId: 'evt_1',
+    claimAttempt: 1,
     modelName: '5.6-terra',
     maxSteps: 20,
     timeoutMs: 180_000,
@@ -336,7 +337,9 @@ describe('runKnowledgeAgent', () => {
     expect(knowledge.createDocument).toHaveBeenCalledWith(
       { title: 'Plan', content: '# Plan' }, expect.any(AbortSignal),
     );
-    expect(audit.start).toHaveBeenCalledWith({ eventId: 'evt_1', model: '5.6-terra' });
+    expect(audit.start).toHaveBeenCalledWith({
+      eventId: 'evt_1', claimAttempt: 1, model: '5.6-terra',
+    });
     expect(audit.beginWrite).toHaveBeenCalledWith('run_1', {
       toolName: 'createDocument', targetIdentifiers: {},
       sanitizedSummary: 'created one document',
@@ -817,7 +820,9 @@ describe('runKnowledgeAgent', () => {
       writeAttempts: [],
     });
     expect(model.doGenerateCalls).toHaveLength(0);
-    expect(audit.start).toHaveBeenCalledWith({ eventId: 'evt_1', model: '5.6-terra' });
+    expect(audit.start).toHaveBeenCalledWith({
+      eventId: 'evt_1', claimAttempt: 1, model: '5.6-terra',
+    });
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       toolCallCount: 0,
       outcome: 'timeout_reached',

@@ -1,0 +1,1 @@
+ALTER TABLE "agent_runs" ADD COLUMN "claim_attempt" integer;

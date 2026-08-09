@@ -29,6 +29,13 @@
       "when": 1786246725094,
       "tag": "0003_write_replay_boundary",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786248425173,
+      "tag": "0004_agent_run_claim_attempt",
+      "breakpoints": true
     }
   ]
 }

@@ -163,7 +163,9 @@ describe('MessageWorker.process', () => {
       eventId: 'evt_private', payload: privateMessage, attempts: 1,
     });
 
-    expect(setup.runAgent).toHaveBeenCalledWith(privateMessage, expect.any(AbortSignal));
+    expect(setup.runAgent).toHaveBeenCalledWith(
+      privateMessage, 1, expect.any(AbortSignal),
+    );
     expect(setup.messenger.replyText).toHaveBeenCalledOnce();
   });
 

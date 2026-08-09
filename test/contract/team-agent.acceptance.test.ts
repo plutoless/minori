@@ -129,6 +129,13 @@ describe('open team Agent release contract', () => {
       `select enabled from allowed_chats where chat_id = 'oc_rollback_probe'`,
     );
     expect(configured.rows).toEqual([{ enabled: true }]);
+
+    const legacyRun = await database.pool.query<{ claimAttempt: number | null }>(`
+      insert into agent_runs (model, outcome)
+      values ('rollback-probe', 'running')
+      returning claim_attempt as "claimAttempt"
+    `);
+    expect(legacyRun.rows).toEqual([{ claimAttempt: null }]);
   });
 
   it('answers delivered external group and private messages with fixture-backed sources', async () => {
@@ -387,7 +394,7 @@ describe('open team Agent release contract', () => {
       messenger,
       loadWriteAttempts: (eventId) => runStore.listWriteAttempts(eventId),
       logger: { warn: vi.fn(), info: vi.fn() },
-      runAgent: (message, signal) => {
+      runAgent: (message, claimAttempt, signal) => {
         if (message.content.kind !== 'text') throw new Error('unsupported_agent_input');
         return runKnowledgeAgent({
           prompt: message.content.text,
@@ -401,6 +408,7 @@ describe('open team Agent release contract', () => {
           model,
           service: knowledge,
           eventId: message.eventId,
+          claimAttempt,
           modelName: '5.6-terra',
           maxSteps: 20,
           timeoutMs: 180_000,
@@ -473,7 +481,9 @@ describe('open team Agent release contract', () => {
     await events.enqueue(incoming);
     await events.claimReady(1, new Date(Date.now() - 1));
     const runStore = new PostgresAgentRunStore(database.db);
-    const run = await runStore.start({ eventId: incoming.eventId, model: '5.6-terra' });
+    const run = await runStore.start({
+      eventId: incoming.eventId, claimAttempt: 1, model: '5.6-terra',
+    });
     const write = await runStore.beginWrite(run.id, {
       toolName: 'createDocument',
       targetIdentifiers: {},
