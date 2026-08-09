@@ -1,6 +1,9 @@
 # Minori Non-Threaded Feishu Replies
 
 **Date:** 2026-08-08
+**Status:** Approved
+
+**Active implementation plan:** `docs/superpowers/plans/2026-08-08-live-group-context.md`
 
 ## Decision
 
@@ -115,10 +118,13 @@ All invocations from one Group Context share the group chat ID as their durable
 conversation key and execute serially in delivery order. Different groups and
 private chats may use the existing four-way conversation concurrency.
 
-No database schema, write flow, Typing lifecycle, retry policy, or Write Replay
-Boundary changes. The scoped group-history read tool, two Bot Authority read
-permissions, Group Context assembly, and default execution budget are the only
-runtime capability changes.
+One additive, rollback-compatible migration adds nullable Agent-run audit fields
+for group-history status, message count, page-call count, cutoff, and stable error
+category. It stores no history content or member identity. There are no write-flow,
+Typing-lifecycle, retry-policy, or Write Replay Boundary changes. The scoped
+group-history read tool, two Bot Authority read permissions, Group Context
+assembly, durable metadata, and default execution budget are the only runtime
+capability changes.
 
 Product and operator documentation replaces the misleading `Agent Thread`
 wording with `Group Context` where it describes the active interaction model.

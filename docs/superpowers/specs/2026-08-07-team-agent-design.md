@@ -4,14 +4,13 @@
 **Status:** Approved
 **Audience:** Minori maintainers and operators
 
-**Active implementation plan:** `docs/superpowers/plans/2026-08-07-team-agent.md`
+**Active implementation plan:** `docs/superpowers/plans/2026-08-08-live-group-context.md`
 
-**Release state:** The code and local release contract cover open Feishu-delivered
-admission, durable Processing Reactions and queueing, explicit execution-budget
-outcomes, the Write Replay Boundary, existing-app OAuth, revision-safe
-create/append/patch tools, authentic sources, and PostgreSQL audits. Production
-readiness still requires exact-commit Vultr deployment and real private/group Feishu
-acceptance against that same image.
+**Release state:** The currently deployed exact image is healthy and has passed the
+ordinary private-message functional path, while live group/write/restart acceptance
+is incomplete. It still creates thread replies and does not provide Live Group
+History; the active plan replaces that interaction model and repeats exact-image
+acceptance before declaring the new release complete.
 
 ## Summary
 
