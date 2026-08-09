@@ -8,12 +8,18 @@
 
 **Release state:** The code and local release contract cover existing-app OAuth,
 revision-safe create/append/patch tools, authentic sources, PostgreSQL write audits,
-and configurable Agent limits. Production readiness still requires interactive OAuth
-for the Dedicated Knowledge User plus real group/private Feishu acceptance.
+and configurable Agent limits. Dedicated Knowledge User OAuth is verified on the
+exact Vultr candidate. Production readiness still requires the open-admission change,
+deployment, and real group/private Feishu acceptance.
 
 ## Summary
 
-Minori is one always-on Team Agent running on the existing Vultr Ubuntu host. Approved Feishu group members interact with it in configured groups and private chat. One Feishu custom app supplies Bot Authority for messaging and Delegated Knowledge Authority through a dedicated logged-in user for Lark CLI knowledge operations.
+Minori is one always-on Team Agent running on the existing Vultr Ubuntu host. Any
+member within the Feishu App's configured availability may interact with it in a group
+where the bot is present or in private chat. Minori maintains no additional group or
+user allowlist. One Feishu custom app supplies Bot Authority for messaging and
+Delegated Knowledge Authority through a dedicated logged-in user for Lark CLI
+knowledge operations.
 
 The Agent remains open-ended: it may answer directly, search and read knowledge, create a document, append content, or apply a targeted patch. Conversation flow is not routed through scenarios or confirmation cards. Deterministic code limits side effects to typed tools; delete, move, permission or sharing changes, arbitrary shell, arbitrary HTTP, and raw API execution are unavailable.
 
@@ -21,11 +27,15 @@ The Agent remains open-ended: it may answer directly, search and read knowledge,
 
 ### Conversation entry
 
-- `ALLOWED_CHAT_IDS` identifies the Feishu groups where Minori may run.
-- A current member of an allowed group may start a group Agent Thread by mentioning Minori or replying to a Minori message.
-- Eligible members continue naturally inside that reply thread without repeating the mention.
+- The Feishu App's administrator-configured availability is the sole admission
+  boundary. Minori does not maintain `ALLOWED_CHAT_IDS`, a user allowlist, or a derived
+  group-membership gate.
+- In any group where the bot is present, a member within that app availability may
+  start an Agent Thread by mentioning Minori or replying to a Minori message.
+- Members continue naturally inside that reply thread without repeating the mention.
 - Unrelated group-timeline messages do not activate Minori.
-- Private messages are accepted only from a current member of at least one allowed group.
+- Private messages from any member who can access the Feishu App are accepted without
+  requiring membership in a separate configured group.
 - Minori adds a temporary `Typing` reaction while processing and removes it on completion or failure.
 
 ### Open Agent behavior
@@ -121,7 +131,10 @@ The native Lark CLI Linux credential store keeps its master key and encrypted se
 - Feishu uses outbound long connection, so no public inbound webhook is opened.
 - The health endpoint binds to host loopback only.
 - Deployment builds an explicit Git commit, runs migrations and preflight checks, replaces the service, and rolls back when readiness fails.
-- Live acceptance must cover one allowed group thread, an eligible private chat, a real knowledge read with a working source link, create, append, targeted patch, restart recovery, and Lark credential persistence.
+- Live acceptance must cover one group thread where the bot is present, one private
+  chat from a member within the Feishu App availability, a real knowledge read with a
+  working source link, create, append, targeted patch, restart recovery, and Lark
+  credential persistence.
 - Release artifacts are commit-addressed. A candidate is not considered live merely
   because local tests and image verification pass; the configured Vultr runtime must
   report every readiness category healthy and the real Feishu acceptance must finish.
