@@ -30,7 +30,12 @@ COPY drizzle ./drizzle
 COPY --chown=minori:minori deploy/vultr/compose.production.yaml /opt/minori/release/compose.production.yaml
 COPY --chown=minori:minori deploy/vultr/deployment-protocol /opt/minori/release/deployment-protocol
 RUN mkdir -p /var/lib/minori/lark/home /tmp/minori \
-  && chown -R 10001:10001 /app /var/lib/minori/lark /tmp/minori
+  && chown -R 10001:10001 /app /var/lib/minori/lark /tmp/minori \
+  && chown root:root /opt/minori /opt/minori/release \
+    /opt/minori/release/compose.production.yaml /opt/minori/release/deployment-protocol \
+  && chmod 0555 /opt/minori /opt/minori/release \
+  && chmod 0444 /opt/minori/release/compose.production.yaml \
+    /opt/minori/release/deployment-protocol
 USER 10001:10001
 VOLUME ["/var/lib/minori/lark"]
 EXPOSE 3000

@@ -1,5 +1,10 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+
+const execFileAsync = promisify(execFile);
+const releaseContractTestImage = 'minori:release-contract-test';
 
 async function text(path: string) {
   return readFile(path, 'utf8');
@@ -152,4 +157,21 @@ describe('Team Agent release packaging contract', () => {
       'COPY --chown=minori:minori deploy/vultr/deployment-protocol /opt/minori/release/deployment-protocol',
     );
   });
+
+  it('keeps embedded release contracts immutable to the runtime user', async () => {
+    await execFileAsync('docker', [
+      'build', '--platform', 'linux/amd64', '-t', releaseContractTestImage, '.',
+    ]);
+    await execFileAsync('docker', [
+      'run', '--rm', '--user', '10001:10001', '--entrypoint', 'sh', releaseContractTestImage,
+      '-c', [
+        'test "$(stat -c %u:%g:%a /opt/minori/release/compose.production.yaml)" = 0:0:444',
+        'test "$(stat -c %u:%g:%a /opt/minori/release/deployment-protocol)" = 0:0:444',
+        'if (printf invalid > /opt/minori/release/compose.production.yaml) 2>/dev/null; then exit 1; fi',
+        'if (printf invalid > /opt/minori/release/deployment-protocol) 2>/dev/null; then exit 1; fi',
+        'if rm /opt/minori/release/compose.production.yaml 2>/dev/null; then exit 1; fi',
+        'if rm /opt/minori/release/deployment-protocol 2>/dev/null; then exit 1; fi',
+      ].join(' && '),
+    ]);
+  }, 60_000);
 });
