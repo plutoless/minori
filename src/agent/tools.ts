@@ -121,6 +121,13 @@ export function createKnowledgeTools(
   const pageSets = new Map<string, string[]>();
   const cursors = new Map<string, { key: string; index: number }>();
   let cursorSequence = 0;
+  let groupHistoryTail = Promise.resolve();
+
+  const runGroupHistorySequentially = <T>(operation: () => Promise<T>): Promise<T> => {
+    const pending = groupHistoryTail.then(operation);
+    groupHistoryTail = pending.then(() => undefined, () => undefined);
+    return pending;
+  };
 
   const invalidateDocument = (doc: string) => {
     const keyPrefix = `["${doc}",`;
@@ -298,7 +305,7 @@ export function createKnowledgeTools(
           cursor: z.string().min(1).max(200).optional(),
           limit: z.number().int().min(1).max(50).default(20),
         }).strict(),
-        execute: async (input, { abortSignal }) => {
+        execute: (input, { abortSignal }) => runGroupHistorySequentially(async () => {
           const page = await groupHistory.reader.readEarlier({
             limit: input.limit,
             ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
@@ -312,7 +319,7 @@ export function createKnowledgeTools(
               ? { errorCategory: page.audit.errorCategory }
               : {}),
           };
-        },
+        }),
       }),
     } : {}),
   };

@@ -212,6 +212,68 @@ describe('FeishuGroupContextSource', () => {
     } });
   });
 
+  it('advances consecutive cursorless reads through unique older pages', async () => {
+    const client = sdk();
+    client.im.v1.message.list.mockImplementation(async ({ params }) => {
+      if (params.page_token === undefined) {
+        return { data: {
+          has_more: true,
+          page_token: 'provider_page_2',
+          items: [userMessage(
+            'om_recent', 'ou_zhang', '2026-08-08T09:59:59.000Z', 'recent',
+          )],
+        } };
+      }
+      if (params.page_token === 'provider_page_2') {
+        return { data: {
+          has_more: true,
+          page_token: 'provider_page_3',
+          items: [userMessage(
+            'om_older', 'ou_zhang', '2026-08-08T09:00:00.000Z', 'older',
+          )],
+        } };
+      }
+      if (params.page_token === 'provider_page_3') {
+        return { data: {
+          has_more: false,
+          items: [userMessage(
+            'om_oldest', 'ou_zhang', '2026-08-08T08:00:00.000Z', 'oldest',
+          )],
+        } };
+      }
+      throw new Error('unexpected_provider_page');
+    });
+    client.im.v1.chatMembers.get.mockResolvedValue({ data: {
+      has_more: false,
+      items: [
+        { member_id_type: 'open_id', member_id: 'ou_zhang', name: '张三' },
+        { member_id_type: 'open_id', member_id: 'ou_current', name: '李四' },
+      ],
+    } });
+    const reader = openReader(client);
+
+    await reader.loadInitial();
+    const first = await reader.readEarlier({ limit: 20 });
+    const second = await reader.readEarlier({ limit: 20 });
+
+    expect(first).toMatchObject({
+      messages: [expect.objectContaining({ content: 'older' })],
+      audit: { messageCount: 2, pageCallCount: 2 },
+    });
+    expect(second).toMatchObject({
+      messages: [expect.objectContaining({ content: 'oldest' })],
+      audit: { messageCount: 3, pageCallCount: 3 },
+    });
+    expect(client.im.v1.message.list).toHaveBeenLastCalledWith({ params: {
+      container_id_type: 'chat',
+      container_id: 'oc_team',
+      end_time: String(Math.floor(cutoff.getTime() / 1_000)),
+      sort_type: 'ByCreateTimeDesc',
+      page_size: 20,
+      page_token: 'provider_page_3',
+    } });
+  });
+
   it('keeps other bot output as non-Minori background', async () => {
     const client = sdk();
     client.im.v1.message.list.mockResolvedValue({ data: {

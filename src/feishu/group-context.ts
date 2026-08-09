@@ -139,9 +139,11 @@ class FeishuScopedGroupContextReader implements ScopedGroupContextReader {
       throw new Error('invalid_group_history_limit');
     }
 
+    const requestedCursor = input.cursor;
+    const usesImplicitCursor = requestedCursor === undefined;
     let providerToken: string | undefined;
-    if (input.cursor !== undefined) {
-      providerToken = this.providerCursors.get(input.cursor);
+    if (requestedCursor !== undefined) {
+      providerToken = this.providerCursors.get(requestedCursor);
       if (!providerToken) throw new Error('invalid_group_history_cursor');
     } else {
       providerToken = this.firstEarlierProviderToken;
@@ -156,6 +158,7 @@ class FeishuScopedGroupContextReader implements ScopedGroupContextReader {
       message.speakerKind === 'member' && message.senderId ? [message.senderId] : []
     )));
     await this.resolveMemberNames(targetIds, signal);
+    if (usesImplicitCursor) this.firstEarlierProviderToken = loaded.nextProviderToken;
 
     const nextCursor = loaded.nextProviderToken
       ? this.registerProviderCursor(loaded.nextProviderToken)

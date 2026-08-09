@@ -255,6 +255,66 @@ describe('createKnowledgeTools', () => {
     expect(JSON.stringify(result)).not.toContain('provider_secret_error');
   });
 
+  it('serializes concurrent earlier-group-history pages with monotonic cumulative audits', async () => {
+    const cutoff = new Date('2026-08-08T10:00:00.000Z');
+    let nextPage = 1;
+    let pageCallCount = 1;
+    const reader: ScopedGroupContextReader = {
+      loadInitial: vi.fn(),
+      readEarlier: vi.fn(async () => {
+        const page = nextPage;
+        pageCallCount += 1;
+        await Promise.resolve();
+        nextPage = page + 1;
+        return {
+          messages: [{
+            speakerName: `Member ${page}`,
+            role: 'user' as const,
+            content: `Older page ${page}`,
+            occurredAt: new Date(`2026-08-08T0${page}:00:00.000Z`),
+          }],
+          audit: {
+            status: 'loaded' as const,
+            messageCount: nextPage,
+            pageCallCount,
+            cutoff,
+          },
+        };
+      }),
+    };
+    const recordAudit = vi.fn().mockResolvedValue(undefined);
+    const tools = createKnowledgeTools(
+      service(),
+      { search: vi.fn().mockResolvedValue([]) },
+      new SourceRegistry(),
+      { run: (_input, operation) => operation() },
+      { reader, recordAudit },
+    );
+
+    const [first, second] = await Promise.all([
+      tools.readEarlierGroupHistory!.execute?.(
+        { limit: 20 }, { toolCallId: 'call_page_1', messages: [] },
+      ),
+      tools.readEarlierGroupHistory!.execute?.(
+        { limit: 20 }, { toolCallId: 'call_page_2', messages: [] },
+      ),
+    ]);
+
+    expect.soft(first?.messages).toEqual([
+      expect.objectContaining({ content: 'Older page 1' }),
+    ]);
+    expect.soft(second?.messages).toEqual([
+      expect.objectContaining({ content: 'Older page 2' }),
+    ]);
+    expect.soft(recordAudit.mock.calls.map(([audit]) => ({
+      messageCount: audit.messageCount,
+      pageCallCount: audit.pageCallCount,
+    }))).toEqual([
+      { messageCount: 2, pageCallCount: 2 },
+      { messageCount: 3, pageCallCount: 3 },
+    ]);
+  });
+
   it('returns bounded relevant document pages, source metadata, and cached continuation', async () => {
     const knowledge = service();
     const longSection = 'Beta launch evidence. '.repeat(900);
