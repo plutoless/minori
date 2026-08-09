@@ -36,6 +36,12 @@ describe('Team Agent release packaging contract', () => {
     expect(rollback.match(/MINORI_ENV_FILE=/gu)).toHaveLength(2);
   });
 
+  it('labels the deployed image with the exact release commit', async () => {
+    const deploy = await text('scripts/deploy-vultr.sh');
+
+    expect(deploy).toContain('--label "org.opencontainers.image.revision=$commit_sha"');
+  });
+
   it('documents exact-commit build, then OAuth, then deployment', async () => {
     const readme = await text('README.md');
     const plan = await text('docs/superpowers/plans/2026-08-07-team-agent.md');

@@ -82,7 +82,9 @@ if [[ -n "$previous_image" ]]; then
     exit 1
   fi
 fi
-if ! docker build --pull --tag "$candidate_image" "$worktree"; then
+if ! docker build --pull \
+  --label "org.opencontainers.image.revision=$commit_sha" \
+  --tag "$candidate_image" "$worktree"; then
   result="build_failed"
   exit 1
 fi
