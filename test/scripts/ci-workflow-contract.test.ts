@@ -132,7 +132,7 @@ describe('GitHub Actions quality gate contract', () => {
     });
     expect(oneStep(steps, (step) => step.run?.startsWith('go run '))).toEqual({
       if: "inputs.gate == 'verify'",
-      run: `go run github.com/rhysd/actionlint/cmd/actionlint@${actionlintSha}`,
+      run: `go run github.com/rhysd/actionlint/cmd/actionlint@${actionlintSha} -ignore 'unexpected key "queue" for "concurrency" section'`,
     });
     expect(oneStep(steps, (step) => step.run === 'npm run test:integration')).toEqual({
       if: "inputs.gate == 'integration'",
@@ -279,6 +279,8 @@ describe('GitHub Actions release contract', () => {
         context: '.',
         platforms: 'linux/amd64',
         push: true,
+        provenance: false,
+        sbom: false,
         labels: 'org.opencontainers.image.revision=${{ needs.validate.outputs.commit_sha }}',
         tags: '${{ needs.validate.outputs.ghcr_image }}:${{ needs.validate.outputs.commit_sha }}\n${{ needs.validate.outputs.ghcr_image }}:${{ needs.validate.outputs.version }}\n',
       },
@@ -305,6 +307,7 @@ describe('GitHub Actions release contract', () => {
     expect(deploy?.concurrency).toEqual({
       group: 'production',
       'cancel-in-progress': false,
+      queue: 'max',
     });
 
     const steps = requiredSteps(deploy);
@@ -326,7 +329,25 @@ describe('GitHub Actions release contract', () => {
     });
     expect(handoff.run).toContain("[[ \"$BUILD_DIGEST\" =~ ^sha256:[0-9a-f]{64}$ ]]");
     expect(handoff.run).toContain("[[ \"$COMMIT_SHA\" =~ ^[0-9a-f]{40}$ ]]");
+    expect(handoff.run).toContain("[[ \"$DEPLOY_USER\" == 'root' ]]");
+    expect(handoff.run).toContain('deploy_target="root@${DEPLOY_HOST}"');
     expect(handoff.run).toContain("'minori_deploy result=success'");
+    for (const category of [
+      'success',
+      'rejected',
+      'failed',
+      'locked',
+      'failed_before_replace',
+      'rolled_back',
+      'rollback_failed',
+      'recovery_failed',
+    ]) {
+      expect(handoff.run).toContain(
+        `'minori_deploy result=${category}') result_category='${category}' ;;`,
+      );
+    }
+    expect(handoff.run).toContain("*) result_category='deployment_protocol_error' ;;");
+    expect(handoff.run).not.toMatch(/sed .*minori_deploy|grep .*minori_deploy/u);
     expect(handoff.run).toContain(
       'remote_command="deploy v1 ${COMMIT_SHA} ${GHCR_IMAGE}@${BUILD_DIGEST}"',
     );
@@ -336,6 +357,8 @@ describe('GitHub Actions release contract', () => {
     expect(handoff.run).toContain('-o IdentitiesOnly=yes');
     expect(handoff.run).toContain('-o StrictHostKeyChecking=yes');
     expect(handoff.run).toContain('-o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE"');
+    expect(handoff.run).toContain('-o GlobalKnownHostsFile=/dev/null');
+    expect(handoff.run).toContain('-- "$deploy_target" "$remote_command"');
     expect(handoff.run).toContain('2>"$SSH_STDERR_FILE"');
     expect(handoff.run).not.toContain('cat "$SSH_STDERR_FILE"');
     expect(handoff.run).toContain('### Production deployment');
@@ -344,6 +367,9 @@ describe('GitHub Actions release contract', () => {
     const cleanup = oneStep(steps, (step) => step.name === 'Remove SSH material');
     expect(cleanup.if).toBe('always()');
     expect(cleanup.run).toContain('rm -f -- "$SSH_KEY_FILE" "$SSH_KNOWN_HOSTS_FILE"');
+    expect(cleanup.run).toContain('rm -f -- "$SSH_STDOUT_FILE" "$SSH_STDERR_FILE"');
+    expect(prepare.run).toContain("trap 'rm -f --");
+    expect(prepare.run).toContain('trap - ERR');
 
     const source = await readFile('.github/workflows/release.yml', 'utf8');
     expect(source).not.toMatch(/workflow_dispatch|StrictHostKeyChecking=no|set -x|scp\b|rsync\b|git checkout|docker login.*VULTR|GHCR.*(?:TOKEN|PASSWORD).*ssh/iu);

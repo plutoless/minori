@@ -72,6 +72,8 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          provenance: false
+          sbom: false
           labels: org.opencontainers.image.revision=${{ needs.validate.outputs.commit_sha }}
           tags: |
             ${{ needs.validate.outputs.ghcr_image }}:${{ needs.validate.outputs.commit_sha }}
@@ -99,6 +101,7 @@ jobs:
     concurrency:
       group: production
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Prepare SSH material
         env:
@@ -134,7 +137,8 @@ jobs:
           [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$GHCR_IMAGE" == 'ghcr.io/plutoless/minori' ]]
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
-          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$DEPLOY_USER" == 'root' ]]
+          deploy_target="root@${DEPLOY_HOST}"
           remote_command="deploy v1 ${COMMIT_SHA} ${GHCR_IMAGE}@${BUILD_DIGEST}"
 
           set +e
@@ -145,7 +149,8 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
-            -- "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -- "$deploy_target" "$remote_command" \
             >"$SSH_STDOUT_FILE" 2>"$SSH_STDERR_FILE"
           ssh_status=$?
           set -e

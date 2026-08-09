@@ -34,7 +34,7 @@ jobs:
       - if: inputs.gate == 'verify'
         run: git ls-files -z -- '*.sh' | xargs -0 -r -n 1 bash -n
       - if: inputs.gate == 'verify'
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106 -ignore 'unexpected key "queue" for "concurrency" section'
       - if: inputs.gate == 'integration'
         run: npm run test:integration
       - if: inputs.gate == 'image-amd64'

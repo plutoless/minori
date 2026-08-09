@@ -3,6 +3,17 @@ import { appendFileSync, readFileSync } from 'node:fs';
 
 const expectedGhcrImage = 'ghcr.io/plutoless/minori';
 const commitShaPattern = /^[0-9a-f]{40}$/u;
+const numericIdentifier = '(?:0|[1-9][0-9]*)';
+const nonNumericIdentifier = '(?:[0-9]*[A-Za-z-][0-9A-Za-z-]*)';
+const preReleaseIdentifier = `(?:${numericIdentifier}|${nonNumericIdentifier})`;
+const buildIdentifier = '[0-9A-Za-z-]+';
+const semVerPattern = new RegExp(
+  `^${numericIdentifier}\\.${numericIdentifier}\\.${numericIdentifier}`
+  + `(?:-${preReleaseIdentifier}(?:\\.${preReleaseIdentifier})*)?`
+  + `(?:\\+${buildIdentifier}(?:\\.${buildIdentifier})*)?$`,
+  'u',
+);
+const dockerTagPattern = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/u;
 
 export type ReleaseInput = {
   refName: string;
@@ -33,7 +44,14 @@ class ReleaseValidationError extends Error {
   }
 }
 
+export function isValidSemVer(version: string): boolean {
+  return semVerPattern.test(version);
+}
+
 export function validateRelease(input: ReleaseInput): ReleaseOutput {
+  if (!isValidSemVer(input.packageVersion) || !dockerTagPattern.test(input.packageVersion)) {
+    throw new ReleaseValidationError('release_package_version_invalid');
+  }
   if (input.refName !== `v${input.packageVersion}`) {
     throw new ReleaseValidationError('release_tag_version_mismatch');
   }

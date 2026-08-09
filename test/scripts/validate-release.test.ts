@@ -1,11 +1,50 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  isValidSemVer,
   runReleaseValidation,
   validateRelease,
 } from '../../scripts/validate-release.js';
 
 const ghcrImage = 'ghcr.io/plutoless/minori';
 const commitSha = 'a'.repeat(40);
+
+describe('isValidSemVer', () => {
+  it.each([
+    '0.1.1',
+    '0.0.0',
+    '1.2.3',
+    '10.20.30',
+    '1.2.3-0',
+    '1.2.3-alpha',
+    '1.2.3-alpha.1',
+    '1.2.3-alpha-1.001x',
+    '1.2.3+build.001',
+    '1.2.3-rc.1+build.5',
+  ])('accepts valid SemVer 2.0 version %s', (version) => {
+    expect(isValidSemVer(version)).toBe(true);
+  });
+
+  it.each([
+    'not-semver',
+    '1',
+    '1.2',
+    '01.2.3',
+    '1.02.3',
+    '1.2.03',
+    '1.2.3-01',
+    '1.2.3-alpha.01',
+    '1.2.3-',
+    '1.2.3-alpha..1',
+    '1.2.3+',
+    '1.2.3+build..1',
+    ' 1.2.3',
+    '1.2.3 ',
+    '1.2.3/rc',
+    'v1.2.3',
+  ])('rejects invalid SemVer 2.0 version %s', (version) => {
+    expect(isValidSemVer(version)).toBe(false);
+  });
+});
 
 describe('validateRelease', () => {
   it('returns the immutable release fields when every invariant holds', () => {
@@ -24,6 +63,31 @@ describe('validateRelease', () => {
   });
 
   it.each([
+    ['a normal version', '1.2.3'],
+    ['a prerelease version', '10.20.30-rc.1'],
+  ])('accepts %s when the exact tag remains a valid Docker tag', (_label, version) => {
+    expect(validateRelease({
+      refName: `v${version}`,
+      sha: commitSha,
+      packageVersion: version,
+      ghcrImage,
+      isOnMain: true,
+    }).version).toBe(version);
+  });
+
+  it('rejects valid SemVer build metadata because its plus sign cannot be an exact Docker tag', () => {
+    const version = '1.2.3+build.5';
+    expect(isValidSemVer(version)).toBe(true);
+    expect(() => validateRelease({
+      refName: `v${version}`,
+      sha: commitSha,
+      packageVersion: version,
+      ghcrImage,
+      isOnMain: true,
+    })).toThrow('release_package_version_invalid');
+  });
+
+  it.each([
     ['a tag without v', { refName: '0.1.1' }, 'release_tag_version_mismatch'],
     ['prerelease text absent from package version', { refName: 'v0.1.1-rc.1' }, 'release_tag_version_mismatch'],
     ['an uppercase SHA', { sha: 'A'.repeat(40) }, 'release_sha_invalid'],
@@ -31,6 +95,7 @@ describe('validateRelease', () => {
     ['a different image repository', { ghcrImage: 'ghcr.io/other/minori' }, 'release_ghcr_image_invalid'],
     ['a tag that does not match package version', { refName: 'v0.1.2' }, 'release_tag_version_mismatch'],
     ['a commit outside main', { isOnMain: false }, 'release_commit_not_on_main'],
+    ['an invalid package version before tag equality', { refName: 'vnot-semver', packageVersion: 'not-semver' }, 'release_package_version_invalid'],
   ])('rejects %s with a stable category', (_label, override, category) => {
     expect(() => validateRelease({
       refName: 'v0.1.1',
