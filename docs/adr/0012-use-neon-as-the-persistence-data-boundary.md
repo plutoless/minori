@@ -1,0 +1,5 @@
+# Use Neon as the persistence data boundary
+
+Minori treats the configured Neon PostgreSQL database as a trusted **Persistence Data Boundary**. Plaintext user and assistant message bodies remain searchable for 30 days, after which Minori clears their content while retaining structural identifiers and timestamps needed for idempotency and audit continuity. Agent and tool audit metadata has no initial automatic expiry and is limited to model and usage data, timing, tool names, target identifiers, outcomes, error categories, and sanitized summaries.
+
+Minori does not persist complete retrieved Feishu document bodies as a separate knowledge copy, hidden model reasoning, or raw tool output. It also does not add application-level encryption because the first release needs server-side conversation history and search. If future compliance requirements prohibit Neon from processing plaintext conversation content, the persistence and retrieval design must change explicitly rather than claiming that opaque application encryption preserves the existing behavior.

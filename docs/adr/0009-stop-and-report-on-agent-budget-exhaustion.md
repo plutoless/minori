@@ -1,0 +1,7 @@
+# Stop and report on Agent execution budget exhaustion
+
+When an Agent run reaches its configured model/tool step limit or wall-clock deadline, Minori stops that run without automatically retrying it. Completed knowledge writes remain committed and audited, while no later model step, tool call, or write may start. Minori records whether the step limit or timeout was reached, reports confirmed completed operations and affected resource links, and explicitly invites the member to continue in a new run.
+
+Automatic retries are appropriate for bounded transport failures, but not for an exhausted open-ended Agent run: replaying the whole run can duplicate model cost and repeat side effects whose prior success is already durable. Treating the step limit as normal completion can also produce a partial or empty reply with a misleading successful audit. A separate **Execution Budget Exhaustion** outcome makes the stop visible without narrowing the Agent's capabilities or pretending that autonomous writes are transactionally reversible.
+
+An explicit continuation is a fresh **Continuation Run**, not restoration of the model's hidden reasoning or in-memory tool loop. It receives visible conversation history and confirmed receipts and links from the exhausted run, re-reads current knowledge state, and plans the remaining work against that current state. This keeps continuation explainable and recoverable without persisting hidden reasoning traces.
