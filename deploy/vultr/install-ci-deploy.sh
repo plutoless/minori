@@ -19,14 +19,32 @@ fi
 test_mode=0
 expected_uid=0
 expected_gid=0
-if [[ "${MINORI_INSTALL_TEST_MODE:-}" == 1 && -n "${MINORI_INSTALL_TEST_ROOT:-}" \
-  && -d "$MINORI_INSTALL_TEST_ROOT" \
-  && ! -L "$MINORI_INSTALL_TEST_ROOT" && -O "$MINORI_INSTALL_TEST_ROOT" ]]; then
+if [[ "${MINORI_INSTALL_TEST_MODE:-}" == 1 && -n "${MINORI_INSTALL_TEST_ROOT:-}" ]]; then
+  requested_test_root="$MINORI_INSTALL_TEST_ROOT"
+  case "$requested_test_root" in
+    /|/opt|/opt/minori|/root|/root/*)
+      result_error unsafe_test_root 1
+      ;;
+  esac
+  if [[ ! -d "$requested_test_root" || -L "$requested_test_root" || ! -O "$requested_test_root" ]]; then
+    result_error unsafe_test_root 1
+  fi
+  test_root="$(cd "$requested_test_root" 2>/dev/null && pwd -P)" || result_error unsafe_test_root 1
+  test_parent="${test_root%/*}"
+  test_name="${test_root##*/}"
+  case "$test_parent" in
+    /tmp|/private/tmp|/private/var/folders/*/*/T) ;;
+    *) result_error unsafe_test_root 1 ;;
+  esac
+  [[ "$test_name" == minori-installer-test-* ]] || result_error unsafe_test_root 1
   test_mode=1
   expected_uid="$(id -u)"
   expected_gid="$(id -g)"
-  install_root="${MINORI_INSTALL_TEST_ROOT}/opt/minori"
-  ssh_dir="${MINORI_INSTALL_TEST_ROOT}/root/.ssh"
+  fixture_sentinel="${test_root}/.minori-ci-installer-test"
+  opt_parent="${test_root}/opt"
+  root_parent="${test_root}/root"
+  install_root="${opt_parent}/minori"
+  ssh_dir="${root_parent}/.ssh"
 elif [[ $EUID -eq 0 && -z "${MINORI_INSTALL_TEST_MODE:-}" && -z "${MINORI_INSTALL_TEST_ROOT:-}" ]]; then
   install_root='/opt/minori'
   ssh_dir='/root/.ssh'
@@ -106,7 +124,13 @@ install_file() {
 # Resolve every trusted component and installed leaf before any directory,
 # authorized_keys, or executable is changed. stat alone would follow symlinks.
 if [[ $test_mode -eq 1 ]]; then
-  trusted_components=("$MINORI_INSTALL_TEST_ROOT")
+  sentinel_mode="$(path_metadata "$fixture_sentinel")" || result_error unsafe_test_root 1
+  read -r sentinel_lines _ <<< "$(wc -l < "$fixture_sentinel" 2>/dev/null)" || result_error unsafe_test_root 1
+  if [[ ! -f "$fixture_sentinel" || -L "$fixture_sentinel" || "$sentinel_mode" != "$expected_uid $expected_gid 600" \
+    || "$sentinel_lines" != 1 || "$(<"$fixture_sentinel")" != minori-ci-installer-test-v1 ]]; then
+    result_error unsafe_test_root 1
+  fi
+  trusted_components=("$test_root" "$fixture_sentinel" "$opt_parent" "$root_parent")
 else
   trusted_components=(/opt /root)
 fi
@@ -152,8 +176,12 @@ install_directory 0755 "$bin_dir"
 install_file 0755 "${script_dir}/ci-deploy" "${bin_dir}/ci-deploy"
 install_file 0755 "${script_dir}/minori-release" "${bin_dir}/minori-release"
 install_file 0755 "${script_dir}/rehearse-release.sh" "${bin_dir}/rehearse-release"
-for secure_path in "$install_root" "$bin_dir" "${bin_dir}/ci-deploy" \
-  "${bin_dir}/minori-release" "${bin_dir}/rehearse-release"; do
+post_install_paths=("$install_root" "$bin_dir" "${bin_dir}/ci-deploy" \
+  "${bin_dir}/minori-release" "${bin_dir}/rehearse-release")
+if [[ $test_mode -eq 1 ]]; then
+  post_install_paths=("$opt_parent" "$root_parent" "${post_install_paths[@]}")
+fi
+for secure_path in "${post_install_paths[@]}"; do
   if ! verify_secure_path "$secure_path"; then
     result_error unsafe_installation 1
   fi

@@ -41,6 +41,7 @@ fi
 
 release_dir="${minori_root}/releases"
 contracts_dir="${release_dir}/contracts"
+records_dir="${release_dir}/records"
 rehearsal_records_dir="${release_dir}/rehearsal-records"
 state_file="${release_dir}/state.tsv"
 pending_file="${release_dir}/pending.tsv"
@@ -78,10 +79,13 @@ pending_alternate_protocol=''
 pending_alternate_sha=''
 pending_alternate_image=''
 pending_alternate_contract=''
+pending_record_timestamp=''
+pending_record_nonce=''
 temporary_dir=''
 temporary_container=''
 state_temporary=''
 pending_temporary=''
+record_temporary=''
 transaction_active=0
 terminal_emitted=0
 recovery_active=0
@@ -93,6 +97,7 @@ cleanup() {
   if [[ -n "$temporary_container" ]]; then docker rm -f "$temporary_container" >/dev/null 2>&1 || true; fi
   if [[ -n "$state_temporary" ]]; then rm -f -- "$state_temporary"; fi
   if [[ -n "$pending_temporary" ]]; then rm -f -- "$pending_temporary"; fi
+  if [[ -n "$record_temporary" ]]; then rm -f -- "$record_temporary"; fi
   if [[ -n "$temporary_dir" && -d "$temporary_dir" ]]; then rm -rf -- "$temporary_dir"; fi
 }
 
@@ -270,16 +275,62 @@ restore_original_state() {
   write_next_state
 }
 
-write_rehearsal_failure() {
-  local recovered_sha="$1" recovered_image="$2" timestamp record_name temporary_record
-  mkdir -p "$rehearsal_records_dir" || return 1
-  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || return 1
-  [[ "$timestamp" =~ ^[0123456789]{4}-[0123456789]{2}-[0123456789]{2}T[0123456789]{2}:[0123456789]{2}:[0123456789]{2}Z$ ]] || return 1
-  record_name="${timestamp//:/-}-${recovered_sha:0:12}-$$.json"
-  temporary_record="${rehearsal_records_dir}/.${record_name}"
-  printf '{"protocol":"v1","timestamp":"%s","result":"restore_failed_recovered_predecessor","recoveredSha":"%s","recoveredImage":"%s"}\n' \
-    "$timestamp" "$recovered_sha" "$recovered_image" > "$temporary_record" || return 1
-  chmod 0600 "$temporary_record" && mv -f "$temporary_record" "${rehearsal_records_dir}/${record_name}" || { rm -f -- "$temporary_record"; return 1; }
+record_timestamp_is_valid() {
+  [[ "$1" =~ ^[0123456789]{4}-[0123456789]{2}-[0123456789]{2}T[0123456789]{2}:[0123456789]{2}:[0123456789]{2}Z$ ]]
+}
+
+initialize_pending_record_identity() {
+  local random_suffix="${temporary_dir##*.}"
+  pending_record_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || return 1
+  record_timestamp_is_valid "$pending_record_timestamp" || return 1
+  [[ "$random_suffix" =~ ^[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]{6}$ ]] || return 1
+  pending_record_nonce="$$-${random_suffix}"
+  [[ "$pending_record_nonce" =~ ^[123456789][0123456789]*-[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]{6}$ ]]
+}
+
+ensure_record_file() {
+  local directory="$1" record_name="$2" expected_content="$3" result="$4" final_record
+  final_record="${directory}/${record_name}"
+  record_temporary="${directory}/.${record_name}.tmp"
+  if [[ -L "$record_temporary" ]] || { [[ -e "$record_temporary" ]] && ! root_only_file_is_valid "$record_temporary"; }; then return 1; fi
+  if ! printf '%s\n' "$expected_content" > "$record_temporary" || ! chmod 0600 "$record_temporary"; then
+    rm -f -- "$record_temporary"; record_temporary=''; return 1
+  fi
+  if [[ -e "$final_record" ]]; then
+    if ! root_only_file_is_valid "$final_record" || ! cmp -s "$record_temporary" "$final_record"; then
+      rm -f -- "$record_temporary"; record_temporary=''; return 1
+    fi
+    rm -f -- "$record_temporary" || return 1
+    record_temporary=''
+    return 0
+  fi
+  if [[ $test_mode -eq 1 && "${MINORI_TEST_FAIL_RECORD_RESULT:-}" == "$result" ]]; then
+    rm -f -- "$record_temporary"; record_temporary=''; return 1
+  fi
+  if ! mv -f "$record_temporary" "$final_record"; then
+    rm -f -- "$record_temporary"; record_temporary=''; return 1
+  fi
+  record_temporary=''
+}
+
+ensure_pending_deploy_record() {
+  local result="$1" rollback_target="$2" timestamp_name record_name expected_content
+  case "$result:$rollback_target" in
+    success:none|rolled_back:legacy_local|rolled_back:saved_digest|rollback_failed:legacy_local|rollback_failed:saved_digest) ;;
+    *) return 1 ;;
+  esac
+  timestamp_name="${pending_record_timestamp//:/-}"
+  record_name="${timestamp_name}-${pending_alternate_sha:0:12}-${pending_record_nonce}-${result}.json"
+  expected_content="{\"protocol\":\"${pending_alternate_protocol}\",\"commitSha\":\"${pending_alternate_sha}\",\"image\":\"${pending_alternate_image}\",\"timestamp\":\"${pending_record_timestamp}\",\"operatorCategory\":\"github_actions\",\"result\":\"${result}\",\"rollbackTargetCategory\":\"${rollback_target}\"}"
+  ensure_record_file "$records_dir" "$record_name" "$expected_content" "$result"
+}
+
+ensure_pending_rehearsal_failure() {
+  local timestamp_name record_name expected_content result='restore_failed_recovered_predecessor'
+  timestamp_name="${pending_record_timestamp//:/-}"
+  record_name="${timestamp_name}-${pending_alternate_sha:0:12}-${pending_record_nonce}-${result}.json"
+  expected_content="{\"protocol\":\"v1\",\"timestamp\":\"${pending_record_timestamp}\",\"result\":\"${result}\",\"recoveredSha\":\"${pending_alternate_sha}\",\"recoveredImage\":\"${pending_alternate_image}\"}"
+  ensure_record_file "$rehearsal_records_dir" "$record_name" "$expected_content" "$result"
 }
 
 pending_phase_is_valid() {
@@ -295,7 +346,8 @@ write_pending() {
   if [[ $test_mode -eq 1 && "${MINORI_TEST_FAIL_PENDING_PHASE:-}" == "$phase" ]]; then return 1; fi
   pending_temporary="${pending_file}.tmp.$$"
   : > "$pending_temporary" || return 1
-  printf 'v1\t%s\t%s\t%s\t%s\n' "$operation" "$phase" "$state_file_existed" "$state_count" >> "$pending_temporary" || return 1
+  printf 'v1\t%s\t%s\t%s\t%s\t%s\t%s\n' "$operation" "$phase" "$state_file_existed" "$state_count" \
+    "$pending_record_timestamp" "$pending_record_nonce" >> "$pending_temporary" || return 1
   printf 'original\t%s\t%s\t%s\t%s\n' "$original_protocol" "$original_sha_arg" "$original_image_arg" "$original_contract_arg" >> "$pending_temporary" || return 1
   printf 'alternate\t%s\t%s\t%s\t%s\n' "$alternate_protocol" "$alternate_sha" "$alternate_image" "$alternate_contract" >> "$pending_temporary" || return 1
   for ((index = 0; index < state_count; index += 1)); do
@@ -320,10 +372,13 @@ load_pending() {
   [[ -r "$pending_file" && -s "$pending_file" ]] && root_only_file_is_valid "$pending_file" || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do lines[${#lines[@]}]="$line"; done < "$pending_file"
   [[ ${#lines[@]} -ge 3 ]] || return 1
-  IFS=$'\t' read -r header_protocol pending_operation pending_phase pending_state_existed pending_state_count extra <<< "${lines[0]}"
-  header_serialized="v1"$'\t'"${pending_operation}"$'\t'"${pending_phase}"$'\t'"${pending_state_existed}"$'\t'"${pending_state_count}"
+  IFS=$'\t' read -r header_protocol pending_operation pending_phase pending_state_existed pending_state_count \
+    pending_record_timestamp pending_record_nonce extra <<< "${lines[0]}"
+  header_serialized="v1"$'\t'"${pending_operation}"$'\t'"${pending_phase}"$'\t'"${pending_state_existed}"$'\t'"${pending_state_count}"$'\t'"${pending_record_timestamp}"$'\t'"${pending_record_nonce}"
   [[ "${lines[0]}" == "$header_serialized" && -z "$extra" && "$header_protocol" == v1 \
-    && "$pending_state_existed" =~ ^[01]$ && "$pending_state_count" =~ ^[0123]$ ]] || return 1
+    && "$pending_state_existed" =~ ^[01]$ && "$pending_state_count" =~ ^[0123]$ \
+    && "$pending_record_nonce" =~ ^[123456789][0123456789]*-[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]{6}$ ]] || return 1
+  record_timestamp_is_valid "$pending_record_timestamp" || return 1
   pending_phase_is_valid "$pending_operation" "$pending_phase" || return 1
   [[ "$pending_state_existed" == 1 || "$pending_state_count" == 0 ]] || return 1
   [[ "$pending_state_existed" == 0 || "$pending_state_count" -gt 0 ]] || return 1
@@ -406,11 +461,19 @@ recover_pending() {
     replace_service "$pending_alternate_image" "$pending_alternate_contract" && service_is_healthy "$pending_alternate_image" || return 1
     if [[ "$pending_operation" == rehearsal ]]; then
       promote_pending_alternate || return 1
-      write_rehearsal_failure "$pending_alternate_sha" "$pending_alternate_image" || return 1
+      ensure_pending_rehearsal_failure || return 1
     elif [[ $state_count -eq 0 || "${state_images[0]}" != "$pending_alternate_image" ]]; then return 1; fi
+    if [[ "$pending_operation" == deploy ]]; then ensure_pending_deploy_record success none || return 1; fi
   else
     replace_service "$pending_original_image" "$pending_original_contract" && service_is_healthy "$pending_original_image" \
       && restore_pending_state || return 1
+    if [[ "$pending_operation" == deploy ]]; then
+      if [[ "$pending_original_image" =~ $legacy_pattern ]]; then
+        ensure_pending_deploy_record rolled_back legacy_local || return 1
+      else
+        ensure_pending_deploy_record rolled_back saved_digest || return 1
+      fi
+    fi
   fi
   clear_pending || return 1
   recovery_active=0
@@ -458,8 +521,8 @@ if ! trusted_directory_is_valid "$minori_root" || ! trusted_directory_is_valid "
   || ! trusted_directory_is_valid "$contracts_dir" || ! root_only_file_is_valid "$env_file" || ! lark_directory_is_valid; then
   finish rejected 2
 fi
-mkdir -p "$rehearsal_records_dir" || finish rejected 2
-trusted_directory_is_valid "$rehearsal_records_dir" || finish rejected 2
+mkdir -p "$records_dir" "$rehearsal_records_dir" || finish rejected 2
+trusted_directory_is_valid "$records_dir" && trusted_directory_is_valid "$rehearsal_records_dir" || finish rejected 2
 temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/minori-rehearsal.XXXXXX")" || finish rejected 2
 reset_state
 load_state || finish rejected 2
@@ -484,6 +547,7 @@ pending_alternate_protocol='v1'
 pending_alternate_sha="${state_shas[1]}"
 pending_alternate_image="${state_images[1]}"
 pending_alternate_contract="${state_contracts[1]}"
+initialize_pending_record_identity || finish failed_before_switch 1
 write_pending "$pending_operation" "$pending_phase" "$pending_original_protocol" "$pending_original_sha" \
   "$pending_original_image" "$pending_original_contract" "$pending_alternate_protocol" "$pending_alternate_sha" \
   "$pending_alternate_image" "$pending_alternate_contract" || finish failed_before_switch 1
@@ -518,7 +582,7 @@ if replace_service "$pending_alternate_image" "$pending_alternate_contract" \
   test_boundary after_fallback_switch
   if promote_pending_alternate; then
     test_boundary after_fallback_state
-    if write_rehearsal_failure "$pending_alternate_sha" "$pending_alternate_image" && clear_pending; then
+    if ensure_pending_rehearsal_failure && clear_pending; then
       transaction_active=0
       finish restore_failed_recovered_predecessor 1
     fi

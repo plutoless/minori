@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -149,6 +149,7 @@ describe('restricted forced-command parser', { timeout: 15_000 }, () => {
 async function installerFixture() {
   const root = await mkdtemp(join(tmpdir(), 'minori-installer-test-'));
   const key = join(root, 'deployment-key');
+  await writeFile(join(root, '.minori-ci-installer-test'), 'minori-ci-installer-test-v1\n', { mode: 0o600 });
   await execFileAsync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);
   return { root, publicKey: `${key}.pub`, authorizedKeys: join(root, 'root', '.ssh', 'authorized_keys') };
 }
@@ -172,15 +173,18 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
     await writeFile(fixture.authorizedKeys, 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBOGUS unrelated@example\n', { mode: 0o600 });
 
     const result = await runInstaller(fixture.root, fixture.publicKey);
+    const repeated = await runInstaller(fixture.root, fixture.publicKey);
 
     expect(result).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_ci_install result=success\n', stderr: '' }));
+    expect(repeated).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_ci_install result=success\n', stderr: '' }));
     const authorized = await readFile(fixture.authorizedKeys, 'utf8');
     expect(authorized).toContain('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBOGUS unrelated@example\n');
     expect(authorized).toContain('restrict,command="/opt/minori/bin/ci-deploy" ssh-ed25519 ');
+    expect(authorized.match(/restrict,command="\/opt\/minori\/bin\/ci-deploy"/g)).toHaveLength(1);
     await expect(readFile(join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy'), 'utf8')).resolves.toContain('SSH_ORIGINAL_COMMAND');
   });
 
-  it.each(['install root', 'bin directory', 'installed leaf'])(
+  it.each(['intermediate opt', 'intermediate root', 'install root', 'bin directory', 'installed leaf'])(
     'rejects a symlinked %s before authorized_keys or a target is changed',
     async (targetKind) => {
       const fixture = await installerFixture();
@@ -189,7 +193,15 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
       const installRoot = join(fixture.root, 'opt', 'minori');
       const bin = join(installRoot, 'bin');
       const leaf = join(bin, 'ci-deploy');
-      const targetPath = targetKind === 'install root' ? installRoot : targetKind === 'bin directory' ? bin : leaf;
+      const targetPath = targetKind === 'intermediate opt'
+        ? join(fixture.root, 'opt')
+        : targetKind === 'intermediate root'
+          ? join(fixture.root, 'root')
+          : targetKind === 'install root'
+            ? installRoot
+            : targetKind === 'bin directory'
+              ? bin
+              : leaf;
       await mkdir(dirname(targetPath), { recursive: true });
       await symlink(target, targetPath);
 
@@ -200,4 +212,25 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
       expect(await readFile(join(target, 'sentinel'), 'utf8').catch(() => 'absent')).toBe('absent');
     },
   );
+
+  it.each(['/', '/opt/minori', '/root'])(
+    'rejects broad or production test root %s before installation',
+    async (unsafeRoot) => {
+      const fixture = await installerFixture();
+
+      const result = await runInstaller(unsafeRoot, fixture.publicKey);
+
+      expect(result).toEqual(expect.objectContaining({ code: 1, stderr: 'minori_ci_install result=unsafe_test_root\n' }));
+    },
+  );
+
+  it('requires the exact fixture sentinel before any installation', async () => {
+    const fixture = await installerFixture();
+    await rm(join(fixture.root, '.minori-ci-installer-test'));
+
+    const result = await runInstaller(fixture.root, fixture.publicKey);
+
+    expect(result).toEqual(expect.objectContaining({ code: 1, stderr: 'minori_ci_install result=unsafe_test_root\n' }));
+    await expect(readFile(fixture.authorizedKeys, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });

@@ -65,6 +65,10 @@ async function records(runtime: Runtime) {
   return Promise.all(names.sort().map(async (name) => JSON.parse(await readFile(join(directory, name), 'utf8'))));
 }
 
+async function recordNames(runtime: Runtime) {
+  return (await readdir(join(runtime.root, 'releases', 'records'))).sort();
+}
+
 async function rehearsalRecords(runtime: Runtime) {
   const directory = join(runtime.root, 'releases', 'rehearsal-records');
   const names = await readdir(directory);
@@ -281,7 +285,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
 
     const result = await run(runtime, {
       FAKE_CURRENT_IMAGE: digestB,
-      FAKE_DATE_FAIL: '1',
+      MINORI_TEST_FAIL_RECORD_RESULT: 'success',
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -414,7 +418,15 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
     15_000,
   );
 
-  it.each(['mismatched original metadata', 'leading header tab', 'trailing header tab', 'mode 0400', 'mode 0640'])(
+  it.each([
+    'mismatched original metadata',
+    'leading header tab',
+    'trailing header tab',
+    'invalid record timestamp',
+    'invalid record nonce',
+    'mode 0400',
+    'mode 0640',
+  ])(
     'rejects a pending journal with %s before a new pull or switch',
     async (scenario) => {
       const runtime = await createFakeDeployRuntime();
@@ -428,6 +440,12 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
       } else if (scenario === 'leading header tab' || scenario === 'trailing header tab') {
         const lines = (await readFile(pending, 'utf8')).split('\n');
         lines[0] = scenario === 'leading header tab' ? `\t${lines[0]}` : `${lines[0]}\t`;
+        await writeFile(pending, lines.join('\n'), { mode: 0o600 });
+      } else if (scenario === 'invalid record timestamp' || scenario === 'invalid record nonce') {
+        const lines = (await readFile(pending, 'utf8')).split('\n');
+        const header = lines[0].split('\t');
+        header[scenario === 'invalid record timestamp' ? 5 : 6] = '../foreign';
+        lines[0] = header.join('\t');
         await writeFile(pending, lines.join('\n'), { mode: 0o600 });
       } else {
         await chmod(pending, scenario === 'mode 0400' ? 0o400 : 0o640);
@@ -460,6 +478,89 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
       expect(await pendingExists(runtime)).toBe(false);
     },
   );
+
+  it.each(['before_record_write', 'after_record_write'])(
+    'recovers a crash at %s with exactly one journal-bound success record',
+    async (point) => {
+      const runtime = await createFakeDeployRuntime();
+      await seedDigestState(runtime);
+      await runtime.setCurrentImage(digestB);
+
+      await run(runtime, { MINORI_TEST_CRASH_AT: point });
+      expect(await runtime.currentImage()).toBe(digestA);
+      expect(await pendingExists(runtime)).toBe(true);
+      if (point === 'after_record_write') {
+        expect((await records(runtime)).filter((record) => record.result === 'success')).toHaveLength(1);
+      }
+
+      const restarted = await run(runtime, {
+        FAKE_REQUEST_SHA: shaC,
+        FAKE_REQUEST_IMAGE: digestC,
+        FAKE_FAIL: 'pull',
+      }, ['v1', shaC, digestC]);
+
+      expect(restarted).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=failed_before_replace\n' }));
+      expect(await runtime.currentImage()).toBe(digestA);
+      expect(await pendingExists(runtime)).toBe(false);
+      const successRecords = (await records(runtime)).filter((record) => record.result === 'success');
+      expect(successRecords).toEqual([expect.objectContaining({ commitSha: shaA, image: digestA, timestamp: '2026-08-09T12:34:56Z' })]);
+      const successNames = (await recordNames(runtime)).filter((name) => name.endsWith('-success.json'));
+      expect(successNames).toHaveLength(1);
+      expect(successNames[0]).toContain(shaA.slice(0, 12));
+      expect(successNames[0]).not.toContain(shaC.slice(0, 12));
+    },
+  );
+
+  it('retains the journal and exact candidate state when recovery cannot persist its success record', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await seedDigestState(runtime);
+    await runtime.setCurrentImage(digestB);
+    await run(runtime, { MINORI_TEST_CRASH_AT: 'before_record_write' });
+
+    const failedRecovery = await run(runtime, {
+      MINORI_TEST_FAIL_RECORD_RESULT: 'success',
+      FAKE_REQUEST_SHA: shaC,
+      FAKE_REQUEST_IMAGE: digestC,
+    }, ['v1', shaC, digestC]);
+
+    expect(failedRecovery).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=recovery_failed\n' }));
+    expect(await runtime.currentImage()).toBe(digestA);
+    expect(await pendingExists(runtime)).toBe(true);
+    expect((await records(runtime)).filter((record) => record.result === 'success')).toEqual([]);
+    expect((await recordNames(runtime)).filter((name) => name.startsWith('.'))).toEqual([]);
+
+    const retry = await run(runtime, {
+      FAKE_REQUEST_SHA: shaC,
+      FAKE_REQUEST_IMAGE: digestC,
+      FAKE_FAIL: 'pull',
+    }, ['v1', shaC, digestC]);
+
+    expect(retry).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=failed_before_replace\n' }));
+    expect(await pendingExists(runtime)).toBe(false);
+    expect((await records(runtime)).filter((record) => record.result === 'success')).toEqual([
+      expect.objectContaining({ commitSha: shaA, image: digestA }),
+    ]);
+  }, 20_000);
+
+  it('records a recovered rollback using only the crashed journal metadata', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await seedDigestState(runtime);
+    await runtime.setCurrentImage(digestB);
+    await run(runtime, { MINORI_TEST_CRASH_AT: 'after_candidate_switch' });
+
+    const restarted = await run(runtime, {
+      FAKE_REQUEST_SHA: shaC,
+      FAKE_REQUEST_IMAGE: digestC,
+      FAKE_FAIL: 'pull',
+    }, ['v1', shaC, digestC]);
+
+    expect(restarted.code).toBe(1);
+    expect(await runtime.currentImage()).toBe(digestB);
+    expect(await pendingExists(runtime)).toBe(false);
+    expect((await records(runtime)).filter((record) => record.result === 'rolled_back')).toEqual([
+      expect.objectContaining({ commitSha: shaA, image: digestA, rollbackTargetCategory: 'saved_digest' }),
+    ]);
+  }, 20_000);
 });
 
 describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
