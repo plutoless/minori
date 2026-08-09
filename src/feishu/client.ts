@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 import { Client, defaultHttpInstance } from '@larksuiteoapi/node-sdk';
+import { FeishuGroupContextSource } from './group-context.js';
 
 type ApiResponse<T> = { code?: number | undefined; data?: T | undefined };
 
@@ -33,6 +34,38 @@ export type FeishuSdk = {
           } | undefined;
         }> | undefined;
       }>>;
+      list(payload: {
+        params: {
+          container_id_type: 'chat';
+          container_id: string;
+          end_time: string;
+          sort_type: 'ByCreateTimeDesc';
+          page_size: number;
+          page_token?: string;
+        };
+      }): Promise<ApiResponse<{
+        has_more?: boolean | undefined;
+        page_token?: string | undefined;
+        items?: Array<{
+          message_id?: string | undefined;
+          msg_type?: string | undefined;
+          create_time?: string | undefined;
+          chat_id?: string | undefined;
+          sender?: {
+            id?: string | undefined;
+            id_type?: string | undefined;
+            sender_type?: string | undefined;
+            open_bot_id?: string | undefined;
+          } | undefined;
+          body?: { content?: string | undefined } | undefined;
+          mentions?: Array<{
+            key?: string | undefined;
+            id?: string | undefined;
+            id_type?: string | undefined;
+            name?: string | undefined;
+          }> | undefined;
+        }> | undefined;
+      }>>;
     };
     messageReaction: {
       create(payload: {
@@ -42,6 +75,24 @@ export type FeishuSdk = {
       delete(payload: {
         path: { message_id: string; reaction_id: string };
       }): Promise<ApiResponse<unknown>>;
+    };
+    chatMembers: {
+      get(payload: {
+        path: { chat_id: string };
+        params: {
+          member_id_type: 'open_id';
+          page_size: number;
+          page_token?: string;
+        };
+      }): Promise<ApiResponse<{
+        items?: Array<{
+          member_id_type?: string | undefined;
+          member_id?: string | undefined;
+          name?: string | undefined;
+        }> | undefined;
+        page_token?: string | undefined;
+        has_more?: boolean | undefined;
+      }>>;
     };
   } };
 };
@@ -117,4 +168,16 @@ export function createOfficialFeishuClient(
   defaultHttpInstance.defaults.timeout = 30_000;
   const client = new Client(credentials);
   return new FeishuClientAdapter(client, logger);
+}
+
+export function createOfficialFeishuRuntime(
+  credentials: { appId: string; appSecret: string },
+  logger: Logger,
+) {
+  defaultHttpInstance.defaults.timeout = 30_000;
+  const client = new Client(credentials);
+  return {
+    messenger: new FeishuClientAdapter(client, logger),
+    groupContext: new FeishuGroupContextSource(client, logger),
+  };
 }

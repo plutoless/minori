@@ -140,7 +140,7 @@ describe('normalizeMessageEvent', () => {
     },
   );
 
-  it('returns null for malformed content, missing sender, bots, and unknown types', () => {
+  it('returns null for malformed content, missing sender, and bot senders', () => {
     expect(normalizeMessageEvent(event({
       message: { ...(event().message as object), content: '{broken' },
     }), { botOpenId: BOT_OPEN_ID })).toBeNull();
@@ -150,8 +150,13 @@ describe('normalizeMessageEvent', () => {
     expect(normalizeMessageEvent(event({
       sender: { sender_type: 'app', sender_id: { open_id: 'ou_bot' } },
     }), { botOpenId: BOT_OPEN_ID })).toBeNull();
+  });
+
+  it('maps every triggered non-text message to the existing unsupported input contract', () => {
     expect(normalizeMessageEvent(event({
       message: { ...(event().message as object), message_type: 'sticker' },
-    }), { botOpenId: BOT_OPEN_ID })).toBeNull();
+    }), { botOpenId: BOT_OPEN_ID })?.content).toEqual({
+      kind: 'unsupported', sourceMessageType: 'sticker',
+    });
   });
 });

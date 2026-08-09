@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { NormalizedMessage } from '../contracts/messages.js';
+import { parseFeishuMessageContent } from './message-content.js';
 
 const mentionSchema = z.object({
   key: z.string(),
@@ -29,110 +30,6 @@ export type MessageActivationContext = {
   botOpenId: string;
   repliedToBot?: boolean;
 };
-
-const UNSUPPORTED_MESSAGE_TYPES = new Set(['image', 'audio', 'media', 'file']);
-const URL_PATTERN = /https?:\/\/[^\s<>()]+/gu;
-
-function isFeishuDocumentLink(value: string) {
-  try {
-    const url = new URL(value);
-    const hostname = url.hostname.toLowerCase();
-    const isFeishuHost = hostname === 'feishu.cn'
-      || hostname.endsWith('.feishu.cn')
-      || hostname === 'larksuite.com'
-      || hostname.endsWith('.larksuite.com')
-      || hostname === 'larkoffice.com'
-      || hostname.endsWith('.larkoffice.com');
-    return isFeishuHost && /^\/(?:wiki|docx|docs|sheets|base)\/[A-Za-z0-9_-]+/u.test(url.pathname);
-  } catch {
-    return false;
-  }
-}
-
-function uniqueLinks(text: string, explicit: string[] = []) {
-  return [...new Set([...explicit, ...(text.match(URL_PATTERN) ?? [])]
-    .filter(isFeishuDocumentLink))];
-}
-
-function normalizedLine(text: string) {
-  return text.replace(/[\t ]+/gu, ' ').trim();
-}
-
-function parseTextContent(
-  raw: string,
-  botMentionKeys: string[],
-): { text: string; feishuLinks: string[] } | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  const result = z.object({ text: z.string() }).safeParse(parsed);
-  if (!result.success) return null;
-  let text = result.data.text;
-  for (const key of botMentionKeys) text = text.split(key).join('');
-  text = normalizedLine(text);
-  return { text, feishuLinks: uniqueLinks(text) };
-}
-
-function parsePostContent(
-  raw: string,
-  botOpenId: string,
-  botMentionKeys: string[],
-): { text: string; feishuLinks: string[] } | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const direct = parsed as { title?: unknown; content?: unknown };
-  const candidate = Array.isArray(direct.content) ? direct : Object.values(parsed)[0];
-  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
-  const post = candidate as { title?: unknown; content?: unknown };
-  if (!Array.isArray(post.content)) return null;
-
-  const lines: string[] = [];
-  const links: string[] = [];
-  if (typeof post.title === 'string' && normalizedLine(post.title)) {
-    lines.push(normalizedLine(post.title));
-  }
-  for (const rawRow of post.content) {
-    if (!Array.isArray(rawRow)) continue;
-    let inline = '';
-    const flushInline = () => {
-      const line = normalizedLine(inline);
-      if (line) lines.push(line);
-      inline = '';
-    };
-    for (const rawNode of rawRow) {
-      if (!rawNode || typeof rawNode !== 'object' || Array.isArray(rawNode)) continue;
-      const node = rawNode as Record<string, unknown>;
-      if (node.tag === 'at') {
-        const userId = String(node.user_id);
-        if (userId !== botOpenId
-          && !botMentionKeys.includes(userId)
-          && typeof node.user_name === 'string') {
-          inline += `@${node.user_name}`;
-        }
-      } else if (node.tag === 'a') {
-        if (typeof node.text === 'string') inline += node.text;
-        if (typeof node.href === 'string') links.push(node.href);
-      } else if (node.tag === 'code_block' && typeof node.text === 'string') {
-        flushInline();
-        const language = typeof node.language === 'string' ? node.language : '';
-        lines.push(`\`\`\`${language}\n${node.text}\n\`\`\``);
-      } else if (typeof node.text === 'string') {
-        inline += node.text;
-      }
-    }
-    flushInline();
-  }
-  const text = lines.join('\n').trim();
-  return { text, feishuLinks: uniqueLinks(text, links) };
-}
 
 export function isValidUserMessageEvent(data: unknown): boolean {
   const parsed = messageEventSchema.safeParse(data);
@@ -167,24 +64,16 @@ export function normalizeMessageEvent(
     || activation.repliedToBot === true;
   if (!isActivated) return null;
 
-  let content: NormalizedMessage['content'];
-  if (UNSUPPORTED_MESSAGE_TYPES.has(message.message_type)) {
-    content = { kind: 'unsupported', sourceMessageType: message.message_type };
-  } else if (message.message_type === 'text') {
-    const text = parseTextContent(message.content, botMentions.map((mention) => mention.key));
-    if (!text) return null;
-    content = { kind: 'text', ...text };
-  } else if (message.message_type === 'post') {
-    const text = parsePostContent(
-      message.content,
-      activation.botOpenId,
-      botMentions.map((mention) => mention.key),
-    );
-    if (!text) return null;
-    content = { kind: 'text', ...text };
-  } else {
-    return null;
-  }
+  const parsedContent = parseFeishuMessageContent({
+    messageType: message.message_type,
+    rawContent: message.content,
+    botOpenId: activation.botOpenId,
+    botMentionKeys: botMentions.map((mention) => mention.key),
+  });
+  if (!parsedContent) return null;
+  const content: NormalizedMessage['content'] = parsedContent.kind === 'text'
+    ? parsedContent
+    : { kind: 'unsupported', sourceMessageType: parsedContent.sourceMessageType };
 
   const occurredAt = new Date(Number(message.create_time));
   if (Number.isNaN(occurredAt.getTime())) return null;
