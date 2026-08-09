@@ -19,7 +19,7 @@ const USER_JSON_ARGS = ['--format', 'json', '--as', 'user'] as const;
 export function buildInvocation(command: LarkCommand): LarkInvocation {
   switch (command.id) {
     case 'auth.status':
-      return { args: ['auth', 'status', '--json'] };
+      return { args: ['auth', 'status', '--json', '--verify'] };
     case 'drive.search':
       return {
         args: [

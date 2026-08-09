@@ -38,7 +38,7 @@ describe('buildInvocation', () => {
         'wiki', '+node-get', '--node-token', 'wik_1', '--format', 'json', '--as', 'user',
       ]);
     expect(buildInvocation({ id: 'auth.status' }).args)
-      .toEqual(['auth', 'status', '--json']);
+      .toEqual(['auth', 'status', '--json', '--verify']);
   });
 
   it('passes document content only through stdin for allowed typed writes', () => {
