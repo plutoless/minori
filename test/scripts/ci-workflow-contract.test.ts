@@ -54,6 +54,69 @@ async function ruleset(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
 }
 
+type RulesetRule = {
+  type: string;
+  parameters?: Record<string, unknown>;
+};
+
+function normalizedRules(rules: RulesetRule[]): RulesetRule[] {
+  return rules
+    .map((rule) => {
+      if (!rule.parameters) return rule;
+      const parameters = { ...rule.parameters };
+      const checks = parameters.required_status_checks;
+      if (Array.isArray(checks)) {
+        parameters.required_status_checks = [...checks].toSorted((left, right) => {
+          const leftContext = (left as { context?: string }).context ?? '';
+          const rightContext = (right as { context?: string }).context ?? '';
+          return leftContext.localeCompare(rightContext);
+        });
+      }
+      const mergeMethods = parameters.allowed_merge_methods;
+      if (Array.isArray(mergeMethods)) {
+        parameters.allowed_merge_methods = [...mergeMethods].toSorted();
+      }
+      return { ...rule, parameters };
+    })
+    .toSorted((left, right) => left.type.localeCompare(right.type));
+}
+
+function expectMainRules(rules: RulesetRule[]) {
+  expect(normalizedRules(rules)).toEqual([
+    {
+      type: 'pull_request',
+      parameters: {
+        allowed_merge_methods: ['merge', 'rebase', 'squash'],
+        dismiss_stale_reviews_on_push: false,
+        dismissal_restriction: { enabled: false, allowed_actors: [] },
+        require_code_owner_review: false,
+        require_last_push_approval: false,
+        required_approving_review_count: 0,
+        required_review_thread_resolution: false,
+      },
+    },
+    {
+      type: 'required_status_checks',
+      parameters: {
+        strict_required_status_checks_policy: true,
+        do_not_enforce_on_create: false,
+        required_status_checks: [
+          { context: 'CI / image-amd64' },
+          { context: 'CI / integration' },
+          { context: 'CI / verify' },
+        ],
+      },
+    },
+  ]);
+}
+
+function expectReleaseTagRules(rules: RulesetRule[]) {
+  expect(normalizedRules(rules)).toEqual([
+    { type: 'deletion' },
+    { type: 'update' },
+  ]);
+}
+
 function allUses(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(allUses);
   if (value && typeof value === 'object') {
@@ -397,30 +460,7 @@ describe('GitHub repository ruleset contracts', () => {
     });
     expect(JSON.stringify(main)).not.toMatch(/\$\{|<[^>]+>|REPLACE_ME/u);
 
-    const rules = main.rules as Array<{ type: string; parameters?: Record<string, unknown> }>;
-    expect(rules).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: 'pull_request',
-        parameters: expect.objectContaining({
-          dismiss_stale_reviews_on_push: false,
-          dismissal_restriction: { enabled: false, allowed_actors: [] },
-          require_code_owner_review: false,
-          require_last_push_approval: false,
-          required_approving_review_count: 0,
-          required_review_thread_resolution: false,
-        }),
-      }),
-      expect.objectContaining({
-        type: 'required_status_checks',
-        parameters: expect.objectContaining({
-          required_status_checks: [
-            { context: 'CI / verify' },
-            { context: 'CI / integration' },
-            { context: 'CI / image-amd64' },
-          ],
-        }),
-      }),
-    ]));
+    expectMainRules(main.rules as RulesetRule[]);
   });
 
   it('keeps v tags immutable with no overwrite bypass', async () => {
@@ -434,7 +474,24 @@ describe('GitHub repository ruleset contracts', () => {
       bypass_actors: [],
     }));
     expect(JSON.stringify(tags)).not.toMatch(/\$\{|<[^>]+>|REPLACE_ME/u);
-    const ruleTypes = (tags.rules as Array<{ type: string }>).map((rule) => rule.type);
-    expect(ruleTypes).toEqual(expect.arrayContaining(['update', 'deletion']));
+    expectReleaseTagRules(tags.rules as RulesetRule[]);
+  });
+
+  it('rejects an added tag-creation rule and a relaxed required-status policy', async () => {
+    const main = await ruleset('.github/rulesets/main.json');
+    const relaxedMain = structuredClone(main) as { rules: RulesetRule[] };
+    const requiredChecks = relaxedMain.rules.find(
+      (rule) => rule.type === 'required_status_checks',
+    );
+    expect(requiredChecks).toBeDefined();
+    requiredChecks!.parameters!.strict_required_status_checks_policy = false;
+
+    expect(() => expectMainRules(relaxedMain.rules)).toThrow();
+
+    const tags = await ruleset('.github/rulesets/release-tags.json');
+    const extraCreationTagRule = structuredClone(tags) as { rules: RulesetRule[] };
+    extraCreationTagRule.rules.push({ type: 'creation' });
+
+    expect(() => expectReleaseTagRules(extraCreationTagRule.rules)).toThrow();
   });
 });
