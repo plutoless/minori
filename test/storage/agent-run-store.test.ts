@@ -27,7 +27,7 @@ describe('PostgresAgentRunStore', () => {
       eventId: 'evt_1',
       messageId: 'om_1',
       chatId: 'oc_1',
-      conversationKey: 'oc_1:om_root',
+      conversationKey: 'oc_1',
       senderOpenId: 'ou_1',
       chatType: 'group',
       content: { kind: 'text', text: 'hello', feishuLinks: [] },

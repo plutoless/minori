@@ -3,7 +3,6 @@ export type NormalizedMessage = {
   messageId: string;
   chatId: string;
   conversationKey: string;
-  rootId?: string;
   senderOpenId: string;
   chatType: 'group' | 'p2p';
   content:

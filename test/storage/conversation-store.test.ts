@@ -32,7 +32,7 @@ describe('PostgresConversationStore', () => {
   });
 
   it('creates one stable conversation identity under concurrent discovery', async () => {
-    const input = { conversationKey: 'oc_1:om_root', chatId: 'oc_1', type: 'group' as const };
+    const input = { conversationKey: 'oc_1', chatId: 'oc_1', type: 'group' as const };
 
     const [first, second] = await Promise.all([
       store.getOrCreateConversation(input),
@@ -41,13 +41,11 @@ describe('PostgresConversationStore', () => {
 
     expect(first).toEqual(second);
     expect(first).toMatch(/^[0-9a-f-]{36}$/);
-    expect(await store.exists('oc_1:om_root')).toBe(true);
-    expect(await store.exists('oc_1:om_missing')).toBe(false);
   });
 
   it('returns the newest messages within the soft budget in chronological order', async () => {
     const conversationId = await store.getOrCreateConversation({
-      conversationKey: 'oc_1:om_root',
+      conversationKey: 'oc_1',
       chatId: 'oc_1',
       type: 'group',
     });
@@ -64,8 +62,8 @@ describe('PostgresConversationStore', () => {
       content: '3333', createdAt: new Date('2026-08-05T10:02:00Z'),
     });
 
-    const recent = await store.recentWithinBudget('oc_1:om_root', 8, 'om_3');
-    const smallestWindow = await store.recentWithinBudget('oc_1:om_root', 1, 'om_3');
+    const recent = await store.recentWithinBudget('oc_1', 8, 'om_3');
+    const smallestWindow = await store.recentWithinBudget('oc_1', 1, 'om_3');
 
     expect(recent.map((message) => message.messageId)).toEqual(['om_2', 'om_3']);
     expect(smallestWindow.map((message) => message.messageId)).toEqual(['om_3']);
@@ -73,7 +71,7 @@ describe('PostgresConversationStore', () => {
 
   it('ignores duplicate Feishu messages instead of replacing their content', async () => {
     const conversationId = await store.getOrCreateConversation({
-      conversationKey: 'oc_1:om_root', chatId: 'oc_1', type: 'group',
+      conversationKey: 'oc_1', chatId: 'oc_1', type: 'group',
     });
     const original = {
       messageId: 'om_1', conversationId, role: 'user' as const, senderOpenId: 'ou_1',
@@ -83,17 +81,17 @@ describe('PostgresConversationStore', () => {
     await store.append(original);
     await store.append({ ...original, content: 'replacement' });
 
-    const recent = await store.recentWithinBudget('oc_1:om_root', 100, 'om_1');
+    const recent = await store.recentWithinBudget('oc_1', 100, 'om_1');
     expect(recent).toHaveLength(1);
     expect(recent[0]?.content).toBe('original');
   });
 
-  it('searches Chinese and English only inside the current Retained Thread History', async () => {
+  it('searches Chinese and English only inside the current Group Context', async () => {
     const firstId = await store.getOrCreateConversation({
-      conversationKey: 'oc_1:om_root', chatId: 'oc_1', type: 'group',
+      conversationKey: 'oc_1', chatId: 'oc_1', type: 'group',
     });
     const secondId = await store.getOrCreateConversation({
-      conversationKey: 'oc_2:om_root', chatId: 'oc_2', type: 'group',
+      conversationKey: 'oc_2', chatId: 'oc_2', type: 'group',
     });
     await store.append({
       messageId: 'om_1', conversationId: firstId, role: 'user', senderOpenId: 'ou_1',
@@ -108,8 +106,8 @@ describe('PostgresConversationStore', () => {
       content: 'Project Alpha private secret 发布方案', createdAt: new Date('2026-08-05T10:02:00Z'),
     });
 
-    const english = await store.search('oc_1:om_root', 'alpha', 10);
-    const chinese = await store.search('oc_1:om_root', '发布方案', 10);
+    const english = await store.search('oc_1', 'alpha', 10);
+    const chinese = await store.search('oc_1', '发布方案', 10);
 
     expect(english.map((message) => message.messageId)).toEqual(['om_1']);
     expect(chinese.map((message) => message.messageId)).toEqual(['om_2']);
@@ -118,7 +116,7 @@ describe('PostgresConversationStore', () => {
 
   it('preserves the explicit current trigger despite out-of-order timestamps', async () => {
     const conversationId = await store.getOrCreateConversation({
-      conversationKey: 'oc_1:om_root', chatId: 'oc_1', type: 'group',
+      conversationKey: 'oc_1', chatId: 'oc_1', type: 'group',
     });
     await store.append({
       messageId: 'om_future', conversationId, role: 'assistant',
@@ -129,7 +127,7 @@ describe('PostgresConversationStore', () => {
       content: 'trigger', createdAt: new Date('2026-08-05T10:00:00Z'),
     });
 
-    const recent = await store.recentWithinBudget('oc_1:om_root', 1, 'om_trigger');
+    const recent = await store.recentWithinBudget('oc_1', 1, 'om_trigger');
 
     expect(recent.map((message) => message.messageId)).toEqual(['om_trigger']);
   });
@@ -141,7 +139,7 @@ describe('PostgresConversationStore', () => {
       retentionMs: 365 * 24 * 60 * 60 * 1_000,
     });
     const conversationId = await longRetentionStore.getOrCreateConversation({
-      conversationKey: 'oc_1:om_root', chatId: 'oc_1', type: 'group',
+      conversationKey: 'oc_1', chatId: 'oc_1', type: 'group',
     });
     await longRetentionStore.append({
       messageId: 'om_old', conversationId, role: 'user', senderOpenId: 'ou_1',
@@ -154,8 +152,8 @@ describe('PostgresConversationStore', () => {
 
     expect(await longRetentionStore.purgeExpired(new Date('2026-07-01T00:00:00Z'))).toBe(1);
 
-    expect(await longRetentionStore.search('oc_1:om_root', 'expired', 10)).toEqual([]);
-    expect((await longRetentionStore.search('oc_1:om_root', 'current', 10))[0]?.messageId)
+    expect(await longRetentionStore.search('oc_1', 'expired', 10)).toEqual([]);
+    expect((await longRetentionStore.search('oc_1', 'current', 10))[0]?.messageId)
       .toBe('om_new');
   });
 });

@@ -180,21 +180,22 @@ describe('open team Agent release contract', () => {
       event_id: 'evt_group_2',
       message: {
         message_id: 'om_group_2', chat_id: 'oc_team', chat_type: 'group',
-        message_type: 'post', create_time: '1785888001000', root_id: 'om_group_1',
+        message_type: 'post', create_time: '1785888001000',
         content: JSON.stringify({ content: [[
           { tag: 'a', text: 'roadmap', href: 'https://acme.feishu.cn/docx/doxcnRoadmap' },
         ]] }),
+        mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }],
       },
-    }), { botOpenId: BOT_OPEN_ID, knownAgentThread: true })!;
+    }), { botOpenId: BOT_OPEN_ID })!;
     const privateMessage: NormalizedMessage = {
       ...group,
       eventId: 'evt_private', messageId: 'om_private', chatId: 'oc_private',
-      conversationKey: 'oc_private', chatType: 'p2p', rootId: undefined,
+      conversationKey: 'oc_private', chatType: 'p2p',
     } as NormalizedMessage;
     const unsupported: NormalizedMessage = {
       ...group,
-      eventId: 'evt_file', messageId: 'om_file', conversationKey: 'oc_team:om_file',
-      rootId: 'om_file', content: { kind: 'unsupported', sourceMessageType: 'file' },
+      eventId: 'evt_file', messageId: 'om_file', conversationKey: 'oc_team',
+      content: { kind: 'unsupported', sourceMessageType: 'file' },
     };
     expect(group.content).toEqual({
       kind: 'text', text: 'show the roadmap', feishuLinks: [],
@@ -256,7 +257,6 @@ describe('open team Agent release contract', () => {
       botAppId: 'cli_minori',
       eventStore: events,
       messageContext: { isBotMessage: vi.fn(async () => false) },
-      threads: conversations,
       reactions: messenger,
       signalWorker: vi.fn(),
       logger: pino({ level: 'silent' }),

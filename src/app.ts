@@ -144,7 +144,6 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       eventStore: storage.eventStore,
       reactions: messenger,
       messageContext: messenger,
-      threads: storage.conversationStore,
       signalWorker: () => nextWorker.wake(),
       logger,
     });

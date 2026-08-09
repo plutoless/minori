@@ -34,7 +34,7 @@ describe('PostgresEventStore', () => {
       eventId: 'evt_1',
       messageId: 'om_1',
       chatId: 'oc_1',
-      conversationKey: 'oc_1:om_root',
+      conversationKey: 'oc_1',
       senderOpenId: 'ou_1',
       chatType: 'group',
       content: { kind: 'text', text: 'hello', feishuLinks: [] },
@@ -51,14 +51,14 @@ describe('PostgresEventStore', () => {
     expect([first, second].sort()).toEqual(['duplicate', 'queued']);
   });
 
-  it('serializes one Agent Thread while claiming independent conversations together', async () => {
+  it('serializes one Group Context while claiming independent conversations together', async () => {
     await store.enqueue(event());
-    await store.enqueue(event({ eventId: 'evt_2', messageId: 'om_2' }));
+    await store.enqueue(event({ eventId: 'evt_2', messageId: 'om_2', conversationKey: 'oc_1' }));
     await store.enqueue(event({
       eventId: 'evt_3',
       messageId: 'om_3',
       chatId: 'oc_2',
-      conversationKey: 'oc_2:om_root',
+      conversationKey: 'oc_2',
     }));
 
     const leaseUntil = new Date(Date.now() + 60_000);
@@ -75,9 +75,9 @@ describe('PostgresEventStore', () => {
     expect(secondClaim.map((claimed) => claimed.eventId)).toEqual(['evt_2']);
   });
 
-  it('does not let concurrent workers claim two events from one Agent Thread', async () => {
-    await store.enqueue(event());
-    await store.enqueue(event({ eventId: 'evt_2', messageId: 'om_2' }));
+  it('does not let concurrent workers claim two events from one Group Context across reply roots', async () => {
+    await store.enqueue(event({ messageId: 'om_1' }));
+    await store.enqueue(event({ eventId: 'evt_2', messageId: 'om_2', conversationKey: 'oc_1' }));
     const leaseUntil = new Date(Date.now() + 60_000);
 
     const claims = await Promise.all([
@@ -110,7 +110,7 @@ describe('PostgresEventStore', () => {
     await store.enqueue(event({
       eventId: 'evt_2',
       messageId: 'om_2',
-      conversationKey: 'oc_2:om_root',
+      conversationKey: 'oc_2',
       chatId: 'oc_2',
     }));
     const now = new Date();

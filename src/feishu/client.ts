@@ -17,7 +17,7 @@ export type FeishuSdk = {
       reply(payload: {
         path: { message_id: string };
         data: {
-          content: string; msg_type: 'text'; reply_in_thread: true; uuid: string;
+          content: string; msg_type: 'text'; reply_in_thread: false; uuid: string;
         };
       }): Promise<ApiResponse<{ message_id?: string | undefined }>>;
       get(payload: {
@@ -62,7 +62,7 @@ export class FeishuClientAdapter implements FeishuMessenger {
       data: {
         content: JSON.stringify({ text }),
         msg_type: 'text',
-        reply_in_thread: true,
+        reply_in_thread: false,
         uuid: idempotencyKey,
       },
     });

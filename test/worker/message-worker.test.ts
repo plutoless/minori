@@ -9,7 +9,7 @@ function message(content: NormalizedMessage['content'] = {
 }): NormalizedMessage {
   return {
     eventId: 'evt_1', messageId: 'om_1', chatId: 'oc_1',
-    conversationKey: 'oc_1:om_root', rootId: 'om_root', senderOpenId: 'ou_1',
+    conversationKey: 'oc_1', senderOpenId: 'ou_1',
     chatType: 'group', content, occurredAt: new Date('2026-08-05T00:00:00Z'),
   };
 }

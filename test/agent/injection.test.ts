@@ -51,7 +51,7 @@ describe('prompt-injection boundary', () => {
       prompt: 'Summarize this document.', history: [],
       trigger: { kind: 'feishu_member', senderOpenId: 'ou_member', chatId: 'oc_team' },
     }, {
-      model, service, conversationKey: 'oc_team:om_root',
+      model, service, conversationKey: 'oc_team',
       triggerMessageId: 'om_trigger',
       eventId: 'evt_1',
       claimAttempt: 1,

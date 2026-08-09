@@ -23,7 +23,7 @@ describe('FeishuClientAdapter', () => {
       path: { message_id: 'om_trigger' },
       data: {
         content: JSON.stringify({ text: 'hello' }), msg_type: 'text',
-        reply_in_thread: true, uuid: 'evt_1:reply:v1',
+        reply_in_thread: false, uuid: 'evt_1:reply:v1',
       },
     });
     await expect(adapter.replyText('om_trigger', 'hello', 'x'.repeat(51))).rejects

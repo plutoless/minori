@@ -91,7 +91,7 @@ function dependencies(
   return {
     model,
     service: service(),
-    conversationKey: 'oc_team:om_root',
+    conversationKey: 'oc_team',
     triggerMessageId: 'om_trigger',
     conversationStore: conversationStore(prompt),
     eventId: 'evt_1',
@@ -132,7 +132,7 @@ describe('runKnowledgeAgent', () => {
     });
     expect(model.doGenerateCalls).toHaveLength(3);
     expect(store.recentWithinBudget).toHaveBeenCalledWith(
-      'oc_team:om_root', 24_000, 'om_trigger',
+      'oc_team', 24_000, 'om_trigger',
     );
     expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain('Earlier context');
     expect(model.doGenerateCalls.every(
@@ -208,7 +208,7 @@ describe('runKnowledgeAgent', () => {
     );
 
     expect(reply.sources).toEqual([]);
-    expect(historySearch).toHaveBeenCalledWith('oc_team:om_root', 'codename', 5);
+    expect(historySearch).toHaveBeenCalledWith('oc_team', 'codename', 5);
   });
 
   it('keeps Agent-managed recovery open with the visible receipt and full typed write set', async () => {

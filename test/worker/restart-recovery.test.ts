@@ -7,7 +7,7 @@ function recovered(overrides: Partial<StoredEvent> = {}): StoredEvent {
     eventId: 'evt_crash', attempts: 2,
     payload: {
       eventId: 'evt_crash', messageId: 'om_1', chatId: 'oc_1',
-      conversationKey: 'oc_1:om_root', senderOpenId: 'ou_1', chatType: 'group',
+      conversationKey: 'oc_1', senderOpenId: 'ou_1', chatType: 'group',
       content: { kind: 'text', text: 'hello', feishuLinks: [] },
       occurredAt: new Date('2026-08-05T00:00:00Z'),
     },

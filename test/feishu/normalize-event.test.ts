@@ -28,8 +28,7 @@ describe('normalizeMessageEvent', () => {
       eventId: 'evt_1',
       messageId: 'om_1',
       chatId: 'oc_team',
-      conversationKey: 'oc_team:om_1',
-      rootId: 'om_1',
+      conversationKey: 'oc_team',
       senderOpenId: 'ou_member',
       chatType: 'group',
       content: { kind: 'text', text: 'show the roadmap', feishuLinks: [] },
@@ -61,8 +60,7 @@ describe('normalizeMessageEvent', () => {
 
     expect(normalizeMessageEvent(rich, { botOpenId: BOT_OPEN_ID })).toMatchObject({
       messageId: 'om_post',
-      rootId: 'om_root',
-      conversationKey: 'oc_team:om_root',
+      conversationKey: 'oc_team',
       content: {
         kind: 'text',
         text: 'Release notes\n@Ada review the planexternal\n```ts\nconst ready = true;\n```',
@@ -86,7 +84,7 @@ describe('normalizeMessageEvent', () => {
     });
   });
 
-  it('accepts replies to Minori and continuations in an already activated thread', () => {
+  it('uses the chat as the conversation for direct mentions and replies to Minori', () => {
     const reply = event({
       message: {
         message_id: 'om_reply', chat_id: 'oc_team', chat_type: 'group',
@@ -94,20 +92,11 @@ describe('normalizeMessageEvent', () => {
         root_id: 'om_root', parent_id: 'om_bot', content: JSON.stringify({ text: 'continue' }),
       },
     });
-    const continuation = event({
-      message: {
-        message_id: 'om_next', chat_id: 'oc_team', chat_type: 'group',
-        message_type: 'text', create_time: '1785888000000',
-        root_id: 'om_root', parent_id: 'om_reply', content: JSON.stringify({ text: 'and this' }),
-      },
-    });
-
+    expect(normalizeMessageEvent(event(), { botOpenId: BOT_OPEN_ID }))
+      .toMatchObject({ chatId: 'oc_team', conversationKey: 'oc_team' });
     expect(normalizeMessageEvent(reply, {
       botOpenId: BOT_OPEN_ID, repliedToBot: true,
-    })?.conversationKey).toBe('oc_team:om_root');
-    expect(normalizeMessageEvent(continuation, {
-      botOpenId: BOT_OPEN_ID, knownAgentThread: true,
-    })?.conversationKey).toBe('oc_team:om_root');
+    })).toMatchObject({ chatId: 'oc_team', conversationKey: 'oc_team' });
   });
 
   it('ignores unrelated group timeline traffic', () => {
@@ -120,6 +109,18 @@ describe('normalizeMessageEvent', () => {
     });
 
     expect(normalizeMessageEvent(unrelated, { botOpenId: BOT_OPEN_ID })).toBeNull();
+  });
+
+  it('does not activate a non-mentioned group message from only its root ID', () => {
+    const rootedTimelineMessage = event({
+      message: {
+        message_id: 'om_rooted_noise', chat_id: 'oc_team', chat_type: 'group',
+        message_type: 'text', create_time: '1785888000000', root_id: 'om_old_root',
+        content: JSON.stringify({ text: 'ordinary team chat' }),
+      },
+    });
+
+    expect(normalizeMessageEvent(rootedTimelineMessage, { botOpenId: BOT_OPEN_ID })).toBeNull();
   });
 
   it.each(['image', 'audio', 'media', 'file']) (

@@ -14,17 +14,12 @@ export interface MessageContextSource {
   isBotMessage(messageId: string, bot: FeishuBotIdentity): Promise<boolean>;
 }
 
-export interface AgentThreadSource {
-  exists(conversationKey: string): Promise<boolean>;
-}
-
 export type FeishuGatewayDependencies = {
   botOpenId: string;
   botAppId: string;
   eventStore: GatewayEventStore;
   reactions: Pick<FeishuMessenger, 'addReaction' | 'removeReaction'>;
   messageContext: MessageContextSource;
-  threads: AgentThreadSource;
   signalWorker(): void | Promise<void>;
   logger: Logger;
 };
@@ -33,7 +28,6 @@ const activationLookupSchema = z.object({
   message: z.object({
     chat_id: z.string(),
     chat_type: z.enum(['group', 'p2p']),
-    root_id: z.string().optional(),
     parent_id: z.string().optional(),
   }).passthrough(),
 }).passthrough();
@@ -51,26 +45,18 @@ export class FeishuGateway {
       const lookup = activationLookupSchema.safeParse(data);
       if (!lookup.success || lookup.data.message.chat_type !== 'group') return;
       const { message } = lookup.data;
-      if (!message.parent_id && !message.root_id) return;
+      if (!message.parent_id) return;
       try {
-        const [repliedToBot, knownAgentThread] = await Promise.all([
-          message.parent_id
-            ? this.dependencies.messageContext.isBotMessage(
-              message.parent_id,
-              {
-                openId: this.dependencies.botOpenId,
-                appId: this.dependencies.botAppId,
-              },
-            )
-            : false,
-          message.root_id
-            ? this.dependencies.threads.exists(`${message.chat_id}:${message.root_id}`)
-            : false,
-        ]);
+        const repliedToBot = await this.dependencies.messageContext.isBotMessage(
+          message.parent_id,
+          {
+            openId: this.dependencies.botOpenId,
+            appId: this.dependencies.botAppId,
+          },
+        );
         normalized = normalizeMessageEvent(data, {
           botOpenId: this.dependencies.botOpenId,
           repliedToBot,
-          knownAgentThread,
         });
       } catch {
         this.dependencies.logger.warn(

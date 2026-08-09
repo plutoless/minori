@@ -10,7 +10,7 @@ function rawMessage(input: {
   mention?: boolean;
   chatType?: 'group' | 'p2p';
   senderOpenId?: string;
-  rootId?: string;
+  rawRootId?: string;
   parentId?: string;
 } = {}) {
   const messageId = input.messageId ?? 'om_1';
@@ -24,7 +24,7 @@ function rawMessage(input: {
       message_type: 'text',
       create_time: '1785888000000',
       content: JSON.stringify({ text: input.mention ? `@_user_1 ${input.text ?? 'hello'}` : input.text ?? 'hello' }),
-      ...(input.rootId ? { root_id: input.rootId } : {}),
+      ...(input.rawRootId ? { root_id: input.rawRootId } : {}),
       ...(input.parentId ? { parent_id: input.parentId } : {}),
       ...(input.mention ? {
         mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }],
@@ -46,7 +46,6 @@ function gateway(overrides: Partial<ConstructorParameters<typeof FeishuGateway>[
     botAppId: 'cli_minori',
     eventStore: { enqueue, attachProcessingReaction },
     messageContext: { isBotMessage: vi.fn().mockResolvedValue(false) },
-    threads: { exists: vi.fn().mockResolvedValue(false) },
     reactions,
     signalWorker,
     logger: pino({ level: 'silent' }),
@@ -69,7 +68,7 @@ describe('FeishuGateway', () => {
 
     expect(completedQuickly).toBe(true);
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      eventId: 'evt_om_1', conversationKey: 'oc_team:om_1',
+      eventId: 'evt_om_1', conversationKey: 'oc_team',
     }));
     expect(signalWorker).toHaveBeenCalledTimes(1);
   });
@@ -144,22 +143,26 @@ describe('FeishuGateway', () => {
     expect(signalWorker).toHaveBeenCalledOnce();
   });
 
-  it('accepts replies to Minori and continuation messages in a known Agent Thread', async () => {
+  it('accepts only direct replies to Minori in a group', async () => {
     const messageContext = { isBotMessage: vi.fn(async (id: string) => id === 'om_bot') };
-    const threads = { exists: vi.fn(async (key: string) => key === 'oc_team:om_root') };
-    const { gateway: instance, enqueue } = gateway({ messageContext, threads });
+    const { gateway: instance, enqueue } = gateway({ messageContext });
 
     await instance.handle(rawMessage({
-      messageId: 'om_reply', rootId: 'om_new_root', parentId: 'om_bot', text: 'reply',
+      messageId: 'om_reply', rawRootId: 'om_new_root', parentId: 'om_bot', text: 'reply',
     }));
-    await instance.handle(rawMessage({
-      messageId: 'om_continue', rootId: 'om_root', parentId: 'om_member', text: 'continue',
+    expect(messageContext.isBotMessage).toHaveBeenCalledOnce();
+    expect(messageContext.isBotMessage).toHaveBeenNthCalledWith(1, 'om_bot', {
+      openId: BOT_OPEN_ID, appId: 'cli_minori',
+    });
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'om_reply', conversationKey: 'oc_team',
     }));
+
+    await instance.handle(rawMessage({ messageId: 'om_human_reply', parentId: 'om_member', text: 'continue' }));
     await instance.handle(rawMessage({ messageId: 'om_noise', text: 'ordinary timeline' }));
 
-    expect(enqueue.mock.calls.map(([message]) => message.conversationKey)).toEqual([
-      'oc_team:om_new_root', 'oc_team:om_root',
-    ]);
+    expect(messageContext.isBotMessage).toHaveBeenCalledTimes(2);
+    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('accepts every delivered private message without a membership lookup', async () => {
@@ -182,18 +185,17 @@ describe('FeishuGateway', () => {
     }));
 
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      messageId: 'om_group_external', senderOpenId: 'ou_external', conversationKey: 'oc_team:om_group_external',
+      messageId: 'om_group_external', senderOpenId: 'ou_external', conversationKey: 'oc_team',
     }));
   });
 
   it('does not perform trusted activation lookups for bot or malformed events', async () => {
     const messageContext = { isBotMessage: vi.fn().mockResolvedValue(true) };
-    const threads = { exists: vi.fn().mockResolvedValue(true) };
-    const { gateway: instance, enqueue } = gateway({ messageContext, threads });
-    const botEvent = rawMessage({ messageId: 'om_bot', rootId: 'om_root', parentId: 'om_parent' });
+    const { gateway: instance, enqueue } = gateway({ messageContext });
+    const botEvent = rawMessage({ messageId: 'om_bot', rawRootId: 'om_root', parentId: 'om_parent' });
     botEvent.sender.sender_type = 'app';
     const malformed = rawMessage({
-      messageId: 'om_bad', rootId: 'om_root', parentId: 'om_parent',
+      messageId: 'om_bad', rawRootId: 'om_root', parentId: 'om_parent',
     });
     malformed.message.content = '{broken';
 
@@ -201,7 +203,6 @@ describe('FeishuGateway', () => {
     await instance.handle(malformed);
 
     expect(messageContext.isBotMessage).not.toHaveBeenCalled();
-    expect(threads.exists).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
   });
 

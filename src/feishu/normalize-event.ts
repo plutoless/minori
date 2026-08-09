@@ -15,7 +15,6 @@ const messageEventSchema = z.object({
   }).passthrough(),
   message: z.object({
     message_id: z.string(),
-    root_id: z.string().optional(),
     parent_id: z.string().optional(),
     create_time: z.string(),
     chat_id: z.string(),
@@ -29,7 +28,6 @@ const messageEventSchema = z.object({
 export type MessageActivationContext = {
   botOpenId: string;
   repliedToBot?: boolean;
-  knownAgentThread?: boolean;
 };
 
 const UNSUPPORTED_MESSAGE_TYPES = new Set(['image', 'audio', 'media', 'file']);
@@ -166,8 +164,7 @@ export function normalizeMessageEvent(
   const isPrivate = message.chat_type === 'p2p';
   const isActivated = isPrivate
     || botMentions.length > 0
-    || activation.repliedToBot === true
-    || (activation.knownAgentThread === true && message.root_id !== undefined);
+    || activation.repliedToBot === true;
   if (!isActivated) return null;
 
   let content: NormalizedMessage['content'];
@@ -191,17 +188,11 @@ export function normalizeMessageEvent(
 
   const occurredAt = new Date(Number(message.create_time));
   if (Number.isNaN(occurredAt.getTime())) return null;
-  const rootId = isPrivate
-    ? undefined
-    : (message.root_id ?? (activation.repliedToBot ? message.parent_id : undefined) ?? message.message_id);
-  if (!isPrivate && !rootId) return null;
-
   return {
     eventId: parsed.data.event_id,
     messageId: message.message_id,
     chatId: message.chat_id,
-    conversationKey: isPrivate ? message.chat_id : `${message.chat_id}:${rootId}`,
-    ...(rootId ? { rootId } : {}),
+    conversationKey: message.chat_id,
     senderOpenId,
     chatType: message.chat_type,
     content,
