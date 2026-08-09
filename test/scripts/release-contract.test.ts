@@ -14,6 +14,8 @@ describe('Team Agent release packaging contract', () => {
     expect(compose).not.toContain('required: false');
     expect(compose).not.toContain('AGENT_MAX_STEPS:');
     expect(compose).not.toContain('AGENT_TIMEOUT_MS:');
+    expect(compose).not.toContain('LARKSUITE_CLI_CONFIG_DIR:');
+    expect(compose).not.toContain('LARKSUITE_CLI_DATA_DIR:');
   });
 
   it('keeps the obsolete chat allowlist out of release configuration and guidance', async () => {

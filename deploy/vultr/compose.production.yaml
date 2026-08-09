@@ -7,8 +7,6 @@ services:
     environment:
       PORT: "3000"
       LARK_CLI_BIN: /app/node_modules/.bin/lark-cli
-      LARKSUITE_CLI_CONFIG_DIR: /var/lib/minori/lark/config
-      LARKSUITE_CLI_DATA_DIR: /var/lib/minori/lark/data
     ports:
       - "127.0.0.1:${MINORI_HEALTH_PORT:-3000}:3000"
     volumes:
