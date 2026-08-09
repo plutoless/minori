@@ -3,7 +3,7 @@ import type { AgentReply } from '../agent/run.js';
 import type { NormalizedMessage } from '../contracts/messages.js';
 import type { FeishuMessenger } from '../feishu/client.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
-import type { EventStore, StoredEvent } from '../storage/event-store.js';
+import type { EventStore, StoredEvent, TerminalEventResult } from '../storage/event-store.js';
 import { formatAgentReply } from './source-format.js';
 
 const UNSUPPORTED_REPLY = '我暂不支持直接读取这种消息类型。请发送文字、富文本，或粘贴飞书文档链接。';
@@ -131,8 +131,6 @@ export class MessageWorker {
     signal: AbortSignal,
     state: { replyStarted: boolean },
   ): Promise<void> {
-    await this.removePersistedReaction(event, signal);
-
     const replyAttemptedAt = event.replyAttemptedAt;
     const recoveringReply = replyAttemptedAt !== undefined;
     if (replyAttemptedAt) {
@@ -144,7 +142,11 @@ export class MessageWorker {
           { eventId: event.eventId, errorCode: 'reply_uncertain' },
           'reply outcome is uncertain',
         );
-        await this.options.eventStore.markReplyUncertain(event.eventId, event.attempts);
+        const terminal = await this.options.eventStore.markReplyUncertain(
+          event.eventId,
+          event.attempts,
+        );
+        await this.removeTerminalReaction(event, terminal);
         return;
       }
     }
@@ -184,14 +186,10 @@ export class MessageWorker {
       return;
     }
 
-    let reactionId: string | null = null;
     let retryError: RetryableProcessingError | undefined;
     let replyMessageId: string | undefined;
     let sentReplyText: string | undefined;
     try {
-      if (!event.replyAttemptedAt) {
-        reactionId = await this.addReaction(event, signal);
-      }
       const prepared = event.replyAttemptedAt
         ? {
           text: event.preparedReplyText!,
@@ -213,8 +211,6 @@ export class MessageWorker {
     } catch (error) {
       if (error instanceof RetryableProcessingError) retryError = error;
       else throw error;
-    } finally {
-      if (reactionId) await this.removeCurrentReaction(event, reactionId);
     }
 
     if (retryError) {
@@ -236,7 +232,12 @@ export class MessageWorker {
       content: sentReplyText,
       createdAt: this.now(),
     }), signal);
-    await this.options.eventStore.complete(event.eventId, event.attempts, { replyMessageId });
+    const terminal = await this.options.eventStore.complete(
+      event.eventId,
+      event.attempts,
+      { replyMessageId },
+    );
+    await this.removeTerminalReaction(event, terminal);
   }
 
   private async prepareReply(
@@ -284,70 +285,17 @@ export class MessageWorker {
     return { text, key, attemptedAt };
   }
 
-  private async addReaction(event: StoredEvent, signal: AbortSignal) {
-    let reactionId: string | null = null;
+  private async removeTerminalReaction(event: StoredEvent, terminal: TerminalEventResult) {
+    if (!terminal.processingReactionId) return;
     try {
-      reactionId = await this.withAbort(
-        this.options.messenger.addReaction(event.payload.messageId, 'Typing'),
-        signal,
-      );
-      if (reactionId) {
-        await this.withAbort(this.options.eventStore.saveProcessingReaction(
-          event.eventId,
-          event.attempts,
-          reactionId,
-        ), signal);
-      }
-    } catch {
-      this.options.logger.warn(
-        { eventId: event.eventId, errorCode: 'reaction_add_failed' },
-        'reaction add failed',
-      );
-    }
-    return reactionId;
-  }
-
-  private async removePersistedReaction(event: StoredEvent, signal: AbortSignal) {
-    if (!event.processingReactionId) return;
-    try {
-      await this.withAbort(this.options.messenger.removeReaction(
+      await this.options.messenger.removeReaction(
         event.payload.messageId,
-        event.processingReactionId,
-      ), signal);
+        terminal.processingReactionId,
+      );
     } catch {
       this.options.logger.warn(
         { eventId: event.eventId, errorCode: 'reaction_remove_failed' },
         'reaction remove failed',
-      );
-    }
-    try {
-      await this.withAbort(
-        this.options.eventStore.clearProcessingReaction(event.eventId, event.attempts),
-        signal,
-      );
-    } catch {
-      this.options.logger.warn(
-        { eventId: event.eventId, errorCode: 'reaction_clear_failed' },
-        'reaction state clear failed',
-      );
-    }
-  }
-
-  private async removeCurrentReaction(event: StoredEvent, reactionId: string) {
-    try {
-      await this.options.messenger.removeReaction(event.payload.messageId, reactionId);
-    } catch {
-      this.options.logger.warn(
-        { eventId: event.eventId, errorCode: 'reaction_remove_failed' },
-        'reaction remove failed',
-      );
-    }
-    try {
-      await this.options.eventStore.clearProcessingReaction(event.eventId, event.attempts);
-    } catch {
-      this.options.logger.warn(
-        { eventId: event.eventId, errorCode: 'reaction_clear_failed' },
-        'reaction state clear failed',
       );
     }
   }
@@ -371,7 +319,12 @@ export class MessageWorker {
       );
       return;
     }
-    await this.options.eventStore.complete(event.eventId, event.attempts, { errorCode });
+    const terminal = await this.options.eventStore.complete(
+      event.eventId,
+      event.attempts,
+      { errorCode },
+    );
+    await this.removeTerminalReaction(event, terminal);
   }
 
   private async runLoop() {

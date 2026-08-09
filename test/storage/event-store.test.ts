@@ -142,6 +142,7 @@ describe('PostgresEventStore', () => {
 
   it('rejects a stale worker after an expired event is reclaimed', async () => {
     await store.enqueue(event());
+    expect(await store.attachProcessingReaction('evt_1', 'reaction_1')).toBe(true);
     const first = await store.claimReady(1, new Date(Date.now() - 1));
     expect(first[0]?.attempts).toBe(1);
     await store.recoverExpiredLeases(new Date(), 1);
@@ -150,7 +151,9 @@ describe('PostgresEventStore', () => {
 
     await expect(store.complete('evt_1', 1, { replyMessageId: 'stale_reply' }))
       .rejects.toThrow('stale_event_claim');
-    await store.complete('evt_1', 2, { replyMessageId: 'current_reply' });
+    expect(await store.complete('evt_1', 2, { replyMessageId: 'current_reply' })).toEqual({
+      processingReactionId: 'reaction_1',
+    });
   });
 
   it('bounds an excessively distant retry time', async () => {
@@ -173,17 +176,17 @@ describe('PostgresEventStore', () => {
     await store.claimReady(1, new Date(Date.now() + 60_000));
 
     await store.markReplyStarted('evt_1', 1, 'reply-key-1', new Date());
-    await store.markReplyUncertain('evt_1', 1);
+    expect(await store.markReplyUncertain('evt_1', 1)).toEqual({});
 
     expect(await store.claimReady(1, new Date(Date.now() + 60_000))).toEqual([]);
   });
 
   it('returns persisted reaction and reply metadata after lease recovery', async () => {
     await store.enqueue(event());
+    expect(await store.attachProcessingReaction('evt_1', 'reaction_1')).toBe(true);
     await store.claimReady(1, new Date(Date.now() - 1));
     const attemptedAt = new Date('2026-08-05T01:02:03Z');
 
-    await store.saveProcessingReaction('evt_1', 1, 'reaction_1');
     await store.markReplyStarted('evt_1', 1, 'reply-key-1', attemptedAt, 'prepared reply');
     await store.retry('evt_1', 1, 'reply_failed', new Date(Date.now() - 1));
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -199,14 +202,42 @@ describe('PostgresEventStore', () => {
     expect(recovered?.replyAttemptedAt).toEqual(attemptedAt);
   });
 
-  it('clears a persisted processing reaction under the active claim', async () => {
+  it('transfers reaction ownership once to the terminal transition', async () => {
     await store.enqueue(event());
-    await store.claimReady(1, new Date(Date.now() - 1));
-    await store.saveProcessingReaction('evt_1', 1, 'reaction_1');
-    await store.clearProcessingReaction('evt_1', 1);
-    await store.recoverExpiredLeases(new Date(), 1);
+    expect(await store.attachProcessingReaction('evt_1', 'reaction_1')).toBe(true);
+    await store.claimReady(1, new Date(Date.now() + 60_000));
 
-    const [recovered] = await store.claimReady(1, new Date(Date.now() + 60_000));
-    expect(recovered?.processingReactionId).toBeUndefined();
+    expect(await store.complete('evt_1', 1, { replyMessageId: 'om_reply' })).toEqual({
+      processingReactionId: 'reaction_1',
+    });
+    expect(await store.attachProcessingReaction('evt_1', 'late_reaction')).toBe(false);
+  });
+
+  it('leaves exactly one cleanup owner when attachment races terminal completion', async () => {
+    await store.enqueue(event());
+    await store.claimReady(1, new Date(Date.now() + 60_000));
+
+    const [terminal, attached] = await Promise.all([
+      store.complete('evt_1', 1, { replyMessageId: 'om_reply' }),
+      store.attachProcessingReaction('evt_1', 'racing_reaction'),
+    ]);
+
+    if (attached) {
+      expect(terminal).toEqual({ processingReactionId: 'racing_reaction' });
+    } else {
+      expect(terminal).toEqual({});
+    }
+    expect(await store.attachProcessingReaction('evt_1', 'late_reaction')).toBe(false);
+  });
+
+  it('returns the persisted reaction when an active claim becomes uncertain', async () => {
+    await store.enqueue(event());
+    expect(await store.attachProcessingReaction('evt_1', 'reaction_1')).toBe(true);
+    await store.claimReady(1, new Date(Date.now() + 60_000));
+
+    expect(await store.markReplyUncertain('evt_1', 1)).toEqual({
+      processingReactionId: 'reaction_1',
+    });
+    expect(await store.attachProcessingReaction('evt_1', 'late_reaction')).toBe(false);
   });
 });

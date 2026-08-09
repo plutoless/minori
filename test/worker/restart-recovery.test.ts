@@ -30,12 +30,17 @@ function setup(now: Date) {
   });
   const eventStore = {
     enqueue: vi.fn(), claimReady: vi.fn(async () => []), recoverExpiredLeases: vi.fn(async () => 0),
-    saveProcessingReaction: vi.fn(async () => undefined),
-    clearProcessingReaction: vi.fn(async () => { calls.push('clear'); }),
+    attachProcessingReaction: vi.fn(async () => true),
     markReplyStarted: vi.fn(async () => { calls.push('mark'); }),
     retry: vi.fn(async () => { calls.push('retry'); }),
-    complete: vi.fn(async () => { calls.push('complete'); }),
-    markReplyUncertain: vi.fn(async () => { calls.push('uncertain'); }),
+    complete: vi.fn(async () => {
+      calls.push('complete');
+      return { processingReactionId: 'stale_reaction' };
+    }),
+    markReplyUncertain: vi.fn(async () => {
+      calls.push('uncertain');
+      return { processingReactionId: 'stale_reaction' };
+    }),
   };
   const messenger = {
     addReaction: vi.fn(async () => null), replyText,
@@ -72,10 +77,9 @@ describe('MessageWorker restart recovery', () => {
     });
     const eventStore = {
       enqueue: vi.fn(), claimReady: vi.fn(async () => []), recoverExpiredLeases: vi.fn(async () => 0),
-      saveProcessingReaction: vi.fn(async () => undefined),
-      clearProcessingReaction: vi.fn(async () => undefined),
-      complete: vi.fn(async () => undefined),
-      markReplyUncertain: vi.fn(async () => undefined),
+      attachProcessingReaction: vi.fn(async () => true),
+      complete: vi.fn(async () => ({})),
+      markReplyUncertain: vi.fn(async () => ({})),
       retry: vi.fn(async () => undefined),
       markReplyStarted: vi.fn(async (
         _eventId: string, _attempt: number, key: string, attemptedAt: Date, text: string,
@@ -126,7 +130,7 @@ describe('MessageWorker restart recovery', () => {
     );
   });
 
-  it('removes stale Typing and replays a recent accepted reply with the same key', async () => {
+  it('replays a recent accepted reply and removes Typing only after terminal completion', async () => {
     const state = setup(new Date('2026-08-05T01:00:00Z'));
     const event = recovered();
     await state.worker.process(event);
@@ -140,13 +144,14 @@ describe('MessageWorker restart recovery', () => {
     expect(state.eventStore.complete).toHaveBeenCalledWith(
       'evt_crash', 2, { replyMessageId: 'om_reply_once' },
     );
+    expect(state.calls.slice(-2)).toEqual(['complete', 'remove']);
   });
 
   it('marks a reply uncertain after the one-hour deduplication window', async () => {
     const state = setup(new Date('2026-08-05T02:00:01Z'));
     await state.worker.process(recovered());
 
-    expect(state.calls.slice(0, 2)).toEqual(['remove', 'clear']);
+    expect(state.calls.slice(0, 2)).toEqual(['uncertain', 'remove']);
     expect(state.eventStore.markReplyUncertain).toHaveBeenCalledWith('evt_crash', 2);
     expect(state.messenger.replyText).not.toHaveBeenCalled();
     expect(state.runAgent).not.toHaveBeenCalled();

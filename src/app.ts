@@ -140,6 +140,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       botOpenId: config.feishuBotOpenId!,
       botAppId: config.feishuAppId!,
       eventStore: storage.eventStore,
+      reactions: messenger,
       messageContext: messenger,
       threads: storage.conversationStore,
       signalWorker: () => nextWorker.wake(),

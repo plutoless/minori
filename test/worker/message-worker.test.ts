@@ -19,21 +19,27 @@ class FakeEventStore implements EventStore {
   marked?: { key: string; attemptedAt: Date; text?: string };
   completed?: { replyMessageId?: string; errorCode?: string };
   retried?: { errorCode: string; nextAttemptAt: Date };
+  terminalProcessingReactionId?: string;
   async enqueue() { return 'queued' as const; }
+  async attachProcessingReaction() { return true; }
   async claimReady() { return []; }
   async complete(_eventId: string, _attempt: number, outcome: typeof this.completed) {
     this.calls.push('complete'); this.completed = outcome;
+    return this.terminalProcessingReactionId
+      ? { processingReactionId: this.terminalProcessingReactionId }
+      : {};
   }
   async markReplyStarted(
     _eventId: string, _attempt: number, key: string, attemptedAt: Date, text?: string,
   ) {
     this.calls.push('markReplyStarted'); this.marked = { key, attemptedAt, ...(text ? { text } : {}) };
   }
-  async saveProcessingReaction(_eventId: string, _attempt: number, reactionId: string) {
-    this.calls.push(`saveReaction:${reactionId}`);
+  async markReplyUncertain() {
+    this.calls.push('uncertain');
+    return this.terminalProcessingReactionId
+      ? { processingReactionId: this.terminalProcessingReactionId }
+      : {};
   }
-  async clearProcessingReaction() { this.calls.push('clearReaction'); }
-  async markReplyUncertain() { this.calls.push('uncertain'); }
   async retry(_eventId: string, _attempt: number, errorCode: string, nextAttemptAt: Date) {
     this.calls.push('retry'); this.retried = { errorCode, nextAttemptAt };
   }
@@ -115,13 +121,17 @@ describe('MessageWorker.process', () => {
     expect(runAgent).toHaveBeenCalledOnce();
   });
 
-  it('persists, answers with sources, cleans Typing, and completes in durable order', async () => {
+  it('answers with sources, transfers terminal Typing ownership, and completes in durable order', async () => {
     const setup = dependencies();
+    setup.eventStore.terminalProcessingReactionId = 'reaction_1';
     const worker = new MessageWorker(setup.options);
-    await worker.process({ eventId: 'evt_1', payload: message(), attempts: 1 });
+    await worker.process({
+      eventId: 'evt_1', payload: message(), attempts: 1,
+      processingReactionId: 'reaction_1',
+    });
 
     expect(setup.runAgent).toHaveBeenCalledOnce();
-    expect(setup.messenger.addReaction).toHaveBeenCalledWith('om_1', 'Typing');
+    expect(setup.messenger.addReaction).not.toHaveBeenCalled();
     expect(setup.eventStore.marked?.key).toMatch(/^minori-[a-f0-9]{32}$/u);
     expect(setup.messenger.replyText).toHaveBeenCalledWith(
       'om_1',
@@ -178,20 +188,15 @@ describe('MessageWorker.process', () => {
     expect(setup.eventStore.completed).toEqual({ replyMessageId: 'om_reply_1' });
   });
 
-  it('continues when reaction creation or removal fails', async () => {
+  it('keeps a terminal event complete when reaction removal fails', async () => {
     const setup = dependencies();
-    setup.messenger.addReaction.mockRejectedValueOnce(new Error('reaction api secret'));
+    setup.eventStore.terminalProcessingReactionId = 'reaction_1';
+    setup.messenger.removeReaction.mockRejectedValueOnce(new Error('reaction api secret'));
     await new MessageWorker(setup.options).process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
+      eventId: 'evt_1', payload: message(), attempts: 1, processingReactionId: 'reaction_1',
     });
     expect(setup.messenger.replyText).toHaveBeenCalledOnce();
-
-    const second = dependencies();
-    second.messenger.removeReaction.mockRejectedValueOnce(new Error('reaction api secret'));
-    await new MessageWorker(second.options).process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
-    });
-    expect(second.eventStore.completed).toEqual({ replyMessageId: 'om_reply_1' });
+    expect(setup.eventStore.completed).toEqual({ replyMessageId: 'om_reply_1' });
   });
 
   it('retries transient Agent failures, then emits a truthful temporary-error reply', async () => {
@@ -209,6 +214,29 @@ describe('MessageWorker.process', () => {
     const text = last.messenger.replyText.mock.calls[0]?.[1] ?? '';
     expect(text).toContain('暂时无法完成');
     expect(text).not.toContain('知识库没有');
+  });
+
+  it('keeps one persisted Typing reaction through retry and removes it once after recovery', async () => {
+    const runAgent = vi.fn()
+      .mockRejectedValueOnce(new Error('model key secret'))
+      .mockResolvedValueOnce({ text: 'recovered answer', sources: [], usage: {} });
+    const setup = dependencies({ runAgent });
+    setup.eventStore.terminalProcessingReactionId = 'reaction_1';
+    const worker = new MessageWorker(setup.options);
+
+    await worker.process({
+      eventId: 'evt_1', payload: message(), attempts: 1,
+      processingReactionId: 'reaction_1',
+    });
+    expect(setup.eventStore.retried?.errorCode).toBe('agent_failed');
+    expect(setup.messenger.removeReaction).not.toHaveBeenCalled();
+
+    await worker.process({
+      eventId: 'evt_1', payload: message(), attempts: 2,
+      processingReactionId: 'reaction_1',
+    });
+    expect(setup.messenger.removeReaction).toHaveBeenCalledTimes(1);
+    expect(setup.messenger.removeReaction).toHaveBeenCalledWith('om_1', 'reaction_1');
   });
 
   it('sends a natural source-linked answer without a citation repair flow', async () => {

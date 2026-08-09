@@ -35,18 +35,27 @@ function rawMessage(input: {
 
 function gateway(overrides: Partial<ConstructorParameters<typeof FeishuGateway>[0]> = {}) {
   const enqueue = vi.fn().mockResolvedValue('queued');
+  const attachProcessingReaction = vi.fn().mockResolvedValue(true);
   const signalWorker = vi.fn(() => new Promise<void>(() => undefined));
+  const reactions = {
+    addReaction: vi.fn().mockResolvedValue('reaction_1'),
+    removeReaction: vi.fn().mockResolvedValue(undefined),
+  };
   const dependencies: ConstructorParameters<typeof FeishuGateway>[0] = {
     botOpenId: BOT_OPEN_ID,
     botAppId: 'cli_minori',
-    eventStore: { enqueue },
+    eventStore: { enqueue, attachProcessingReaction },
     messageContext: { isBotMessage: vi.fn().mockResolvedValue(false) },
     threads: { exists: vi.fn().mockResolvedValue(false) },
+    reactions,
     signalWorker,
     logger: pino({ level: 'silent' }),
     ...overrides,
   };
-  return { gateway: new FeishuGateway(dependencies), dependencies, enqueue, signalWorker };
+  return {
+    gateway: new FeishuGateway(dependencies), dependencies, enqueue,
+    attachProcessingReaction, reactions, signalWorker,
+  };
 }
 
 describe('FeishuGateway', () => {
@@ -65,14 +74,74 @@ describe('FeishuGateway', () => {
     expect(signalWorker).toHaveBeenCalledTimes(1);
   });
 
+  it('adds Typing after durable acceptance and attaches it before signaling work', async () => {
+    const calls: string[] = [];
+    const { gateway: instance } = gateway({
+      eventStore: {
+        enqueue: vi.fn(async () => { calls.push('enqueue'); return 'queued'; }),
+        attachProcessingReaction: vi.fn(async (eventId, reactionId) => {
+          calls.push(`attachReaction:${eventId}:${reactionId}`);
+          return true;
+        }),
+      },
+      reactions: {
+        addReaction: vi.fn(async (messageId) => {
+          calls.push(`addReaction:${messageId}`);
+          return 'reaction_1';
+        }),
+        removeReaction: vi.fn(async () => undefined),
+      },
+      signalWorker: vi.fn(() => { calls.push('signalWorker'); }),
+    });
+
+    await instance.handle(rawMessage({ mention: true }));
+
+    expect(calls).toEqual([
+      'enqueue',
+      'addReaction:om_1',
+      'attachReaction:evt_om_1:reaction_1',
+      'signalWorker',
+    ]);
+  });
+
   it('does not signal work for a duplicate event', async () => {
     const enqueue = vi.fn().mockResolvedValue('duplicate');
-    const { gateway: instance, signalWorker } = gateway({ eventStore: { enqueue } });
+    const attachProcessingReaction = vi.fn().mockResolvedValue(true);
+    const { gateway: instance, reactions, signalWorker } = gateway({
+      eventStore: { enqueue, attachProcessingReaction },
+    });
 
     await instance.handle(rawMessage({ mention: true }));
 
     expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(reactions.addReaction).not.toHaveBeenCalled();
+    expect(attachProcessingReaction).not.toHaveBeenCalled();
     expect(signalWorker).not.toHaveBeenCalled();
+  });
+
+  it('still signals work when reaction creation fails', async () => {
+    const reactions = {
+      addReaction: vi.fn().mockRejectedValue(new Error('reaction api secret')),
+      removeReaction: vi.fn().mockResolvedValue(undefined),
+    };
+    const { gateway: instance, attachProcessingReaction, signalWorker } = gateway({ reactions });
+
+    await instance.handle(rawMessage({ mention: true }));
+
+    expect(attachProcessingReaction).not.toHaveBeenCalled();
+    expect(signalWorker).toHaveBeenCalledOnce();
+  });
+
+  it('removes a reaction whose attachment loses to terminal completion', async () => {
+    const attachProcessingReaction = vi.fn().mockResolvedValue(false);
+    const { gateway: instance, reactions, signalWorker } = gateway({
+      eventStore: { enqueue: vi.fn().mockResolvedValue('queued'), attachProcessingReaction },
+    });
+
+    await instance.handle(rawMessage({ mention: true }));
+
+    expect(reactions.removeReaction).toHaveBeenCalledWith('om_1', 'reaction_1');
+    expect(signalWorker).toHaveBeenCalledOnce();
   });
 
   it('accepts replies to Minori and continuation messages in a known Agent Thread', async () => {

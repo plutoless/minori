@@ -5,12 +5,14 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { MockLanguageModelV4 } from 'ai/test';
 import { eq } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import pino from 'pino';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SourceRegistry } from '../../src/agent/sources.js';
 import { createKnowledgeTools } from '../../src/agent/tools.js';
 import { runKnowledgeAgent, type AgentReply } from '../../src/agent/run.js';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import type { FeishuMessenger } from '../../src/feishu/client.js';
+import { FeishuGateway } from '../../src/feishu/gateway.js';
 import { normalizeMessageEvent } from '../../src/feishu/normalize-event.js';
 import { LarkKnowledgeService, type KnowledgeService } from '../../src/lark/knowledge-service.js';
 import { PostgresAgentRunStore } from '../../src/storage/agent-run-store.js';
@@ -221,6 +223,51 @@ describe('open team Agent release contract', () => {
     expect(toolNames.join(' ')).not.toMatch(
       /delete|move|overwrite|permission|sharing|raw|shell|http|filesystem/iu,
     );
+  });
+
+  it('keeps durable Typing through retry and restart until the terminal reply', async () => {
+    const messenger = new FakeMessenger();
+    const gateway = new FeishuGateway({
+      botOpenId: BOT_OPEN_ID,
+      botAppId: 'cli_minori',
+      eventStore: events,
+      messageContext: { isBotMessage: vi.fn(async () => false) },
+      threads: conversations,
+      reactions: messenger,
+      signalWorker: vi.fn(),
+      logger: pino({ level: 'silent' }),
+    });
+
+    await gateway.handle(rawEvent({ event_id: 'evt_typing_lifecycle' }));
+    expect(messenger.reactions).toEqual(new Set(['typing_om_group_1']));
+
+    const [first] = await events.claimReady(1, new Date(Date.now() + 60_000));
+    const firstWorker = new MessageWorker({
+      eventStore: events,
+      conversations,
+      messenger,
+      runAgent: vi.fn(async () => { throw new Error('transient_model_failure'); }),
+      logger: { warn: vi.fn(), info: vi.fn() },
+    });
+    await firstWorker.process(first!);
+    expect(messenger.reactions).toEqual(new Set(['typing_om_group_1']));
+
+    const restartedEvents = new PostgresEventStore(
+      database.db, { minRetryDelayMs: 0, maxRetryDelayMs: 0 },
+    );
+    const [recovered] = await restartedEvents.claimReady(1, new Date(Date.now() + 60_000));
+    const restartedWorker = new MessageWorker({
+      eventStore: restartedEvents,
+      conversations: new PostgresConversationStore(database.db),
+      messenger,
+      runAgent: vi.fn(async () => ({ text: 'recovered answer', sources: [], usage: {} })),
+      logger: { warn: vi.fn(), info: vi.fn() },
+    });
+    await restartedWorker.process(recovered!);
+
+    expect(messenger.replies).toHaveLength(1);
+    expect(messenger.reactions.size).toBe(0);
+    expect(await restartedEvents.claimReady(1, new Date(Date.now() + 60_000))).toEqual([]);
   });
 
   it('accepts a delivered group request and completes an audited create-append-patch flow', async () => {
@@ -510,7 +557,7 @@ describe('open team Agent release contract', () => {
     })!;
     await events.enqueue(incoming);
     await events.claimReady(1, new Date('2026-08-05T01:30:00Z'));
-    await events.saveProcessingReaction('evt_uncertain', 1, 'typing_stale');
+    await events.attachProcessingReaction('evt_uncertain', 'typing_stale');
     await events.markReplyStarted(
       'evt_uncertain', 1, 'minori-old-key', new Date('2026-08-05T01:00:00Z'), 'old answer',
     );

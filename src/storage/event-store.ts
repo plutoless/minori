@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { NormalizedMessage } from '../contracts/messages.js';
 import type { Database } from './database.js';
 import { processedEvents } from './schema.js';
@@ -13,6 +13,8 @@ export type StoredEvent = {
   preparedReplyText?: string;
 };
 
+export type TerminalEventResult = { processingReactionId?: string };
+
 export interface EventStore {
   enqueue(event: NormalizedMessage): Promise<'queued' | 'duplicate'>;
   claimReady(limit: number, leaseUntil: Date): Promise<StoredEvent[]>;
@@ -20,7 +22,7 @@ export interface EventStore {
     eventId: string,
     claimAttempt: number,
     outcome: { replyMessageId?: string; errorCode?: string },
-  ): Promise<void>;
+  ): Promise<TerminalEventResult>;
   markReplyStarted(
     eventId: string,
     claimAttempt: number,
@@ -28,9 +30,8 @@ export interface EventStore {
     attemptedAt: Date,
     preparedReplyText?: string,
   ): Promise<void>;
-  saveProcessingReaction(eventId: string, claimAttempt: number, reactionId: string): Promise<void>;
-  clearProcessingReaction(eventId: string, claimAttempt: number): Promise<void>;
-  markReplyUncertain(eventId: string, claimAttempt: number): Promise<void>;
+  attachProcessingReaction(eventId: string, reactionId: string): Promise<boolean>;
+  markReplyUncertain(eventId: string, claimAttempt: number): Promise<TerminalEventResult>;
   retry(
     eventId: string,
     claimAttempt: number,
@@ -140,52 +141,46 @@ export class PostgresEventStore implements EventStore {
     }));
   }
 
-  async saveProcessingReaction(
-    eventId: string,
-    claimAttempt: number,
-    reactionId: string,
-  ): Promise<void> {
+  async attachProcessingReaction(eventId: string, reactionId: string): Promise<boolean> {
     const updated = await this.db.update(processedEvents).set({
       processingReactionId: reactionId,
       updatedAt: new Date(),
     }).where(and(
       eq(processedEvents.eventId, eventId),
-      eq(processedEvents.status, 'processing'),
-      eq(processedEvents.attempts, claimAttempt),
+      inArray(processedEvents.status, ['queued', 'processing']),
+      isNull(processedEvents.processingReactionId),
     )).returning({ eventId: processedEvents.eventId });
-    this.assertClaimUpdated(updated);
-  }
-
-  async clearProcessingReaction(eventId: string, claimAttempt: number): Promise<void> {
-    const updated = await this.db.update(processedEvents).set({
-      processingReactionId: null,
-      updatedAt: new Date(),
-    }).where(and(
-      eq(processedEvents.eventId, eventId),
-      eq(processedEvents.status, 'processing'),
-      eq(processedEvents.attempts, claimAttempt),
-    )).returning({ eventId: processedEvents.eventId });
-    this.assertClaimUpdated(updated);
+    return updated.length === 1;
   }
 
   async complete(
     eventId: string,
     claimAttempt: number,
     outcome: { replyMessageId?: string; errorCode?: string },
-  ): Promise<void> {
-    const updated = await this.db.update(processedEvents).set({
-      status: 'completed',
-      leasedUntil: null,
-      processingReactionId: null,
-      replyMessageId: outcome.replyMessageId,
-      outcome,
-      updatedAt: new Date(),
-    }).where(and(
-      eq(processedEvents.eventId, eventId),
-      eq(processedEvents.status, 'processing'),
-      eq(processedEvents.attempts, claimAttempt),
-    )).returning({ eventId: processedEvents.eventId });
-    this.assertClaimUpdated(updated);
+  ): Promise<TerminalEventResult> {
+    return this.db.transaction(async (tx) => {
+      const [current] = await tx.select({
+        processingReactionId: processedEvents.processingReactionId,
+      }).from(processedEvents).where(and(
+        eq(processedEvents.eventId, eventId),
+        eq(processedEvents.status, 'processing'),
+        eq(processedEvents.attempts, claimAttempt),
+      )).for('update');
+      if (!current) throw new StaleEventClaimError();
+
+      await tx.update(processedEvents).set({
+        status: 'completed',
+        leasedUntil: null,
+        processingReactionId: null,
+        replyMessageId: outcome.replyMessageId,
+        outcome,
+        updatedAt: new Date(),
+      }).where(eq(processedEvents.eventId, eventId));
+
+      return current.processingReactionId
+        ? { processingReactionId: current.processingReactionId }
+        : {};
+    });
   }
 
   async markReplyStarted(
@@ -210,19 +205,32 @@ export class PostgresEventStore implements EventStore {
     this.assertClaimUpdated(updated);
   }
 
-  async markReplyUncertain(eventId: string, claimAttempt: number): Promise<void> {
-    const updated = await this.db.update(processedEvents).set({
-      status: 'failed',
-      leasedUntil: null,
-      processingReactionId: null,
-      outcome: { errorCode: 'reply_uncertain' },
-      updatedAt: new Date(),
-    }).where(and(
-      eq(processedEvents.eventId, eventId),
-      eq(processedEvents.status, 'processing'),
-      eq(processedEvents.attempts, claimAttempt),
-    )).returning({ eventId: processedEvents.eventId });
-    this.assertClaimUpdated(updated);
+  async markReplyUncertain(
+    eventId: string,
+    claimAttempt: number,
+  ): Promise<TerminalEventResult> {
+    return this.db.transaction(async (tx) => {
+      const [current] = await tx.select({
+        processingReactionId: processedEvents.processingReactionId,
+      }).from(processedEvents).where(and(
+        eq(processedEvents.eventId, eventId),
+        eq(processedEvents.status, 'processing'),
+        eq(processedEvents.attempts, claimAttempt),
+      )).for('update');
+      if (!current) throw new StaleEventClaimError();
+
+      await tx.update(processedEvents).set({
+        status: 'failed',
+        leasedUntil: null,
+        processingReactionId: null,
+        outcome: { errorCode: 'reply_uncertain' },
+        updatedAt: new Date(),
+      }).where(eq(processedEvents.eventId, eventId));
+
+      return current.processingReactionId
+        ? { processingReactionId: current.processingReactionId }
+        : {};
+    });
   }
 
   async retry(

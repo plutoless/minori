@@ -3,10 +3,11 @@ import { EventDispatcher, LoggerLevel, WSClient } from '@larksuiteoapi/node-sdk'
 import { z } from 'zod';
 import type { NormalizedMessage } from '../contracts/messages.js';
 import { isValidUserMessageEvent, normalizeMessageEvent } from './normalize-event.js';
-import type { FeishuBotIdentity } from './client.js';
+import type { FeishuBotIdentity, FeishuMessenger } from './client.js';
 
 export interface GatewayEventStore {
   enqueue(message: NormalizedMessage): Promise<'queued' | 'duplicate'>;
+  attachProcessingReaction(eventId: string, reactionId: string): Promise<boolean>;
 }
 
 export interface MessageContextSource {
@@ -21,6 +22,7 @@ export type FeishuGatewayDependencies = {
   botOpenId: string;
   botAppId: string;
   eventStore: GatewayEventStore;
+  reactions: Pick<FeishuMessenger, 'addReaction' | 'removeReaction'>;
   messageContext: MessageContextSource;
   threads: AgentThreadSource;
   signalWorker(): void | Promise<void>;
@@ -82,6 +84,40 @@ export class FeishuGateway {
 
     const status = await this.dependencies.eventStore.enqueue(normalized);
     if (status === 'duplicate') return;
+
+    let reactionId: string | null = null;
+    try {
+      reactionId = await this.dependencies.reactions.addReaction(normalized.messageId, 'Typing');
+    } catch {
+      this.dependencies.logger.warn(
+        { errorCode: 'reaction_add_failed' },
+        'reaction add failed',
+      );
+    }
+    if (reactionId) {
+      let attached = false;
+      try {
+        attached = await this.dependencies.eventStore.attachProcessingReaction(
+          normalized.eventId,
+          reactionId,
+        );
+      } catch {
+        this.dependencies.logger.warn(
+          { errorCode: 'reaction_state_attach_failed' },
+          'reaction state attach failed',
+        );
+      }
+      if (!attached) {
+        try {
+          await this.dependencies.reactions.removeReaction(normalized.messageId, reactionId);
+        } catch {
+          this.dependencies.logger.warn(
+            { errorCode: 'reaction_remove_failed' },
+            'reaction remove failed',
+          );
+        }
+      }
+    }
 
     try {
       const signal = this.dependencies.signalWorker();
