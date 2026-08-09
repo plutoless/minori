@@ -1,4 +1,6 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
@@ -10,13 +12,32 @@ const approvedActionShas = new Set([
   '263435318d21b8e681c14492fe198d362a7d2c83',
 ]);
 const actionlintSha = '03d0035246f3e81f36aed592ffb4bebf33a03106';
+const execFileAsync = promisify(execFile);
 
 type Workflow = {
   name?: string;
   on?: Record<string, unknown>;
   permissions?: Record<string, string>;
   concurrency?: Record<string, string | boolean>;
-  jobs?: Record<string, Record<string, unknown>>;
+  jobs?: Record<string, WorkflowJob>;
+  version?: number;
+  updates?: Array<Record<string, unknown>>;
+};
+
+type WorkflowStep = {
+  name?: string;
+  uses?: string;
+  run?: string;
+  if?: string;
+  env?: Record<string, string>;
+  with?: Record<string, string | boolean>;
+};
+
+type WorkflowJob = {
+  uses?: string;
+  with?: Record<string, string>;
+  'runs-on'?: string;
+  steps?: WorkflowStep[];
 };
 
 async function workflow(path: string): Promise<Workflow> {
@@ -33,6 +54,29 @@ function allUses(value: unknown): string[] {
   return [];
 }
 
+function requiredSteps(job: WorkflowJob | undefined): WorkflowStep[] {
+  expect(job).toBeDefined();
+  expect(job?.steps).toBeDefined();
+  return job!.steps!;
+}
+
+function oneStep(
+  steps: WorkflowStep[],
+  predicate: (step: WorkflowStep) => boolean,
+): WorkflowStep {
+  const matches = steps.filter(predicate);
+  expect(matches).toHaveLength(1);
+  return matches[0]!;
+}
+
+function hasKeyMatching(value: unknown, pattern: RegExp): boolean {
+  if (Array.isArray(value)) return value.some((item) => hasKeyMatching(item, pattern));
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(
+    ([key, child]) => pattern.test(key) || hasKeyMatching(child, pattern),
+  );
+}
+
 describe('GitHub Actions quality gate contract', () => {
   it('centralizes the three validation gates in the reusable workflow', async () => {
     const qualityGate = await workflow('.github/workflows/quality-gate.yml');
@@ -43,19 +87,69 @@ describe('GitHub Actions quality gate contract', () => {
     });
     expect(qualityGate.permissions).toEqual({ contents: 'read' });
 
-    const job = qualityGate.jobs?.quality;
-    expect(job).toBeDefined();
-    const commands = JSON.stringify(job);
-    expect(commands).toContain('npm run verify');
-    expect(commands).toContain('npm run test:integration');
-    expect(commands).toContain('docker/build-push-action');
-    expect(commands).toContain('git ls-files');
-    expect(commands).toContain('*.sh');
-    expect(commands).toContain('bash -n');
-    expect(commands).toContain(`github.com/rhysd/actionlint/cmd/actionlint@${actionlintSha}`);
-    expect(commands).toContain('linux/amd64');
-    expect(commands).toContain('org.opencontainers.image.revision=${{ github.sha }}');
-    expect(commands).toContain("verify|integration|image-amd64");
+    const steps = requiredSteps(qualityGate.jobs?.quality);
+
+    const gateValidation = oneStep(steps, (step) => step.name === 'Validate requested gate');
+    expect(gateValidation.env).toEqual({ GATE: '${{ inputs.gate }}' });
+    expect(gateValidation.run).toBe(
+      'case "$GATE" in\n  verify|integration|image-amd64) ;;\n  *) echo "unsupported gate" >&2; exit 1 ;;\nesac\n',
+    );
+    const metacharacterGate = 'verify"; exit 0; #';
+    expect(gateValidation.run).not.toContain('${{');
+    expect(gateValidation.run).not.toContain(metacharacterGate);
+    const hostileResult = await execFileAsync('bash', ['-c', gateValidation.run!], {
+      env: { ...process.env, GATE: metacharacterGate },
+    }).then(
+      () => ({ exitCode: 0, stderr: '' }),
+      (error: { code?: number; stderr?: string }) => ({
+        exitCode: error.code,
+        stderr: error.stderr ?? '',
+      }),
+    );
+    expect(hostileResult).toEqual({ exitCode: 1, stderr: 'unsupported gate\n' });
+
+    expect(oneStep(steps, (step) => step.uses?.startsWith('actions/checkout@'))).toMatchObject({
+      uses: 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683',
+    });
+    expect(oneStep(steps, (step) => step.uses?.startsWith('actions/setup-node@'))).toEqual({
+      uses: 'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
+      with: { 'node-version': '22', cache: 'npm' },
+    });
+    expect(oneStep(steps, (step) => step.run === 'npm ci')).toEqual({ run: 'npm ci' });
+    expect(oneStep(steps, (step) => step.run === 'npm run verify')).toEqual({
+      if: "inputs.gate == 'verify'",
+      run: 'npm run verify',
+    });
+    expect(oneStep(steps, (step) => step.run?.startsWith('git ls-files'))).toEqual({
+      if: "inputs.gate == 'verify'",
+      run: "git ls-files -z -- '*.sh' | xargs -0 -r -n 1 bash -n",
+    });
+    expect(oneStep(steps, (step) => step.run?.startsWith('go run '))).toEqual({
+      if: "inputs.gate == 'verify'",
+      run: `go run github.com/rhysd/actionlint/cmd/actionlint@${actionlintSha}`,
+    });
+    expect(oneStep(steps, (step) => step.run === 'npm run test:integration')).toEqual({
+      if: "inputs.gate == 'integration'",
+      run: 'npm run test:integration',
+    });
+    expect(oneStep(steps, (step) => step.uses?.startsWith('docker/setup-buildx-action@'))).toEqual({
+      if: "inputs.gate == 'image-amd64'",
+      uses: 'docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435',
+    });
+    const imageBuild = oneStep(steps, (step) =>
+      step.uses?.startsWith('docker/build-push-action@'),
+    );
+    expect(imageBuild).toEqual({
+      if: "inputs.gate == 'image-amd64'",
+      uses: 'docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83',
+      with: {
+        context: '.',
+        platforms: 'linux/amd64',
+        push: false,
+        labels: 'org.opencontainers.image.revision=${{ github.sha }}',
+      },
+    });
+    expect(imageBuild.with).not.toHaveProperty('tags');
   });
 
   it('calls the reusable workflow for every PR and main push without duplicate commands', async () => {
@@ -66,7 +160,6 @@ describe('GitHub Actions quality gate contract', () => {
       pull_request: { branches: ['main'] },
       push: { branches: ['main'] },
     });
-    expect(JSON.stringify(ci.on)).not.toMatch(/paths(?:-ignore)?/u);
     expect(ci.concurrency).toEqual({
       group: 'ci-${{ github.event.pull_request.number || github.ref }}',
       'cancel-in-progress': "${{ github.event_name == 'pull_request' }}",
@@ -75,16 +168,11 @@ describe('GitHub Actions quality gate contract', () => {
     expect(Object.keys(ci.jobs ?? {})).toEqual(['verify', 'integration', 'image-amd64']);
 
     for (const [gate, job] of Object.entries(ci.jobs ?? {})) {
-      expect(job).toMatchObject({
+      expect(job).toEqual({
         uses: './.github/workflows/quality-gate.yml',
         with: { gate },
       });
     }
-
-    const callerContent = JSON.stringify(ci.jobs);
-    expect(callerContent).not.toContain('npm run verify');
-    expect(callerContent).not.toContain('npm run test:integration');
-    expect(callerContent).not.toContain('docker build');
   });
 
   it('pins approved Actions and keeps Dependabot narrow and manual', async () => {
@@ -99,15 +187,17 @@ describe('GitHub Actions quality gate contract', () => {
       expect(approvedActionShas).toContain(sha);
     }
 
-    expect(dependabot.version).toBe(2);
-    expect(dependabot.updates).toEqual([
-      expect.objectContaining({
+    expect(dependabot).toEqual({
+      version: 2,
+      updates: [
+        {
         'package-ecosystem': 'github-actions',
         directory: '/',
         schedule: { interval: 'weekly' },
-        'open-pull-requests-limit': expect.any(Number),
-      }),
-    ]);
-    expect(JSON.stringify(dependabot)).not.toMatch(/auto-merge|automerge/u);
+        'open-pull-requests-limit': 5,
+        },
+      ],
+    });
+    expect(hasKeyMatching(dependabot, /auto-merge|automerge/u)).toBe(false);
   });
 });

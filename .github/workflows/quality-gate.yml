@@ -16,10 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate requested gate
+        env:
+          GATE: ${{ inputs.gate }}
         run: |
-          case "${{ inputs.gate }}" in
+          case "$GATE" in
             verify|integration|image-amd64) ;;
-            *) echo "unsupported gate: ${{ inputs.gate }}" >&2; exit 1 ;;
+            *) echo "unsupported gate" >&2; exit 1 ;;
           esac
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
