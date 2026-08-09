@@ -53,7 +53,19 @@ describe('PostgresAgentRunStore', () => {
       targetIdentifiers: { doc: 'dox_1' },
       sanitizedSummary: 'replaced one exact text range',
     });
-    await store.finishWrite(write.id, { success: true });
+    const [eventRow] = await database.db.select().from(processedEvents)
+      .where(eq(processedEvents.eventId, 'evt_1'));
+    expect(eventRow?.writeStartedAt).toBeInstanceOf(Date);
+
+    await store.finishWrite(write.id, {
+      outcome: 'succeeded',
+      resultIdentifiers: {
+        token: 'dox_1',
+        title: 'Release plan',
+        url: 'https://acme.feishu.cn/docx/dox_1',
+        revisionId: '4',
+      },
+    });
     await store.finish(run.id, {
       inputTokens: 120,
       outputTokens: 45,
@@ -85,12 +97,30 @@ describe('PostgresAgentRunStore', () => {
       success: true,
       errorCategory: null,
       sanitizedSummary: 'replaced one exact text range',
+      resultIdentifiers: {
+        token: 'dox_1',
+        title: 'Release plan',
+        url: 'https://acme.feishu.cn/docx/dox_1',
+        revisionId: '4',
+      },
     });
     expect(writeRow?.startedAt).toBeInstanceOf(Date);
     expect(writeRow?.finishedAt).toBeInstanceOf(Date);
     expect(JSON.stringify(writeRow)).not.toMatch(
       /document body|replacement text|oauth|prompt|model output/iu,
     );
+    await expect(store.listWriteAttempts('evt_1')).resolves.toEqual([{
+      toolName: 'patchDocument',
+      outcome: 'succeeded',
+      sanitizedSummary: 'replaced one exact text range',
+      targetIdentifiers: { doc: 'dox_1' },
+      resultIdentifiers: {
+        token: 'dox_1',
+        title: 'Release plan',
+        url: 'https://acme.feishu.cn/docx/dox_1',
+        revisionId: '4',
+      },
+    }]);
   });
 
   it('persists a stable failure category for a conflicted write', async () => {
@@ -102,7 +132,7 @@ describe('PostgresAgentRunStore', () => {
     });
 
     await store.finishWrite(write.id, {
-      success: false,
+      outcome: 'failed',
       errorCategory: 'knowledge_write_conflict',
     });
     await store.finish(run.id, { toolCallCount: 1, outcome: 'failed' });
@@ -114,6 +144,60 @@ describe('PostgresAgentRunStore', () => {
       success: false,
       errorCategory: 'knowledge_write_conflict',
     });
+  });
+
+  it('returns an unfinished write as an unknown sanitized receipt', async () => {
+    const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+    await store.beginWrite(run.id, {
+      toolName: 'createDocument',
+      targetIdentifiers: { parentToken: 'fldcnParent' },
+      sanitizedSummary: 'created one document',
+    });
+
+    const receipts = await store.listWriteAttempts('evt_1');
+
+    expect(receipts).toEqual([{
+      toolName: 'createDocument',
+      outcome: 'unknown',
+      sanitizedSummary: 'created one document',
+      targetIdentifiers: { parentToken: 'fldcnParent' },
+    }]);
+    expect(JSON.stringify(receipts)).not.toMatch(/document body|secret content|oauth/iu);
+  });
+
+  it('persists a stable category when a finished write result is unknown', async () => {
+    const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+    const write = await store.beginWrite(run.id, {
+      toolName: 'appendDocument',
+      targetIdentifiers: { doc: 'dox_1' },
+      sanitizedSummary: 'appended content to one document',
+    });
+
+    await store.finishWrite(write.id, { outcome: 'unknown' });
+
+    await expect(store.listWriteAttempts('evt_1')).resolves.toEqual([{
+      toolName: 'appendDocument',
+      outcome: 'unknown',
+      sanitizedSummary: 'appended content to one document',
+      targetIdentifiers: { doc: 'dox_1' },
+      errorCategory: 'write_result_unknown',
+    }]);
+  });
+
+  it('rolls back the pending audit when the event cannot be marked processing', async () => {
+    const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+    await database.db.update(processedEvents).set({ status: 'queued' })
+      .where(eq(processedEvents.eventId, 'evt_1'));
+
+    await expect(store.beginWrite(run.id, {
+      toolName: 'appendDocument',
+      targetIdentifiers: { doc: 'dox_1' },
+      sanitizedSummary: 'appended content to one document',
+    })).rejects.toThrow('write_replay_boundary_not_marked');
+
+    const rows = await database.db.select().from(toolRuns)
+      .where(eq(toolRuns.agentRunId, run.id));
+    expect(rows).toEqual([]);
   });
 
   it.each(['step_limit_reached', 'timeout_reached'] as const)(

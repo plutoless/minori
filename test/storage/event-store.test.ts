@@ -1,10 +1,12 @@
 import { resolve } from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
 import { PostgresEventStore } from '../../src/storage/event-store.js';
+import { processedEvents } from '../../src/storage/schema.js';
 
 describe('PostgresEventStore', () => {
   let container: StartedPostgreSqlContainer;
@@ -200,6 +202,23 @@ describe('PostgresEventStore', () => {
       preparedReplyText: 'prepared reply',
     });
     expect(recovered?.replyAttemptedAt).toEqual(attemptedAt);
+  });
+
+  it('returns the durable write replay boundary on a recovered claim', async () => {
+    const immediateStore = new PostgresEventStore(database.db, {
+      minRetryDelayMs: 0,
+      maxRetryDelayMs: 0,
+    });
+    await immediateStore.enqueue(event());
+    await immediateStore.claimReady(1, new Date(Date.now() + 60_000));
+    const writeStartedAt = new Date('2026-08-05T01:02:03Z');
+    await database.db.update(processedEvents).set({ writeStartedAt })
+      .where(eq(processedEvents.eventId, 'evt_1'));
+    await immediateStore.retry('evt_1', 1, 'worker_crashed', new Date());
+
+    const [recovered] = await immediateStore.claimReady(1, new Date(Date.now() + 60_000));
+
+    expect(recovered?.writeStartedAt).toEqual(writeStartedAt);
   });
 
   it('transfers reaction ownership once to the terminal transition', async () => {

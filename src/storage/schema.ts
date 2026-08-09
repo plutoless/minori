@@ -29,6 +29,7 @@ export const processedEvents = pgTable('processed_events', {
   nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).defaultNow().notNull(),
   leasedUntil: timestamp('leased_until', { withTimezone: true }),
   processingReactionId: text('processing_reaction_id'),
+  writeStartedAt: timestamp('write_started_at', { withTimezone: true }),
   replyIdempotencyKey: text('reply_idempotency_key'),
   replyAttemptedAt: timestamp('reply_attempted_at', { withTimezone: true }),
   replyMessageId: text('reply_message_id'),
@@ -107,6 +108,12 @@ export const toolRuns = pgTable('tool_runs', {
   success: boolean('success'),
   errorCategory: text('error_category'),
   sanitizedSummary: text('sanitized_summary'),
+  resultIdentifiers: jsonb('result_identifiers').$type<{
+    token: string;
+    title: string;
+    url: string;
+    revisionId: string;
+  }>(),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (table) => [

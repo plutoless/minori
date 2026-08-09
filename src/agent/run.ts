@@ -10,6 +10,7 @@ import { selectRecentHistory, type AgentHistoryMessage } from './context-window.
 import { TEAM_AGENT_INSTRUCTIONS } from './instructions.js';
 import {
   budgetExhaustedText,
+  interruptedAfterWriteText,
   type AgentReplyOutcome,
   type AgentRunOutcome,
   type WriteAttemptReceipt,
@@ -118,6 +119,7 @@ function createWriteAudit(
   agentRunId: string,
   signal: AbortSignal,
   writeAttempts: WriteAttemptReceipt[],
+  replayBoundary: { crossed: boolean },
 ): KnowledgeWriteAudit {
   return {
     async run(input, operation) {
@@ -127,13 +129,14 @@ function createWriteAudit(
           () => store.beginWrite(agentRunId, input),
           signal,
           (lateWrite) => withAuditFinalization(() => store.finishWrite(lateWrite.id, {
-            success: false,
+            outcome: 'unknown',
             errorCategory: AGENT_RUN_ABORTED_CATEGORY,
           })),
         );
       } catch {
         throw new WriteAuditUnavailable();
       }
+      replayBoundary.crossed = true;
 
       const receipt: WriteAttemptReceipt = {
         ...input,
@@ -144,15 +147,18 @@ function createWriteAudit(
       try {
         signal.throwIfAborted();
         const result = await operation();
+        const identifiers = resultIdentifiers(result);
         try {
           await withAuditFinalization(
-            () => store.finishWrite(write.id, { success: true }),
+            () => store.finishWrite(write.id, {
+              outcome: 'succeeded',
+              ...(identifiers ? { resultIdentifiers: identifiers } : {}),
+            }),
           );
         } catch {
           throw new WriteAuditUnavailable();
         }
         receipt.outcome = 'succeeded';
-        const identifiers = resultIdentifiers(result);
         if (identifiers) receipt.resultIdentifiers = identifiers;
         return result;
       } catch (error) {
@@ -162,7 +168,7 @@ function createWriteAudit(
           : stableWriteErrorCategory(error);
         try {
           await withAuditFinalization(() => store.finishWrite(write.id, {
-            success: false,
+            outcome: signal.aborted ? 'unknown' : 'failed',
             errorCategory,
           }));
         } catch {
@@ -275,6 +281,7 @@ export async function runKnowledgeAgent(
   const sources = new SourceRegistry();
   const contextTokenTarget = dependencies.contextTokenTarget ?? 24_000;
   const writeAttempts: WriteAttemptReceipt[] = [];
+  const replayBoundary = { crossed: false };
   const stepBudget: StepBudget = createStepBudget(dependencies.maxSteps);
 
   let run: { id: string };
@@ -329,6 +336,7 @@ export async function runKnowledgeAgent(
         run.id,
         runSignal,
         writeAttempts,
+        replayBoundary,
       ),
       history: {
         search: (query, limit) => dependencies.conversationStore.search(
@@ -386,6 +394,18 @@ export async function runKnowledgeAgent(
       outcome = 'timeout_reached';
       return {
         ...sources.finalize(budgetExhaustedText(outcome, writeAttempts)),
+        usage: {
+          ...(inputTokens !== undefined ? { inputTokens } : {}),
+          ...(outputTokens !== undefined ? { outputTokens } : {}),
+        },
+        outcome,
+        writeAttempts,
+      };
+    }
+    if (replayBoundary.crossed) {
+      outcome = 'interrupted_after_write';
+      return {
+        ...sources.finalize(interruptedAfterWriteText(writeAttempts)),
         usage: {
           ...(inputTokens !== undefined ? { inputTokens } : {}),
           ...(outputTokens !== undefined ? { outputTokens } : {}),

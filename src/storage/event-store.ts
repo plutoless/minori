@@ -8,6 +8,7 @@ export type StoredEvent = {
   payload: NormalizedMessage;
   attempts: number;
   processingReactionId?: string;
+  writeStartedAt?: Date;
   replyIdempotencyKey?: string;
   replyAttemptedAt?: Date;
   preparedReplyText?: string;
@@ -117,6 +118,7 @@ export class PostgresEventStore implements EventStore {
         event.payload,
         event.attempts,
         event.processing_reaction_id as "processingReactionId",
+        event.write_started_at as "writeStartedAt",
         event.reply_idempotency_key as "replyIdempotencyKey",
         event.reply_attempted_at as "replyAttemptedAt",
         event.outcome ->> 'preparedReplyText' as "preparedReplyText"
@@ -127,6 +129,7 @@ export class PostgresEventStore implements EventStore {
       payload: NormalizedMessage;
       attempts: number;
       processingReactionId: string | null;
+      writeStartedAt: Date | null;
       replyIdempotencyKey: string | null;
       replyAttemptedAt: Date | null;
       preparedReplyText: string | null;
@@ -135,6 +138,7 @@ export class PostgresEventStore implements EventStore {
       attempts: row.attempts,
       payload: { ...row.payload, occurredAt: new Date(row.payload.occurredAt) },
       ...(row.processingReactionId ? { processingReactionId: row.processingReactionId } : {}),
+      ...(row.writeStartedAt ? { writeStartedAt: new Date(row.writeStartedAt) } : {}),
       ...(row.replyIdempotencyKey ? { replyIdempotencyKey: row.replyIdempotencyKey } : {}),
       ...(row.replyAttemptedAt ? { replyAttemptedAt: new Date(row.replyAttemptedAt) } : {}),
       ...(row.preparedReplyText ? { preparedReplyText: row.preparedReplyText } : {}),

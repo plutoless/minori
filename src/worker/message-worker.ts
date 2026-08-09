@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { AgentReply } from '../agent/run.js';
+import { interruptedAfterWriteText, type WriteAttemptReceipt } from '../agent/run-outcome.js';
 import type { NormalizedMessage } from '../contracts/messages.js';
 import type { FeishuMessenger } from '../feishu/client.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
@@ -19,6 +20,7 @@ export type MessageWorkerOptions = {
   eventStore: EventStore;
   conversations: Pick<ConversationStore, 'getOrCreateConversation' | 'append'>;
   runAgent(message: NormalizedMessage, signal?: AbortSignal): Promise<AgentReply>;
+  loadWriteAttempts(eventId: string): Promise<WriteAttemptReceipt[]>;
   messenger: FeishuMessenger;
   logger: WorkerLogger;
   now?: () => Date;
@@ -248,6 +250,19 @@ export class MessageWorker {
     let text: string;
     if (event.payload.content.kind === 'unsupported') {
       text = UNSUPPORTED_REPLY;
+    } else if (event.writeStartedAt) {
+      const writeAttempts = await this.withAbort(
+        this.options.loadWriteAttempts(event.eventId),
+        signal,
+      );
+      const reply: AgentReply = {
+        outcome: 'interrupted_after_write',
+        text: interruptedAfterWriteText(writeAttempts),
+        sources: [],
+        usage: {},
+        writeAttempts,
+      };
+      text = formatAgentReply(reply);
     } else {
       let reply: AgentReply;
       try {

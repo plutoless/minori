@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { LanguageModelV4GenerateResult } from '@ai-sdk/provider';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -23,6 +23,7 @@ import { agentRuns, toolRuns } from '../../src/storage/schema.js';
 import { MessageWorker } from '../../src/worker/message-worker.js';
 
 const BOT_OPEN_ID = 'ou_minori';
+const noWriteAttempts = async () => [];
 
 const modelUsage = {
   inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
@@ -93,6 +94,18 @@ describe('open team Agent release contract', () => {
     );
   });
 
+  it('keeps recovery policy inside the open Agent instead of exporting operation routers', async () => {
+    const sourceFiles = (await readdir(resolve('src'), { recursive: true }))
+      .filter((path) => path.endsWith('.ts'));
+    const source = (await Promise.all(sourceFiles.map(
+      (path) => readFile(resolve('src', path), 'utf8'),
+    ))).join('\n');
+
+    expect(source).not.toMatch(
+      /export\s+(?:async\s+)?(?:function|class|const|type|interface)\s+(?:reconcileCreate|reconcileAppend|reconcilePatch|confirmationParser|recoveryRouter)\b/u,
+    );
+  });
+
   afterAll(async () => {
     await database?.close();
     await container?.stop();
@@ -146,6 +159,7 @@ describe('open team Agent release contract', () => {
     const messenger = new FakeMessenger();
     const worker = new MessageWorker({
       eventStore: events, conversations, messenger,
+      loadWriteAttempts: noWriteAttempts,
       runAgent: fakeModel,
       logger: { warn: vi.fn(), info: vi.fn() },
       concurrency: 4,
@@ -248,6 +262,7 @@ describe('open team Agent release contract', () => {
       eventStore: events,
       conversations,
       messenger,
+      loadWriteAttempts: noWriteAttempts,
       runAgent: vi.fn(async () => { throw new Error('transient_model_failure'); }),
       logger: { warn: vi.fn(), info: vi.fn() },
     });
@@ -262,6 +277,7 @@ describe('open team Agent release contract', () => {
       eventStore: restartedEvents,
       conversations: new PostgresConversationStore(database.db),
       messenger,
+      loadWriteAttempts: noWriteAttempts,
       runAgent: vi.fn(async () => ({
         text: 'recovered answer', sources: [], usage: {},
         outcome: 'completed' as const, writeAttempts: [],
@@ -369,6 +385,7 @@ describe('open team Agent release contract', () => {
       eventStore: events,
       conversations,
       messenger,
+      loadWriteAttempts: (eventId) => runStore.listWriteAttempts(eventId),
       logger: { warn: vi.fn(), info: vi.fn() },
       runAgent: (message, signal) => {
         if (message.content.kind !== 'text') throw new Error('unsupported_agent_input');
@@ -443,6 +460,59 @@ describe('open team Agent release contract', () => {
       ]));
   });
 
+  it('recovers a crash after a write with one truthful receipt and zero Agent replays', async () => {
+    const incoming = normalizeMessageEvent(rawEvent({
+      event_id: 'evt_write_crash',
+      message: {
+        message_id: 'om_write_crash', chat_id: 'oc_team', chat_type: 'group',
+        message_type: 'text', create_time: '1785888003000',
+        content: JSON.stringify({ text: '@_user_1 create the crash plan' }),
+        mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }],
+      },
+    }), { botOpenId: BOT_OPEN_ID })!;
+    await events.enqueue(incoming);
+    await events.claimReady(1, new Date(Date.now() - 1));
+    const runStore = new PostgresAgentRunStore(database.db);
+    const run = await runStore.start({ eventId: incoming.eventId, model: '5.6-terra' });
+    const write = await runStore.beginWrite(run.id, {
+      toolName: 'createDocument',
+      targetIdentifiers: {},
+      sanitizedSummary: 'created one document',
+    });
+    await runStore.finishWrite(write.id, {
+      outcome: 'succeeded',
+      resultIdentifiers: {
+        token: 'doxcnCrash',
+        title: 'Crash plan',
+        url: 'https://acme.feishu.cn/docx/doxcnCrash',
+        revisionId: '1',
+      },
+    });
+
+    expect(await events.recoverExpiredLeases(new Date(), 1)).toBe(1);
+    const [recovered] = await events.claimReady(1, new Date(Date.now() + 60_000));
+    const messenger = new FakeMessenger();
+    const runAgent = vi.fn();
+    const worker = new MessageWorker({
+      eventStore: events,
+      conversations,
+      messenger,
+      loadWriteAttempts: (eventId) => runStore.listWriteAttempts(eventId),
+      runAgent,
+      logger: { warn: vi.fn(), info: vi.fn() },
+    });
+
+    await worker.process(recovered!);
+
+    expect(recovered?.writeStartedAt).toBeInstanceOf(Date);
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(messenger.replies).toHaveLength(1);
+    expect(messenger.replies[0]).toMatchObject({ messageId: 'om_write_crash' });
+    expect(messenger.replies[0]?.key).toMatch(/^minori-/u);
+    expect(messenger.replies[0]?.text).toContain('写入开始后中断');
+    expect(messenger.replies[0]?.text).toContain('https://acme.feishu.cn/docx/doxcnCrash');
+  });
+
   it('expires old message bodies and replays a recent uncertain transport result only once', async () => {
     const messenger = new FakeMessenger();
     const originalReply = messenger.replyText.bind(messenger);
@@ -457,6 +527,7 @@ describe('open team Agent release contract', () => {
     });
     const worker = new MessageWorker({
       eventStore: events, conversations, messenger,
+      loadWriteAttempts: noWriteAttempts,
       runAgent: vi.fn(async () => ({
         text: 'safe answer', sources: [], usage: {},
         outcome: 'completed' as const, writeAttempts: [],
@@ -474,6 +545,7 @@ describe('open team Agent release contract', () => {
       eventStore: restartedEvents,
       conversations: new PostgresConversationStore(database.db),
       messenger,
+      loadWriteAttempts: noWriteAttempts,
       runAgent: vi.fn(async () => ({
         text: 'safe answer', sources: [], usage: {},
         outcome: 'completed' as const, writeAttempts: [],
@@ -541,6 +613,7 @@ describe('open team Agent release contract', () => {
       eventStore: events,
       conversations,
       messenger: new FakeMessenger(),
+      loadWriteAttempts: noWriteAttempts,
       runAgent,
       logger: { warn: vi.fn(), info: vi.fn() },
       concurrency: 4,
@@ -562,6 +635,7 @@ describe('open team Agent release contract', () => {
       eventStore: restartedEvents,
       conversations,
       messenger,
+      loadWriteAttempts: noWriteAttempts,
       runAgent: vi.fn(),
       logger: { warn: vi.fn(), info: vi.fn() },
       now: () => new Date('2026-08-05T02:00:01Z'),

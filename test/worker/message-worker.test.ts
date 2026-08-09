@@ -76,6 +76,7 @@ function dependencies(overrides: Record<string, unknown> = {}) {
         append: vi.fn(async (entry) => { appended.push(entry); }),
       },
       runAgent,
+      loadWriteAttempts: vi.fn(async () => []),
       messenger,
       logger: { warn: vi.fn(), info: vi.fn() },
       now: () => new Date('2026-08-05T01:00:00Z'),
@@ -266,6 +267,7 @@ describe('MessageWorker.process', () => {
   it.each([
     ['step_limit_reached', '已达到本次执行步数上限。'],
     ['timeout_reached', '已达到本次执行时间上限。'],
+    ['interrupted_after_write', '本次执行在写入开始后中断。'],
   ] as const)('sends a terminal %s reply once without retrying the Agent run', async (
     outcome,
     text,

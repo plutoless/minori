@@ -109,6 +109,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
     const nextWorker = new MessageWorker({
       eventStore: storage.eventStore,
       conversations: storage.conversationStore,
+      loadWriteAttempts: (eventId) => storage.agentRunStore!.listWriteAttempts(eventId),
       messenger,
       logger,
       runAgent: (message, signal) => {

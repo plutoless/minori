@@ -61,6 +61,7 @@ describe('prompt-injection boundary', () => {
         start: vi.fn().mockResolvedValue({ id: 'run_1' }),
         beginWrite: vi.fn().mockResolvedValue({ id: 'write_1' }),
         finishWrite: vi.fn().mockResolvedValue(undefined),
+        listWriteAttempts: vi.fn().mockResolvedValue([]),
         finish: vi.fn().mockResolvedValue(undefined),
       },
       conversationStore: {

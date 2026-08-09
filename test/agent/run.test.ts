@@ -77,6 +77,7 @@ function agentRunStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
     start: vi.fn().mockResolvedValue({ id: 'run_1' }),
     beginWrite: vi.fn().mockResolvedValue({ id: 'write_1' }),
     finishWrite: vi.fn().mockResolvedValue(undefined),
+    listWriteAttempts: vi.fn().mockResolvedValue([]),
     finish: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -209,6 +210,43 @@ describe('runKnowledgeAgent', () => {
     expect(historySearch).toHaveBeenCalledWith('oc_team:om_root', 'codename', 5);
   });
 
+  it('keeps Agent-managed recovery open with the visible receipt and full typed write set', async () => {
+    const visibleReceipt = [
+      '本次执行在写入开始后中断，现已停止。',
+      '已记录的写入尝试：',
+      '- 已确认成功：created one document — https://acme.feishu.cn/docx/created',
+    ].join('\n');
+    const prompt = '继续';
+    const store = {
+      search: vi.fn().mockResolvedValue([]),
+      recentWithinBudget: vi.fn().mockResolvedValue([
+        {
+          messageId: 'om_receipt', conversationId: 'conv_1', role: 'assistant' as const,
+          content: visibleReceipt, createdAt: new Date('2026-08-05T00:00:00Z'),
+        },
+        {
+          messageId: 'om_trigger', conversationId: 'conv_1', role: 'user' as const,
+          content: prompt, createdAt: new Date('2026-08-05T00:01:00Z'),
+        },
+      ]),
+    };
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{ type: 'text', text: 'I checked the visible receipt.' }], 'stop'),
+    });
+
+    await runKnowledgeAgent(
+      { ...input, prompt },
+      dependencies(prompt, model, { conversationStore: store }),
+    );
+
+    const call = model.doGenerateCalls[0]!;
+    expect(JSON.stringify(call.prompt)).toContain('写入开始后中断');
+    expect(JSON.stringify(call.prompt)).toContain('https://acme.feishu.cn/docx/created');
+    expect(call.tools?.map(({ name }) => name)).toEqual(expect.arrayContaining([
+      'createDocument', 'appendDocument', 'patchDocument',
+    ]));
+  });
+
   it('autonomously follows a document continuation cursor when more evidence is needed', async () => {
     const knowledge = service();
     knowledge.fetchDocument = vi.fn().mockResolvedValue({
@@ -303,7 +341,15 @@ describe('runKnowledgeAgent', () => {
       toolName: 'createDocument', targetIdentifiers: {},
       sanitizedSummary: 'created one document',
     });
-    expect(audit.finishWrite).toHaveBeenCalledWith('write_1', { success: true });
+    expect(audit.finishWrite).toHaveBeenCalledWith('write_1', {
+      outcome: 'succeeded',
+      resultIdentifiers: {
+        token: 'doxcnCreated',
+        title: 'Created plan',
+        url: 'https://acme.feishu.cn/docx/created',
+        revisionId: '1',
+      },
+    });
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       inputTokens: 20,
       outputTokens: 8,
@@ -371,7 +417,7 @@ describe('runKnowledgeAgent', () => {
 
     expect(knowledge.createDocument).not.toHaveBeenCalled();
     expect(audit.finishWrite).toHaveBeenCalledWith('write_delayed', {
-      success: false,
+      outcome: 'unknown',
       errorCategory: 'agent_run_aborted',
     });
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
@@ -589,12 +635,12 @@ describe('runKnowledgeAgent', () => {
     expect(knowledge.fetchDocument).toHaveBeenCalledOnce();
     expect(reply.sources).toHaveLength(1);
     expect(audit.finishWrite).toHaveBeenNthCalledWith(1, 'write_1', {
-      success: false,
+      outcome: 'failed',
       errorCategory: 'knowledge_write_conflict',
     });
   });
 
-  it('finishes a failed Agent run when model execution fails', async () => {
+  it('rejects a model failure before any write so the worker can retry it', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: vi.fn().mockRejectedValue(new Error('model_unavailable')),
     });
@@ -608,6 +654,44 @@ describe('runKnowledgeAgent', () => {
       toolCallCount: 0,
       outcome: 'failed',
     });
+  });
+
+  it('returns a truthful interruption receipt when the model fails after a successful create', async () => {
+    const knowledge = service();
+    const model = new MockLanguageModelV4({
+      doGenerate: vi.fn()
+        .mockResolvedValueOnce(generated([{
+          type: 'tool-call', toolCallId: 'call_create', toolName: 'createDocument',
+          input: JSON.stringify({ title: 'Plan', content: '# Sensitive body' }),
+        }], 'tool-calls'))
+        .mockRejectedValueOnce(new Error('model_unavailable')),
+    });
+    const audit = agentRunStore();
+
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt: 'Create the plan, then summarize it.' },
+      dependencies('Create the plan, then summarize it.', model, {
+        service: knowledge,
+        agentRunStore: audit,
+      }),
+    );
+
+    expect(knowledge.createDocument).toHaveBeenCalledOnce();
+    expect(model.doGenerateCalls).toHaveLength(2);
+    expect(reply).toMatchObject({
+      outcome: 'interrupted_after_write',
+      writeAttempts: [{
+        toolName: 'createDocument',
+        outcome: 'succeeded',
+        resultIdentifiers: { url: 'https://acme.feishu.cn/docx/created' },
+      }],
+    });
+    expect(reply.text).toContain('写入开始后中断');
+    expect(reply.text).toContain('https://acme.feishu.cn/docx/created');
+    expect(reply.text).not.toContain('Sensitive body');
+    expect(audit.finish).toHaveBeenCalledWith('run_1', expect.objectContaining({
+      outcome: 'interrupted_after_write',
+    }));
   });
 
   it('reports the configured Agent deadline as a truthful terminal outcome', async () => {

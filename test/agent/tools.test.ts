@@ -65,6 +65,7 @@ describe('createKnowledgeTools', () => {
   it('creates a document through a strict audited tool and returns its canonical receipt', async () => {
     const knowledge = service();
     const audited: unknown[] = [];
+    const auditedResults: unknown[] = [];
     const tools = createKnowledgeTools(
       knowledge,
       { search: vi.fn().mockResolvedValue([]) },
@@ -72,7 +73,9 @@ describe('createKnowledgeTools', () => {
       {
         run: async (input, operation) => {
           audited.push(input);
-          return operation();
+          const result = await operation();
+          auditedResults.push(result);
+          return result;
         },
       },
     );
@@ -100,6 +103,13 @@ describe('createKnowledgeTools', () => {
       toolName: 'createDocument',
       targetIdentifiers: { parentToken: 'fldcnParent' },
       sanitizedSummary: 'created one document',
+    }]);
+    expect(auditedResults).toEqual([{
+      operation: 'create',
+      token: 'doxcnCreated',
+      title: 'Created plan',
+      url: 'https://acme.feishu.cn/docx/created',
+      revisionId: 1,
     }]);
   });
 

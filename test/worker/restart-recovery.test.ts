@@ -47,6 +47,18 @@ function setup(now: Date) {
     removeReaction: vi.fn(async () => { calls.push('remove'); }),
   };
   const runAgent = vi.fn();
+  const loadWriteAttempts = vi.fn(async () => [{
+    toolName: 'createDocument' as const,
+    outcome: 'succeeded' as const,
+    sanitizedSummary: 'created one document',
+    targetIdentifiers: {},
+    resultIdentifiers: {
+      token: 'doxcnCreated',
+      title: 'Created plan',
+      url: 'https://acme.feishu.cn/docx/created',
+      revisionId: '1',
+    },
+  }]);
   const logger = { warn: vi.fn(), info: vi.fn() };
   const worker = new MessageWorker({
     eventStore,
@@ -55,10 +67,13 @@ function setup(now: Date) {
       append: vi.fn(async () => undefined),
     },
     runAgent, messenger,
+    loadWriteAttempts,
     logger,
     now: () => now,
   });
-  return { worker, eventStore, messenger, runAgent, logger, calls, accepted };
+  return {
+    worker, eventStore, messenger, runAgent, loadWriteAttempts, logger, calls, accepted,
+  };
 }
 
 describe('MessageWorker restart recovery', () => {
@@ -96,6 +111,7 @@ describe('MessageWorker restart recovery', () => {
         append: vi.fn(async () => undefined),
       },
       runAgent,
+      loadWriteAttempts: vi.fn(async () => []),
       messenger: {
         addReaction: vi.fn(async () => null),
         removeReaction: vi.fn(async () => undefined),
@@ -163,5 +179,28 @@ describe('MessageWorker restart recovery', () => {
       'reply outcome is uncertain',
     );
     expect(JSON.stringify(state.logger.warn.mock.calls)).not.toContain('durably prepared answer');
+  });
+
+  it('returns a durable interruption receipt without replaying an Agent run after a write', async () => {
+    const state = setup(new Date('2026-08-05T01:00:00Z'));
+    const event = recovered({
+      writeStartedAt: new Date('2026-08-05T00:20:00Z'),
+      replyIdempotencyKey: undefined,
+      replyAttemptedAt: undefined,
+      preparedReplyText: undefined,
+    });
+
+    await state.worker.process(event);
+
+    expect(state.runAgent).not.toHaveBeenCalled();
+    expect(state.eventStore.retry).not.toHaveBeenCalled();
+    expect(state.loadWriteAttempts).toHaveBeenCalledWith('evt_crash');
+    expect(state.messenger.replyText).toHaveBeenCalledWith(
+      'om_1',
+      expect.stringContaining('写入开始后中断'),
+      expect.stringMatching(/^minori-/u),
+    );
+    expect(state.messenger.replyText.mock.calls[0]?.[1])
+      .toContain('https://acme.feishu.cn/docx/created');
   });
 });

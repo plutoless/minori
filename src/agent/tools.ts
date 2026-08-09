@@ -36,7 +36,10 @@ export type KnowledgeWriteAuditInput = {
 };
 
 export interface KnowledgeWriteAudit {
-  run<T>(input: KnowledgeWriteAuditInput, operation: () => Promise<T>): Promise<T>;
+  run(
+    input: KnowledgeWriteAuditInput,
+    operation: () => Promise<KnowledgeWriteResult>,
+  ): Promise<KnowledgeWriteResult>;
 }
 
 function splitSections(markdown: string) {
