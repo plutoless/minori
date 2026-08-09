@@ -1,0 +1,546 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+
+sha_pattern='^[0-9a-f]{40}$'
+digest_pattern='^ghcr\.io/plutoless/minori@sha256:[0-9a-f]{64}$'
+legacy_pattern='^minori:[0-9a-f]{40}$'
+
+if [[ $# -ne 3 || "$1" != v1 || ! "$2" =~ $sha_pattern || ! "$3" =~ $digest_pattern ]]; then
+  printf 'minori_release result=rejected\n'
+  exit 2
+fi
+installed_engine='/opt/minori/bin/minori-release'
+test_mode=0
+if [[ "${BASH_SOURCE[0]}" == "$installed_engine" ]]; then
+  if [[ "${MINORI_FORCED_ENTRYPOINT:-}" != 1 ]]; then
+    printf 'minori_release result=rejected\n'
+    exit 2
+  fi
+  PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+  export PATH
+  minori_root='/opt/minori'
+elif [[ -n "${MINORI_TEST_ROOT:-}" && -d "$MINORI_TEST_ROOT" && -O "$MINORI_TEST_ROOT" ]]; then
+  test_mode=1
+  minori_root="$MINORI_TEST_ROOT"
+else
+  printf 'minori_release result=rejected\n'
+  exit 2
+fi
+
+protocol="$1"
+commit_sha="$2"
+candidate_image="$3"
+env_file="${minori_root}/minori.env"
+lark_dir="${minori_root}/lark"
+release_dir="${minori_root}/releases"
+contracts_dir="${release_dir}/contracts"
+records_dir="${release_dir}/records"
+state_file="${release_dir}/state.tsv"
+health_port="${MINORI_HEALTH_PORT:-3000}"
+ready_attempts=24
+ready_delay=5
+if [[ $test_mode -eq 1 ]]; then
+  ready_attempts="${MINORI_READY_ATTEMPTS:-1}"
+  ready_delay="${MINORI_READY_DELAY_SECONDS:-0}"
+fi
+
+declare -a state_protocols=()
+declare -a state_shas=()
+declare -a state_images=()
+declare -a state_contracts=()
+declare -a next_protocols=()
+declare -a next_shas=()
+declare -a next_images=()
+declare -a next_contracts=()
+state_count=0
+next_count=0
+state_file_existed=0
+temporary_dir=''
+temporary_container=''
+state_temporary=''
+
+cleanup() {
+  if [[ -n "$temporary_container" ]]; then
+    docker rm -f "$temporary_container" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$state_temporary" ]]; then
+    rm -f -- "$state_temporary"
+  fi
+  if [[ -n "$temporary_dir" && -d "$temporary_dir" ]]; then
+    rm -rf -- "$temporary_dir"
+  fi
+}
+trap cleanup EXIT
+
+write_record() {
+  local result="$1"
+  local rollback_category="$2"
+  local timestamp record_name temporary_record
+  if ! mkdir -p "$records_dir"; then
+    return 1
+  fi
+  if ! timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"; then
+    return 1
+  fi
+  if [[ ! "$timestamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    return 1
+  fi
+  record_name="${timestamp//:/-}-${commit_sha:0:12}-$$.json"
+  temporary_record="${records_dir}/.${record_name}"
+  if ! printf '{"protocol":"%s","commitSha":"%s","image":"%s","timestamp":"%s","operatorCategory":"github_actions","result":"%s","rollbackTargetCategory":"%s"}\n' \
+    "$protocol" "$commit_sha" "$candidate_image" "$timestamp" "$result" "$rollback_category" > "$temporary_record"; then
+    return 1
+  fi
+  if ! chmod 0600 "$temporary_record" || ! mv -f "$temporary_record" "${records_dir}/${record_name}"; then
+    rm -f -- "$temporary_record"
+    return 1
+  fi
+}
+
+finish() {
+  local result="$1"
+  local exit_code="$2"
+  printf 'minori_release result=%s\n' "$result"
+  exit "$exit_code"
+}
+
+fail_before_replace() {
+  write_record failed_before_replace none || true
+  finish failed_before_replace 1
+}
+
+file_mode() {
+  local path="$1"
+  local mode
+  if mode="$(stat -c '%a' -- "$path" 2>/dev/null)"; then
+    printf '%s\n' "$mode"
+    return 0
+  fi
+  stat -f '%Lp' -- "$path" 2>/dev/null
+}
+
+path_ids() {
+  local path="$1"
+  local ids
+  if ids="$(stat -c '%u %g' -- "$path" 2>/dev/null)"; then
+    printf '%s\n' "$ids"
+    return 0
+  fi
+  stat -f '%u %g' -- "$path" 2>/dev/null
+}
+
+trusted_directory_is_valid() {
+  local path="$1"
+  local mode
+  [[ -d "$path" && ! -L "$path" && -O "$path" ]] || return 1
+  mode="$(file_mode "$path")" || return 1
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 8#022) == 0 ))
+}
+
+root_only_file_is_valid() {
+  local path="$1"
+  local mode
+  [[ -f "$path" && ! -L "$path" && -O "$path" ]] || return 1
+  mode="$(file_mode "$path")" || return 1
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 8#077) == 0 ))
+}
+
+contract_file_is_valid() {
+  local path="$1"
+  local mode
+  [[ -f "$path" && ! -L "$path" && -O "$path" && -r "$path" ]] || return 1
+  mode="$(file_mode "$path")" || return 1
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 8#022) == 0 ))
+}
+
+lark_directory_is_valid() {
+  local mode ids expected_ids
+  [[ -d "$lark_dir" && ! -L "$lark_dir" ]] || return 1
+  mode="$(file_mode "$lark_dir")" || return 1
+  ids="$(path_ids "$lark_dir")" || return 1
+  if [[ $test_mode -eq 1 ]]; then
+    expected_ids="$(id -u) $(id -g)"
+  else
+    expected_ids='10001 10001'
+  fi
+  [[ "$ids" == "$expected_ids" && "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 8#027) == 0 ))
+}
+
+contract_path_is_valid() {
+  local sha="$1"
+  local image="$2"
+  local contract="$3"
+  local digest_hex
+  if [[ "$image" =~ $digest_pattern ]]; then
+    digest_hex="${image##*@sha256:}"
+    [[ "$contract" == "${contracts_dir}/${digest_hex}.compose.yaml" ]] \
+      && contract_file_is_valid "$contract"
+    return
+  fi
+  if [[ "$image" =~ $legacy_pattern ]]; then
+    [[ "${image#minori:}" == "$sha" && "$contract" == "${release_dir}/${sha}.compose.yaml" ]] \
+      && contract_file_is_valid "$contract"
+    return
+  fi
+  return 1
+}
+
+release_image_metadata_is_valid() {
+  local sha="$1"
+  local image="$2"
+  local revision architecture user repository_digest
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    return 1
+  fi
+  revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image" 2>/dev/null)" \
+    || return 1
+  architecture="$(docker image inspect --format '{{.Architecture}}' "$image" 2>/dev/null)" \
+    || return 1
+  user="$(docker image inspect --format '{{.Config.User}}' "$image" 2>/dev/null)" \
+    || return 1
+  [[ "$revision" == "$sha" && "$architecture" == amd64 && "$user" == '10001:10001' ]] \
+    || return 1
+  if [[ "$image" =~ $digest_pattern ]]; then
+    repository_digest="$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" 2>/dev/null)" \
+      || return 1
+    [[ "$repository_digest" == "$image" ]]
+    return
+  fi
+  [[ "$image" =~ $legacy_pattern ]]
+}
+
+embedded_protocol_is_valid() {
+  local image="$1"
+  local suffix="$2"
+  local protocol_copy="${temporary_dir}/${suffix}.deployment-protocol"
+  if ! temporary_container="$(docker create "$image" 2>/dev/null)" || [[ -z "$temporary_container" ]]; then
+    return 1
+  fi
+  if ! docker cp "${temporary_container}:/opt/minori/release/deployment-protocol" "$protocol_copy" >/dev/null 2>&1 \
+    || ! docker rm -f "$temporary_container" >/dev/null 2>&1; then
+    return 1
+  fi
+  temporary_container=''
+  [[ -f "$protocol_copy" && ! -L "$protocol_copy" && "$(<"$protocol_copy")" == v1 ]]
+}
+
+saved_release_is_valid() {
+  local sha="$1"
+  local image="$2"
+  local contract="$3"
+  local suffix="$4"
+  local rendered
+  contract_path_is_valid "$sha" "$image" "$contract" || return 1
+  release_image_metadata_is_valid "$sha" "$image" || return 1
+  if [[ "$image" =~ $digest_pattern ]]; then
+    embedded_protocol_is_valid "$image" "$suffix" || return 1
+  fi
+  rendered="$(compose_image "$image" "$contract")" || return 1
+  [[ "$rendered" == "$image" ]]
+}
+
+image_is_in_next_state() {
+  local image="$1"
+  local index
+  for ((index = 0; index < next_count; index += 1)); do
+    if [[ "${next_images[$index]}" == "$image" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+load_state() {
+  local row row_protocol row_sha row_image row_contract extra serialized index
+  if [[ ! -e "$state_file" ]]; then
+    return 0
+  fi
+  if [[ ! -r "$state_file" || ! -s "$state_file" ]] || ! root_only_file_is_valid "$state_file"; then
+    return 1
+  fi
+  while IFS= read -r row || [[ -n "$row" ]]; do
+    IFS=$'\t' read -r row_protocol row_sha row_image row_contract extra <<< "$row"
+    serialized="${row_protocol}"$'\t'"${row_sha}"$'\t'"${row_image}"$'\t'"${row_contract}"
+    if [[ "$row" != "$serialized" || -n "$extra" || "$row_protocol" != v1 || ! "$row_sha" =~ $sha_pattern ]]; then
+      return 1
+    fi
+    if ! saved_release_is_valid "$row_sha" "$row_image" "$row_contract" "saved-${state_count}"; then
+      return 1
+    fi
+    if [[ $state_count -ge 3 ]]; then
+      return 1
+    fi
+    for ((index = 0; index < state_count; index += 1)); do
+      if [[ "${state_images[$index]}" == "$row_image" ]]; then
+        return 1
+      fi
+    done
+    state_protocols[$state_count]="$row_protocol"
+    state_shas[$state_count]="$row_sha"
+    state_images[$state_count]="$row_image"
+    state_contracts[$state_count]="$row_contract"
+    state_count=$((state_count + 1))
+  done < "$state_file"
+  [[ $state_count -gt 0 ]]
+}
+
+wait_ready() {
+  local attempt
+  for ((attempt = 0; attempt < ready_attempts; attempt += 1)); do
+    if curl --fail --silent --show-error --max-time 5 \
+      "http://127.0.0.1:${health_port}/health/ready" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ $((attempt + 1)) -lt $ready_attempts ]]; then
+      sleep "$ready_delay"
+    fi
+  done
+  return 1
+}
+
+compose_image() {
+  local image="$1"
+  local contract="$2"
+  MINORI_IMAGE="$image" MINORI_ENV_FILE="$env_file" \
+    docker compose --project-name minori -f "$contract" config --images 2>/dev/null
+}
+
+replace_service() {
+  local image="$1"
+  local contract="$2"
+  MINORI_IMAGE="$image" MINORI_ENV_FILE="$env_file" \
+    docker compose --project-name minori -f "$contract" up -d --no-build >/dev/null 2>&1
+}
+
+write_state() {
+  local index
+  state_temporary="${state_file}.tmp.$$"
+  : > "$state_temporary" || return 1
+  for ((index = 0; index < next_count; index += 1)); do
+    if ! printf '%s\t%s\t%s\t%s\n' \
+      "${next_protocols[$index]}" "${next_shas[$index]}" \
+      "${next_images[$index]}" "${next_contracts[$index]}" >> "$state_temporary"; then
+      return 1
+    fi
+  done
+  if ! chmod 0600 "$state_temporary" || ! mv -f "$state_temporary" "$state_file"; then
+    return 1
+  fi
+  state_temporary=''
+}
+
+restore_original_state() {
+  local index
+  if [[ $state_file_existed -eq 0 ]]; then
+    rm -f -- "$state_file"
+    return
+  fi
+  state_temporary="${state_file}.tmp.$$"
+  : > "$state_temporary" || return 1
+  for ((index = 0; index < state_count; index += 1)); do
+    if ! printf '%s\t%s\t%s\t%s\n' \
+      "${state_protocols[$index]}" "${state_shas[$index]}" \
+      "${state_images[$index]}" "${state_contracts[$index]}" >> "$state_temporary"; then
+      return 1
+    fi
+  done
+  if ! chmod 0600 "$state_temporary" || ! mv -f "$state_temporary" "$state_file"; then
+    return 1
+  fi
+  state_temporary=''
+}
+
+if ! trusted_directory_is_valid "$minori_root" || ! trusted_directory_is_valid "$release_dir"; then
+  fail_before_replace
+fi
+if ! mkdir -p "$contracts_dir" "$records_dir"; then
+  fail_before_replace
+fi
+if ! trusted_directory_is_valid "$contracts_dir" || ! trusted_directory_is_valid "$records_dir" \
+  || ! root_only_file_is_valid "$env_file" || ! lark_directory_is_valid; then
+  fail_before_replace
+fi
+if ! temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/minori-release.XXXXXX")"; then
+  fail_before_replace
+fi
+if ! load_state; then
+  fail_before_replace
+fi
+if [[ -e "$state_file" ]]; then
+  state_file_existed=1
+fi
+
+current_image=''
+current_sha=''
+current_contract=''
+rollback_category='none'
+if ! current_image="$(docker inspect --format '{{.Config.Image}}' minori 2>/dev/null)" \
+  || [[ -z "$current_image" ]]; then
+  fail_before_replace
+fi
+
+if [[ $state_count -gt 0 ]]; then
+  if [[ "$current_image" != "${state_images[0]}" ]]; then
+    fail_before_replace
+  fi
+  current_sha="${state_shas[0]}"
+  current_contract="${state_contracts[0]}"
+else
+  if [[ ! "$current_image" =~ $legacy_pattern ]]; then
+    fail_before_replace
+  fi
+  current_sha="${current_image#minori:}"
+  current_contract="${release_dir}/${current_sha}.compose.yaml"
+  if ! saved_release_is_valid "$current_sha" "$current_image" "$current_contract" legacy-current; then
+    fail_before_replace
+  fi
+fi
+
+if [[ -n "$current_image" ]]; then
+  if ! rendered_current_image="$(compose_image "$current_image" "$current_contract")" \
+    || [[ "$rendered_current_image" != "$current_image" ]]; then
+    fail_before_replace
+  fi
+fi
+
+if [[ -n "$current_image" ]]; then
+  if [[ "$current_image" =~ $legacy_pattern ]]; then
+    rollback_category='legacy_local'
+  else
+    rollback_category='saved_digest'
+  fi
+fi
+
+if ! mkdir -m 0700 "${temporary_dir}/docker-config"; then
+  fail_before_replace
+fi
+if ! printf '{"auths":{}}\n' > "${temporary_dir}/docker-config/config.json"; then
+  fail_before_replace
+fi
+if ! DOCKER_CONFIG="${temporary_dir}/docker-config" docker pull "$candidate_image" >/dev/null 2>&1; then
+  fail_before_replace
+fi
+
+if ! release_image_metadata_is_valid "$commit_sha" "$candidate_image"; then
+  fail_before_replace
+fi
+
+if ! temporary_container="$(docker create "$candidate_image" 2>/dev/null)" || [[ -z "$temporary_container" ]]; then
+  fail_before_replace
+fi
+protocol_file="${temporary_dir}/deployment-protocol"
+candidate_contract_source="${temporary_dir}/compose.production.yaml"
+if ! docker cp "${temporary_container}:/opt/minori/release/deployment-protocol" "$protocol_file" >/dev/null 2>&1 \
+  || ! docker cp "${temporary_container}:/opt/minori/release/compose.production.yaml" "$candidate_contract_source" >/dev/null 2>&1; then
+  fail_before_replace
+fi
+if ! docker rm -f "$temporary_container" >/dev/null 2>&1; then
+  fail_before_replace
+fi
+temporary_container=''
+if [[ ! -f "$protocol_file" || "$(<"$protocol_file")" != "$protocol" || ! -s "$candidate_contract_source" ]]; then
+  fail_before_replace
+fi
+
+if ! rendered_image="$(compose_image "$candidate_image" "$candidate_contract_source")" \
+  || [[ "$rendered_image" != "$candidate_image" ]]; then
+  fail_before_replace
+fi
+if ! docker run --rm \
+  --env-file "$env_file" \
+  --read-only \
+  --tmpfs /tmp:size=64m,mode=1777 \
+  --volume "$lark_dir:/var/lib/minori/lark" \
+  "$candidate_image" npm run runtime:verify >/dev/null 2>&1; then
+  fail_before_replace
+fi
+if ! docker run --rm \
+  --env-file "$env_file" \
+  --volume "$lark_dir:/var/lib/minori/lark" \
+  "$candidate_image" npm run db:migrate >/dev/null 2>&1; then
+  fail_before_replace
+fi
+
+candidate_digest="${candidate_image##*@sha256:}"
+candidate_contract="${contracts_dir}/${candidate_digest}.compose.yaml"
+if ! install -m 0600 -- "$candidate_contract_source" "$candidate_contract"; then
+  fail_before_replace
+fi
+if ! rendered_image="$(compose_image "$candidate_image" "$candidate_contract")" \
+  || [[ "$rendered_image" != "$candidate_image" ]]; then
+  fail_before_replace
+fi
+
+replacement_healthy=0
+if replace_service "$candidate_image" "$candidate_contract" && wait_ready; then
+  replacement_healthy=1
+fi
+
+if [[ $replacement_healthy -ne 1 ]]; then
+  if [[ -n "$current_image" ]] \
+    && replace_service "$current_image" "$current_contract" \
+    && wait_ready; then
+    write_record rolled_back "$rollback_category" || true
+    finish rolled_back 1
+  fi
+  write_record rollback_failed "$rollback_category" || true
+  finish rollback_failed 1
+fi
+
+next_protocols[0]="$protocol"
+next_shas[0]="$commit_sha"
+next_images[0]="$candidate_image"
+next_contracts[0]="$candidate_contract"
+next_count=1
+
+if [[ $state_count -gt 0 ]]; then
+  for ((index = 0; index < state_count && next_count < 3; index += 1)); do
+    if ! image_is_in_next_state "${state_images[$index]}"; then
+      next_protocols[$next_count]="${state_protocols[$index]}"
+      next_shas[$next_count]="${state_shas[$index]}"
+      next_images[$next_count]="${state_images[$index]}"
+      next_contracts[$next_count]="${state_contracts[$index]}"
+      next_count=$((next_count + 1))
+    fi
+  done
+elif [[ -n "$current_image" && "$current_image" != "$candidate_image" ]]; then
+  next_protocols[$next_count]='v1'
+  next_shas[$next_count]="$current_sha"
+  next_images[$next_count]="$current_image"
+  next_contracts[$next_count]="$current_contract"
+  next_count=$((next_count + 1))
+fi
+
+if ! write_state; then
+  if [[ -n "$current_image" ]] \
+    && replace_service "$current_image" "$current_contract" \
+    && wait_ready; then
+    write_record rolled_back "$rollback_category" || true
+    finish rolled_back 1
+  fi
+  write_record rollback_failed "$rollback_category" || true
+  finish rollback_failed 1
+fi
+if ! write_record success none; then
+  if [[ -n "$current_image" ]] \
+    && replace_service "$current_image" "$current_contract" \
+    && wait_ready \
+    && restore_original_state; then
+    write_record rolled_back "$rollback_category" || true
+    finish rolled_back 1
+  fi
+  finish rollback_failed 1
+fi
+
+for ((index = 0; index < state_count; index += 1)); do
+  if ! image_is_in_next_state "${state_images[$index]}"; then
+    docker image rm "${state_images[$index]}" >/dev/null 2>&1 || true
+  fi
+done
+
+finish success 0

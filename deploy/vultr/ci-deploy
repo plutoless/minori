@@ -1,0 +1,66 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+
+emit_and_exit() {
+  printf 'minori_deploy result=%s\n' "$1"
+  exit "$2"
+}
+
+if [[ $# -ne 0 ]]; then
+  emit_and_exit rejected 2
+fi
+
+original_command="${SSH_ORIGINAL_COMMAND-}"
+command_pattern='^deploy v1 ([0-9a-f]{40}) (ghcr\.io/plutoless/minori@sha256:[0-9a-f]{64})$'
+if [[ ! "$original_command" =~ $command_pattern ]]; then
+  emit_and_exit rejected 2
+fi
+
+protocol='v1'
+commit_sha="${BASH_REMATCH[1]}"
+image="${BASH_REMATCH[2]}"
+installed_entrypoint='/opt/minori/bin/ci-deploy'
+test_mode=0
+if [[ "${BASH_SOURCE[0]}" == "$installed_entrypoint" ]]; then
+  PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+  export PATH
+  minori_root='/opt/minori'
+  lock_file='/run/lock/minori-ci-deploy.lock'
+elif [[ -n "${MINORI_TEST_ROOT:-}" && -d "$MINORI_TEST_ROOT" && -O "$MINORI_TEST_ROOT" ]]; then
+  test_mode=1
+  minori_root="$MINORI_TEST_ROOT"
+  lock_file="${MINORI_DEPLOY_LOCK_FILE:-${minori_root}/ci-deploy.lock}"
+else
+  emit_and_exit rejected 2
+fi
+
+open_lock_file() {
+  exec 9>"$lock_file"
+}
+if ! open_lock_file 2>/dev/null; then
+  emit_and_exit failed 1
+fi
+if ! flock -n 9 2>/dev/null; then
+  emit_and_exit locked 75
+fi
+
+release_output=''
+if [[ $test_mode -eq 1 ]]; then
+  release_command=("${minori_root}/bin/minori-release")
+else
+  release_command=(env -i "PATH=${PATH}" MINORI_FORCED_ENTRYPOINT=1 /opt/minori/bin/minori-release)
+fi
+if release_output="$(MINORI_FORCED_ENTRYPOINT=1 "${release_command[@]}" \
+    "$protocol" "$commit_sha" "$image" 2>/dev/null)"; then
+  if [[ "$release_output" == 'minori_release result=success' ]]; then
+    emit_and_exit success 0
+  fi
+  emit_and_exit failed 1
+fi
+case "$release_output" in
+  'minori_release result=failed_before_replace') emit_and_exit failed_before_replace 1 ;;
+  'minori_release result=rolled_back') emit_and_exit rolled_back 1 ;;
+  'minori_release result=rollback_failed') emit_and_exit rollback_failed 1 ;;
+  *) emit_and_exit failed 1 ;;
+esac

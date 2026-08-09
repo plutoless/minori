@@ -89,22 +89,33 @@ describe('Team Agent release packaging contract', () => {
     expect(activeDesignEvidence).not.toMatch(/\bURLs?\b/u);
   });
 
-  it('passes the fixed production env file through deploy and rollback Compose calls', async () => {
+  it('retires the legacy manual deploy and rollback entrypoints', async () => {
     const deploy = await text('scripts/deploy-vultr.sh');
     const rollback = await text('scripts/rollback-vultr.sh');
 
-    expect(deploy).toContain('MINORI_ENV_FILE="$env_file"');
-    expect(deploy.match(/MINORI_ENV_FILE=/gu)).toHaveLength(4);
-    expect(deploy).not.toContain('--env LARKSUITE_CLI_CONFIG_DIR=');
-    expect(deploy).not.toContain('--env LARKSUITE_CLI_DATA_DIR=');
-    expect(rollback).toContain('env_file="/opt/minori/minori.env"');
-    expect(rollback.match(/MINORI_ENV_FILE=/gu)).toHaveLength(2);
+    for (const retired of [deploy, rollback]) {
+      expect(retired).toContain('/opt/minori/bin/rehearse-release');
+      expect(retired).toContain('exit 2');
+      expect(retired).not.toContain('docker ');
+      expect(retired).not.toContain('git worktree');
+    }
+    expect(deploy).toContain('approved GitHub production release');
+    expect(rollback).toContain('no second operational deployment protocol');
   });
 
-  it('labels the deployed image with the exact release commit', async () => {
-    const deploy = await text('scripts/deploy-vultr.sh');
+  it('installs one restricted forced command without replacing unrelated authorized keys', async () => {
+    const installer = await text('deploy/vultr/install-ci-deploy.sh');
+    const entrypoint = await text('deploy/vultr/ci-deploy');
 
-    expect(deploy).toContain('--label "org.opencontainers.image.revision=$commit_sha"');
+    expect(installer).toContain('restrict,command=\"/opt/minori/bin/ci-deploy\"');
+    expect(installer).toContain('ambiguous_deployment_key');
+    expect(installer).toContain('cp -- "$authorized_keys" "$temporary_keys"');
+    expect(installer).toContain('stat -c \'%u %g %a\'');
+    expect(installer).toContain('(8#$mode & 8#022) == 0');
+    expect(entrypoint).toContain("installed_entrypoint='/opt/minori/bin/ci-deploy'");
+    expect(entrypoint).toContain("minori_root='/opt/minori'");
+    expect(entrypoint).toContain("lock_file='/run/lock/minori-ci-deploy.lock'");
+    expect(entrypoint).toContain('release_command=(env -i');
   });
 
   it('documents exact-commit build, then OAuth, then deployment', async () => {
