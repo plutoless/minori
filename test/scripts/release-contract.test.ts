@@ -32,6 +32,8 @@ describe('Team Agent release packaging contract', () => {
 
     expect(deploy).toContain('MINORI_ENV_FILE="$env_file"');
     expect(deploy.match(/MINORI_ENV_FILE=/gu)).toHaveLength(4);
+    expect(deploy).not.toContain('--env LARKSUITE_CLI_CONFIG_DIR=');
+    expect(deploy).not.toContain('--env LARKSUITE_CLI_DATA_DIR=');
     expect(rollback).toContain('env_file="/opt/minori/minori.env"');
     expect(rollback.match(/MINORI_ENV_FILE=/gu)).toHaveLength(2);
   });

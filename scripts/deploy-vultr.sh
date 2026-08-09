@@ -96,8 +96,6 @@ if [[ "$contract_image" != "$candidate_image" ]]; then
 fi
 if ! docker run --rm \
   --env-file "$env_file" \
-  --env LARKSUITE_CLI_CONFIG_DIR=/var/lib/minori/lark/config \
-  --env LARKSUITE_CLI_DATA_DIR=/var/lib/minori/lark/data \
   --read-only \
   --tmpfs /tmp:size=64m,mode=1777 \
   --volume "$lark_dir:/var/lib/minori/lark" \
