@@ -9,8 +9,8 @@ describe('loadConfig', () => {
       larkCliBin: 'lark-cli',
       larkConfigDir: '/var/lib/minori/lark',
       aiModel: 'gpt-5.6-terra',
-      agentMaxSteps: 20,
-      agentTimeoutMs: 180_000,
+      agentMaxSteps: 40,
+      agentTimeoutMs: 300_000,
       conversationContextTokenTarget: 24_000,
       messageRetentionDays: 30,
     });

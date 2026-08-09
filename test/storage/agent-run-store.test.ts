@@ -125,6 +125,69 @@ describe('PostgresAgentRunStore', () => {
     }]);
   });
 
+  it('persists and replaces only sanitized live group-history audit metadata', async () => {
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
+    const cutoff = new Date('2026-08-08T10:00:00.000Z');
+
+    await store.recordGroupHistory(run.id, {
+      status: 'loaded',
+      messageCount: 17,
+      pageCallCount: 2,
+      cutoff,
+    });
+
+    const [loadedRow] = await database.db.select().from(agentRuns)
+      .where(eq(agentRuns.id, run.id));
+    expect(loadedRow).toMatchObject({
+      groupHistoryStatus: 'loaded',
+      groupHistoryMessageCount: 17,
+      groupHistoryPageCount: 2,
+      groupHistoryCutoff: cutoff,
+      groupHistoryErrorCategory: null,
+    });
+    expect(Object.keys(loadedRow ?? {}).filter((key) => key.startsWith('groupHistory'))).toEqual([
+      'groupHistoryStatus',
+      'groupHistoryMessageCount',
+      'groupHistoryPageCount',
+      'groupHistoryCutoff',
+      'groupHistoryErrorCategory',
+    ]);
+    expect(JSON.stringify(loadedRow)).not.toMatch(
+      /message body|member name|open[_ ]?id|message[_ ]?id|provider token|raw error/iu,
+    );
+
+    await store.recordGroupHistory(run.id, {
+      status: 'unavailable',
+      messageCount: 0,
+      pageCallCount: 1,
+      cutoff,
+      errorCategory: 'group_history_unavailable',
+    });
+
+    const [unavailableRow] = await database.db.select().from(agentRuns)
+      .where(eq(agentRuns.id, run.id));
+    expect(unavailableRow).toMatchObject({
+      groupHistoryStatus: 'unavailable',
+      groupHistoryMessageCount: 0,
+      groupHistoryPageCount: 1,
+      groupHistoryCutoff: cutoff,
+      groupHistoryErrorCategory: 'group_history_unavailable',
+    });
+    expect(JSON.stringify(unavailableRow)).not.toMatch(
+      /message body|member name|open[_ ]?id|message[_ ]?id|provider token|raw error/iu,
+    );
+  });
+
+  it('rejects group-history audit for a missing Agent run', async () => {
+    await expect(store.recordGroupHistory('00000000-0000-0000-0000-000000000000', {
+      status: 'unavailable',
+      messageCount: 0,
+      pageCallCount: 0,
+      cutoff: new Date('2026-08-08T10:00:00.000Z'),
+      errorCategory: 'group_history_unavailable',
+    })).rejects.toThrow('agent_run_not_found');
+  });
+
   it('persists a stable failure category for a conflicted write', async () => {
     const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     const write = await store.beginWrite(run.id, {

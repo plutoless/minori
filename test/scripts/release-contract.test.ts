@@ -28,6 +28,16 @@ describe('Team Agent release packaging contract', () => {
     expect(readme).not.toContain('ALLOWED_CHAT_IDS');
   });
 
+  it('publishes the production Agent execution defaults in both environment examples', async () => {
+    const localEnvironment = await text('.env.example');
+    const productionEnvironment = await text('deploy/vultr/env.example');
+
+    expect(localEnvironment).toContain('AGENT_MAX_STEPS=40');
+    expect(localEnvironment).toContain('AGENT_TIMEOUT_MS=300000');
+    expect(productionEnvironment).toContain('AGENT_MAX_STEPS=40');
+    expect(productionEnvironment).toContain('AGENT_TIMEOUT_MS=300000');
+  });
+
   it('passes the fixed production env file through deploy and rollback Compose calls', async () => {
     const deploy = await text('scripts/deploy-vultr.sh');
     const rollback = await text('scripts/rollback-vultr.sh');

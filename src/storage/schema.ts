@@ -96,6 +96,12 @@ export const agentRuns = pgTable('agent_runs', {
   latencyMs: integer('latency_ms'),
   toolCallCount: integer('tool_call_count').default(0).notNull(),
   outcome: text('outcome').notNull(),
+  groupHistoryStatus: text('group_history_status')
+    .$type<'loaded' | 'unavailable'>(),
+  groupHistoryMessageCount: integer('group_history_message_count'),
+  groupHistoryPageCount: integer('group_history_page_count'),
+  groupHistoryCutoff: timestamp('group_history_cutoff', { withTimezone: true }),
+  groupHistoryErrorCategory: text('group_history_error_category'),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 });
