@@ -11,6 +11,18 @@ async function text(path: string) {
 }
 
 describe('Team Agent release packaging contract', () => {
+  it('keeps the workflow handoff aligned with the forced-command v1 grammar', async () => {
+    const workflow = await text('.github/workflows/release.yml');
+    const entrypoint = await text('deploy/vultr/ci-deploy');
+
+    expect(workflow).toContain(
+      'remote_command="deploy v1 ${COMMIT_SHA} ${GHCR_IMAGE}@${BUILD_DIGEST}"',
+    );
+    expect(entrypoint).toContain(
+      "command_pattern='^deploy v1 ([0123456789abcdef]{40}) (ghcr\\.io/plutoless/minori@sha256:[0123456789abcdef]{64})$'",
+    );
+  });
+
   it('keeps production Compose strict and leaves Agent limits to the env file', async () => {
     const compose = await text('deploy/vultr/compose.production.yaml');
 

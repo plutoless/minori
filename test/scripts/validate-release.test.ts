@@ -44,6 +44,29 @@ describe('validateRelease', () => {
 });
 
 describe('runReleaseValidation', () => {
+  it('rejects a non-tag ref before checking ancestry or emitting output', async () => {
+    const isAncestor = vi.fn(async () => true);
+    const writeOutput = vi.fn();
+    const reportFailure = vi.fn();
+
+    const exitCode = await runReleaseValidation({
+      environment: {
+        GITHUB_REF_TYPE: 'branch',
+        GITHUB_REF_NAME: 'main',
+        GITHUB_SHA: commitSha,
+        GHCR_IMAGE: ghcrImage,
+      },
+      isAncestor,
+      writeOutput,
+      reportFailure,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(isAncestor).not.toHaveBeenCalled();
+    expect(writeOutput).not.toHaveBeenCalled();
+    expect(reportFailure).toHaveBeenCalledWith('release_ref_type_invalid');
+  });
+
   it('checks ancestry before writing the complete sanitized output', async () => {
     const isAncestor = vi.fn(async () => true);
     const writeOutput = vi.fn();

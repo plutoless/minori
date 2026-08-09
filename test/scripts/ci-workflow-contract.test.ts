@@ -25,6 +25,7 @@ type Workflow = {
 };
 
 type WorkflowStep = {
+  id?: string;
   name?: string;
   uses?: string;
   run?: string;
@@ -37,6 +38,11 @@ type WorkflowJob = {
   uses?: string;
   with?: Record<string, string>;
   'runs-on'?: string;
+  needs?: string | string[];
+  permissions?: Record<string, string>;
+  outputs?: Record<string, string>;
+  environment?: string | Record<string, string>;
+  concurrency?: Record<string, string | boolean>;
   steps?: WorkflowStep[];
 };
 
@@ -178,9 +184,10 @@ describe('GitHub Actions quality gate contract', () => {
   it('pins approved Actions and keeps Dependabot narrow and manual', async () => {
     const qualityGate = await workflow('.github/workflows/quality-gate.yml');
     const ci = await workflow('.github/workflows/ci.yml');
+    const release = await workflow('.github/workflows/release.yml');
     const dependabot = await workflow('.github/dependabot.yml');
 
-    for (const use of [...allUses(qualityGate), ...allUses(ci)]) {
+    for (const use of [...allUses(qualityGate), ...allUses(ci), ...allUses(release)]) {
       if (use.startsWith('./')) continue;
       const sha = use.split('@')[1];
       expect(sha).toMatch(/^[0-9a-f]{40}$/u);
@@ -199,5 +206,148 @@ describe('GitHub Actions quality gate contract', () => {
       ],
     });
     expect(hasKeyMatching(dependabot, /auto-merge|automerge/u)).toBe(false);
+  });
+});
+
+describe('GitHub Actions release contract', () => {
+  it('runs every shared gate before validating and publishing a pushed release tag', async () => {
+    const release = await workflow('.github/workflows/release.yml');
+
+    expect(release.name).toBe('Release');
+    expect(release.on).toEqual({ push: { tags: ['v*'] } });
+    expect(release.on).not.toHaveProperty('workflow_dispatch');
+    expect(release.permissions).toEqual({});
+
+    for (const gate of ['verify', 'integration', 'image-amd64']) {
+      expect(release.jobs?.[gate]).toEqual({
+        uses: './.github/workflows/quality-gate.yml',
+        with: { gate },
+        permissions: { contents: 'read' },
+      });
+    }
+
+    const validate = release.jobs?.validate;
+    expect(validate?.needs).toEqual(['verify', 'integration', 'image-amd64']);
+    expect(validate?.permissions).toEqual({ contents: 'read' });
+    const validationSteps = requiredSteps(validate);
+    const checkout = oneStep(validationSteps, (step) =>
+      step.uses?.startsWith('actions/checkout@') ?? false,
+    );
+    expect(checkout.uses).toBe('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683');
+    expect(checkout.with).toEqual({ 'fetch-depth': 0 });
+    const fetchMain = oneStep(validationSteps, (step) => step.name === 'Fetch main ancestry');
+    expect(fetchMain.run).toBe('git fetch --no-tags origin main:refs/remotes/origin/main');
+    const validator = oneStep(validationSteps, (step) => step.name === 'Validate release');
+    expect(validator.id).toBe('release');
+    expect(validator.env).toEqual({ GHCR_IMAGE: '${{ vars.GHCR_IMAGE }}' });
+    expect(validator.run).toBe(
+      'node --experimental-strip-types scripts/validate-release.ts',
+    );
+    expect(validate?.outputs).toEqual({
+      commit_sha: '${{ steps.release.outputs.commitSha }}',
+      version: '${{ steps.release.outputs.version }}',
+      semver_tag: '${{ steps.release.outputs.semverTag }}',
+      ghcr_image: '${{ steps.release.outputs.ghcrImage }}',
+    });
+
+    const publish = release.jobs?.publish;
+    expect(publish?.needs).toBe('validate');
+    expect(publish?.permissions).toEqual({ contents: 'read', packages: 'write' });
+    expect(publish?.outputs).toEqual({ digest: '${{ steps.build.outputs.digest }}' });
+    for (const [jobName, job] of Object.entries(release.jobs ?? {})) {
+      if (jobName !== 'publish') expect(job.permissions).not.toHaveProperty('packages', 'write');
+    }
+
+    const publishSteps = requiredSteps(publish);
+    expect(oneStep(publishSteps, (step) => step.uses?.startsWith('docker/login-action@')))
+      .toEqual({
+        uses: 'docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772',
+        with: {
+          registry: 'ghcr.io',
+          username: '${{ github.actor }}',
+          password: '${{ secrets.GITHUB_TOKEN }}',
+        },
+      });
+    const builds = publishSteps.filter((step) =>
+      step.uses?.startsWith('docker/build-push-action@'),
+    );
+    expect(builds).toHaveLength(1);
+    expect(builds[0]).toEqual({
+      id: 'build',
+      uses: 'docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83',
+      with: {
+        context: '.',
+        platforms: 'linux/amd64',
+        push: true,
+        labels: 'org.opencontainers.image.revision=${{ needs.validate.outputs.commit_sha }}',
+        tags: '${{ needs.validate.outputs.ghcr_image }}:${{ needs.validate.outputs.commit_sha }}\n${{ needs.validate.outputs.ghcr_image }}:${{ needs.validate.outputs.version }}\n',
+      },
+    });
+    const publishSummary = oneStep(
+      publishSteps,
+      (step) => step.name === 'Summarize published artifact',
+    );
+    expect(publishSummary.env).toEqual({
+      RELEASE_TAG: '${{ needs.validate.outputs.semver_tag }}',
+      COMMIT_SHA: '${{ needs.validate.outputs.commit_sha }}',
+      BUILD_DIGEST: '${{ steps.build.outputs.digest }}',
+    });
+    expect(publishSummary.run).toContain('Result: `image_published`');
+  });
+
+  it('holds the immutable digest at production approval and sends one strict SSH command', async () => {
+    const release = await workflow('.github/workflows/release.yml');
+    const deploy = release.jobs?.deploy;
+
+    expect(deploy?.needs).toEqual(['validate', 'publish']);
+    expect(deploy?.environment).toBe('production');
+    expect(deploy?.permissions).toEqual({ contents: 'read' });
+    expect(deploy?.concurrency).toEqual({
+      group: 'production',
+      'cancel-in-progress': false,
+    });
+
+    const steps = requiredSteps(deploy);
+    const prepare = oneStep(steps, (step) => step.name === 'Prepare SSH material');
+    expect(prepare.env).toEqual({
+      DEPLOY_KEY: '${{ secrets.VULTR_DEPLOY_SSH_KEY }}',
+      KNOWN_HOSTS: '${{ vars.VULTR_KNOWN_HOSTS }}',
+    });
+    expect(prepare.run).toContain('chmod 0600 "$SSH_KEY_FILE"');
+    expect(prepare.run).toContain('printf \'%s\\n\' "$KNOWN_HOSTS" > "$SSH_KNOWN_HOSTS_FILE"');
+
+    const handoff = oneStep(steps, (step) => step.name === 'Deploy immutable digest');
+    expect(handoff.env).toMatchObject({
+      BUILD_DIGEST: '${{ needs.publish.outputs.digest }}',
+      COMMIT_SHA: '${{ needs.validate.outputs.commit_sha }}',
+      GHCR_IMAGE: '${{ needs.validate.outputs.ghcr_image }}',
+      DEPLOY_HOST: '${{ vars.VULTR_HOST }}',
+      DEPLOY_USER: '${{ vars.VULTR_USER }}',
+    });
+    expect(handoff.run).toContain("[[ \"$BUILD_DIGEST\" =~ ^sha256:[0-9a-f]{64}$ ]]");
+    expect(handoff.run).toContain("[[ \"$COMMIT_SHA\" =~ ^[0-9a-f]{40}$ ]]");
+    expect(handoff.run).toContain("'minori_deploy result=success'");
+    expect(handoff.run).toContain(
+      'remote_command="deploy v1 ${COMMIT_SHA} ${GHCR_IMAGE}@${BUILD_DIGEST}"',
+    );
+    expect(handoff.run?.match(/^[ \t]*ssh \\\n/gmu)).toHaveLength(1);
+    expect(handoff.run).toContain('-o BatchMode=yes');
+    expect(handoff.run).toContain('-F /dev/null');
+    expect(handoff.run).toContain('-o IdentitiesOnly=yes');
+    expect(handoff.run).toContain('-o StrictHostKeyChecking=yes');
+    expect(handoff.run).toContain('-o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE"');
+    expect(handoff.run).toContain('2>"$SSH_STDERR_FILE"');
+    expect(handoff.run).not.toContain('cat "$SSH_STDERR_FILE"');
+    expect(handoff.run).toContain('### Production deployment');
+    expect(handoff.run).toContain('production_deployment_failed category=%s');
+
+    const cleanup = oneStep(steps, (step) => step.name === 'Remove SSH material');
+    expect(cleanup.if).toBe('always()');
+    expect(cleanup.run).toContain('rm -f -- "$SSH_KEY_FILE" "$SSH_KNOWN_HOSTS_FILE"');
+
+    const source = await readFile('.github/workflows/release.yml', 'utf8');
+    expect(source).not.toMatch(/workflow_dispatch|StrictHostKeyChecking=no|set -x|scp\b|rsync\b|git checkout|docker login.*VULTR|GHCR.*(?:TOKEN|PASSWORD).*ssh/iu);
+    expect(source.match(/secrets\.VULTR_DEPLOY_SSH_KEY/gu)).toHaveLength(1);
+    expect(source.match(/environment:\s*production/gu)).toHaveLength(1);
   });
 });

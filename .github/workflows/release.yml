@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+jobs:
+  verify:
+    uses: ./.github/workflows/quality-gate.yml
+    with:
+      gate: verify
+    permissions:
+      contents: read
+
+  integration:
+    uses: ./.github/workflows/quality-gate.yml
+    with:
+      gate: integration
+    permissions:
+      contents: read
+
+  image-amd64:
+    uses: ./.github/workflows/quality-gate.yml
+    with:
+      gate: image-amd64
+    permissions:
+      contents: read
+
+  validate:
+    needs: [verify, integration, image-amd64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit_sha: ${{ steps.release.outputs.commitSha }}
+      version: ${{ steps.release.outputs.version }}
+      semver_tag: ${{ steps.release.outputs.semverTag }}
+      ghcr_image: ${{ steps.release.outputs.ghcrImage }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Fetch main ancestry
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+      - name: Validate release
+        id: release
+        env:
+          GHCR_IMAGE: ${{ vars.GHCR_IMAGE }}
+        run: node --experimental-strip-types scripts/validate-release.ts
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          labels: org.opencontainers.image.revision=${{ needs.validate.outputs.commit_sha }}
+          tags: |
+            ${{ needs.validate.outputs.ghcr_image }}:${{ needs.validate.outputs.commit_sha }}
+            ${{ needs.validate.outputs.ghcr_image }}:${{ needs.validate.outputs.version }}
+      - name: Summarize published artifact
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.semver_tag }}
+          COMMIT_SHA: ${{ needs.validate.outputs.commit_sha }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            printf '### Release artifact\n'
+            printf -- '- Tag: `%s`\n' "$RELEASE_TAG"
+            printf -- '- SHA: `%s`\n' "$COMMIT_SHA"
+            printf -- '- Digest: `%s`\n' "$BUILD_DIGEST"
+            printf -- '- Result: `image_published`\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: [validate, publish]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - name: Prepare SSH material
+        env:
+          DEPLOY_KEY: ${{ secrets.VULTR_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.VULTR_KNOWN_HOSTS }}
+        run: |
+          [[ -n "$DEPLOY_KEY" && -n "$KNOWN_HOSTS" ]]
+          umask 077
+          trap 'rm -f -- "${SSH_KEY_FILE:-}" "${SSH_KNOWN_HOSTS_FILE:-}" "${SSH_STDOUT_FILE:-}" "${SSH_STDERR_FILE:-}"' ERR
+          SSH_KEY_FILE="$(mktemp "$RUNNER_TEMP/minori-deploy-key.XXXXXX")"
+          printf 'SSH_KEY_FILE=%s\n' "$SSH_KEY_FILE" >> "$GITHUB_ENV"
+          printf '%s\n' "$DEPLOY_KEY" > "$SSH_KEY_FILE"
+          chmod 0600 "$SSH_KEY_FILE"
+          SSH_KNOWN_HOSTS_FILE="$(mktemp "$RUNNER_TEMP/minori-known-hosts.XXXXXX")"
+          printf 'SSH_KNOWN_HOSTS_FILE=%s\n' "$SSH_KNOWN_HOSTS_FILE" >> "$GITHUB_ENV"
+          printf '%s\n' "$KNOWN_HOSTS" > "$SSH_KNOWN_HOSTS_FILE"
+          chmod 0600 "$SSH_KNOWN_HOSTS_FILE"
+          SSH_STDOUT_FILE="$(mktemp "$RUNNER_TEMP/minori-ssh-stdout.XXXXXX")"
+          printf 'SSH_STDOUT_FILE=%s\n' "$SSH_STDOUT_FILE" >> "$GITHUB_ENV"
+          SSH_STDERR_FILE="$(mktemp "$RUNNER_TEMP/minori-ssh-stderr.XXXXXX")"
+          printf 'SSH_STDERR_FILE=%s\n' "$SSH_STDERR_FILE" >> "$GITHUB_ENV"
+          trap - ERR
+      - name: Deploy immutable digest
+        env:
+          BUILD_DIGEST: ${{ needs.publish.outputs.digest }}
+          COMMIT_SHA: ${{ needs.validate.outputs.commit_sha }}
+          RELEASE_TAG: ${{ needs.validate.outputs.semver_tag }}
+          GHCR_IMAGE: ${{ needs.validate.outputs.ghcr_image }}
+          DEPLOY_HOST: ${{ vars.VULTR_HOST }}
+          DEPLOY_USER: ${{ vars.VULTR_USER }}
+        run: |
+          [[ "$BUILD_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GHCR_IMAGE" == 'ghcr.io/plutoless/minori' ]]
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          remote_command="deploy v1 ${COMMIT_SHA} ${GHCR_IMAGE}@${BUILD_DIGEST}"
+
+          set +e
+          ssh \
+            -i "$SSH_KEY_FILE" \
+            -F /dev/null \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_FILE" \
+            -- "$DEPLOY_USER@$DEPLOY_HOST" "$remote_command" \
+            >"$SSH_STDOUT_FILE" 2>"$SSH_STDERR_FILE"
+          ssh_status=$?
+          set -e
+
+          deploy_output="$(<"$SSH_STDOUT_FILE")"
+          case "$deploy_output" in
+            'minori_deploy result=success') result_category='success' ;;
+            'minori_deploy result=rejected') result_category='rejected' ;;
+            'minori_deploy result=failed') result_category='failed' ;;
+            'minori_deploy result=locked') result_category='locked' ;;
+            'minori_deploy result=failed_before_replace') result_category='failed_before_replace' ;;
+            'minori_deploy result=rolled_back') result_category='rolled_back' ;;
+            'minori_deploy result=rollback_failed') result_category='rollback_failed' ;;
+            'minori_deploy result=recovery_failed') result_category='recovery_failed' ;;
+            *) result_category='deployment_protocol_error' ;;
+          esac
+          if [[ "$ssh_status" -ne 0 && "$result_category" == 'success' ]]; then
+            result_category='deployment_transport_failed'
+          fi
+          {
+            printf '### Production deployment\n'
+            printf -- '- Tag: `%s`\n' "$RELEASE_TAG"
+            printf -- '- SHA: `%s`\n' "$COMMIT_SHA"
+            printf -- '- Digest: `%s`\n' "$BUILD_DIGEST"
+            printf -- '- Result: `%s`\n' "$result_category"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$ssh_status" -ne 0 || "$result_category" != 'success' ]]; then
+            printf 'production_deployment_failed category=%s\n' "$result_category" >&2
+            exit 1
+          fi
+      - name: Remove SSH material
+        if: always()
+        run: |
+          rm -f -- "$SSH_KEY_FILE" "$SSH_KNOWN_HOSTS_FILE"
+          rm -f -- "$SSH_STDOUT_FILE" "$SSH_STDERR_FILE"
