@@ -125,6 +125,8 @@ describe('runKnowledgeAgent', () => {
       text: 'The beta launch is Friday [1].',
       sources: [{ id: 1, title: 'Launch plan', url: 'https://acme.feishu.cn/docx/launch' }],
       usage: { inputTokens: 30, outputTokens: 12 },
+      outcome: 'completed',
+      writeAttempts: [],
     });
     expect(model.doGenerateCalls).toHaveLength(3);
     expect(store.recentWithinBudget).toHaveBeenCalledWith(
@@ -150,6 +152,7 @@ describe('runKnowledgeAgent', () => {
     ))).resolves.toEqual({
       text: 'Shorter version.', sources: [],
       usage: { inputTokens: 10, outputTokens: 4 },
+      outcome: 'completed', writeAttempts: [],
     });
     expect(model.doGenerateCalls[0]?.prompt.map((message) => message.role)).toEqual([
       'system', 'user', 'user',
@@ -172,6 +175,8 @@ describe('runKnowledgeAgent', () => {
       text: 'The beta launch is Friday.',
       sources: [{ id: 1, title: 'Launch plan', url: 'https://acme.feishu.cn/docx/launch' }],
       usage: { inputTokens: 20, outputTokens: 8 },
+      outcome: 'completed',
+      writeAttempts: [],
     });
   });
 
@@ -358,7 +363,10 @@ describe('runKnowledgeAgent', () => {
         agentRunStore: audit,
         timeoutMs: 5,
       }),
-    )).rejects.toBeDefined();
+    )).resolves.toMatchObject({
+      outcome: 'timeout_reached',
+      writeAttempts: [],
+    });
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(knowledge.createDocument).not.toHaveBeenCalled();
@@ -370,7 +378,7 @@ describe('runKnowledgeAgent', () => {
       inputTokens: 10,
       outputTokens: 4,
       toolCallCount: 1,
-      outcome: 'aborted',
+      outcome: 'timeout_reached',
     });
   });
 
@@ -423,7 +431,7 @@ describe('runKnowledgeAgent', () => {
     }
   });
 
-  it('honors the configured maximum number of Agent steps', async () => {
+  it('reports a reached Agent step limit as a truthful terminal outcome', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: [
         generated([{
@@ -434,9 +442,75 @@ describe('runKnowledgeAgent', () => {
       ],
     });
 
-    await runKnowledgeAgent(input, dependencies(input.prompt, model, { maxSteps: 1 }));
+    const audit = agentRunStore();
+    const reply = await runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      maxSteps: 1,
+      agentRunStore: audit,
+    }));
 
     expect(model.doGenerateCalls).toHaveLength(1);
+    expect(reply).toMatchObject({
+      outcome: 'step_limit_reached',
+      writeAttempts: [],
+    });
+    expect(reply.text).toContain('执行步数上限');
+    expect(reply.text).toContain('继续');
+    expect(audit.finish).toHaveBeenCalledWith('run_1', expect.objectContaining({
+      outcome: 'step_limit_reached',
+    }));
+  });
+
+  it('does not misclassify natural completion on the final allowed step', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{ type: 'text', text: 'Finished naturally.' }], 'stop'),
+    });
+
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      maxSteps: 1,
+    }))).resolves.toMatchObject({
+      text: 'Finished naturally.',
+      outcome: 'completed',
+      writeAttempts: [],
+    });
+  });
+
+  it('retains only sanitized confirmed write facts when the step limit is reached', async () => {
+    const knowledge = service();
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{
+        type: 'tool-call', toolCallId: 'call_create', toolName: 'createDocument',
+        input: JSON.stringify({ title: 'Plan', content: '# Sensitive launch body' }),
+      }], 'tool-calls'),
+    });
+
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt: 'Create the confidential launch plan.' },
+      dependencies('Create the confidential launch plan.', model, {
+        service: knowledge,
+        maxSteps: 1,
+        agentRunStore: agentRunStore(),
+        }),
+    );
+
+    expect(reply).toMatchObject({
+      outcome: 'step_limit_reached',
+      writeAttempts: [{
+        toolName: 'createDocument',
+        outcome: 'succeeded',
+        sanitizedSummary: 'created one document',
+        targetIdentifiers: {},
+        resultIdentifiers: {
+          token: 'doxcnCreated',
+          title: 'Created plan',
+          url: 'https://acme.feishu.cn/docx/created',
+          revisionId: '1',
+        },
+      }],
+    });
+    expect(reply.text).toContain('已确认成功：created one document');
+    expect(reply.text).toContain('https://acme.feishu.cn/docx/created');
+    expect(reply.text).not.toContain('Sensitive launch body');
+    expect(reply.text).not.toContain('confidential launch plan');
   });
 
   it('appends and applies one exact patch without a confirmation flow', async () => {
@@ -536,7 +610,7 @@ describe('runKnowledgeAgent', () => {
     });
   });
 
-  it('aborts an Agent run at the configured deadline', async () => {
+  it('reports the configured Agent deadline as a truthful terminal outcome', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: (options) => new Promise((_resolve, reject) => {
         options.abortSignal?.addEventListener('abort', () => reject(options.abortSignal?.reason));
@@ -547,7 +621,66 @@ describe('runKnowledgeAgent', () => {
     await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
       timeoutMs: 5,
       agentRunStore: audit,
-    }))).rejects.toBeDefined();
+    }))).resolves.toMatchObject({
+      outcome: 'timeout_reached',
+      writeAttempts: [],
+    });
+    expect(audit.finish).toHaveBeenCalledWith('run_1', {
+      toolCallCount: 0,
+      outcome: 'timeout_reached',
+    });
+  });
+
+  it('reports confirmed writes without replaying when the deadline is reached later', async () => {
+    const knowledge = service();
+    const doGenerate = vi.fn()
+      .mockResolvedValueOnce(generated([{
+          type: 'tool-call', toolCallId: 'call_create', toolName: 'createDocument',
+          input: JSON.stringify({ title: 'Plan', content: '# Do not echo this body' }),
+        }], 'tool-calls'))
+      .mockImplementationOnce((options) => new Promise((_resolve, reject) => {
+          options.abortSignal?.addEventListener('abort', () => reject(options.abortSignal?.reason));
+        }));
+    const model = new MockLanguageModelV4({ doGenerate });
+
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt: 'Create, then keep working.' },
+      dependencies('Create, then keep working.', model, {
+        timeoutMs: 10,
+        service: knowledge,
+      }),
+    );
+
+    expect(knowledge.createDocument).toHaveBeenCalledOnce();
+    expect(model.doGenerateCalls).toHaveLength(2);
+    expect(reply).toMatchObject({
+      outcome: 'timeout_reached',
+      writeAttempts: [{
+        toolName: 'createDocument',
+        outcome: 'succeeded',
+        resultIdentifiers: { url: 'https://acme.feishu.cn/docx/created' },
+      }],
+    });
+    expect(reply.text).toContain('https://acme.feishu.cn/docx/created');
+    expect(reply.text).not.toContain('Do not echo this body');
+  });
+
+  it('still rejects external cancellation and audits it as aborted', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: (options) => new Promise((_resolve, reject) => {
+        options.abortSignal?.addEventListener('abort', () => reject(options.abortSignal?.reason));
+      }),
+    });
+    const audit = agentRunStore();
+    const controller = new AbortController();
+    const pending = runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      agentRunStore: audit,
+    }), controller.signal);
+
+    await vi.waitFor(() => expect(model.doGenerateCalls).toHaveLength(1));
+    controller.abort(new Error('worker_stopped'));
+
+    await expect(pending).rejects.toThrow('worker_stopped');
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       toolCallCount: 0,
       outcome: 'aborted',
@@ -567,12 +700,15 @@ describe('runKnowledgeAgent', () => {
         search: vi.fn().mockResolvedValue([]),
         recentWithinBudget: vi.fn(() => new Promise(() => undefined)),
       },
-    }))).rejects.toBeDefined();
+    }))).resolves.toMatchObject({
+      outcome: 'timeout_reached',
+      writeAttempts: [],
+    });
     expect(model.doGenerateCalls).toHaveLength(0);
     expect(audit.start).toHaveBeenCalledWith({ eventId: 'evt_1', model: '5.6-terra' });
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       toolCallCount: 0,
-      outcome: 'aborted',
+      outcome: 'timeout_reached',
     });
   });
 

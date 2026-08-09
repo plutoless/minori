@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import type { AgentRunOutcome } from '../agent/run-outcome.js';
 import type { Database } from './database.js';
 import { agentRuns, toolRuns } from './schema.js';
 
@@ -17,7 +18,7 @@ export interface AgentRunStore {
     inputTokens?: number;
     outputTokens?: number;
     toolCallCount: number;
-    outcome: 'completed' | 'failed' | 'aborted';
+    outcome: Exclude<AgentRunOutcome, 'running'>;
   }): Promise<void>;
 }
 
@@ -70,7 +71,7 @@ export class PostgresAgentRunStore implements AgentRunStore {
       inputTokens?: number;
       outputTokens?: number;
       toolCallCount: number;
-      outcome: 'completed' | 'failed' | 'aborted';
+      outcome: Exclude<AgentRunOutcome, 'running'>;
     },
   ): Promise<void> {
     const [updated] = await this.db.update(agentRuns).set({

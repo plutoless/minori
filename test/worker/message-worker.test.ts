@@ -56,6 +56,8 @@ function dependencies(overrides: Record<string, unknown> = {}) {
       { id: 2, title: '发布说明', url: 'https://example.com/release' },
     ],
     usage: {},
+    outcome: 'completed',
+    writeAttempts: [],
   }));
   const messenger = {
     addReaction: vi.fn(async () => 'reaction_1'),
@@ -104,7 +106,9 @@ describe('MessageWorker.process', () => {
   it('stops a hung Agent run before its lease and durably retries it', async () => {
     const runAgent = vi.fn(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
-      return { text: 'too late', sources: [], usage: {} };
+      return {
+        text: 'too late', sources: [], usage: {}, outcome: 'completed', writeAttempts: [],
+      };
     });
     const setup = dependencies({
       runAgent,
@@ -219,7 +223,10 @@ describe('MessageWorker.process', () => {
   it('keeps one persisted Typing reaction through retry and removes it once after recovery', async () => {
     const runAgent = vi.fn()
       .mockRejectedValueOnce(new Error('model key secret'))
-      .mockResolvedValueOnce({ text: 'recovered answer', sources: [], usage: {} });
+      .mockResolvedValueOnce({
+        text: 'recovered answer', sources: [], usage: {},
+        outcome: 'completed', writeAttempts: [],
+      });
     const setup = dependencies({ runAgent });
     setup.eventStore.terminalProcessingReactionId = 'reaction_1';
     const worker = new MessageWorker(setup.options);
@@ -243,6 +250,7 @@ describe('MessageWorker.process', () => {
     const natural: AgentReply = {
       text: '发布是在周五。',
       sources: [{ id: 1, title: '发布计划', url: 'https://example.com/plan' }], usage: {},
+      outcome: 'completed', writeAttempts: [],
     };
     const setup = dependencies({ runAgent: vi.fn(async () => natural) });
 
@@ -253,5 +261,34 @@ describe('MessageWorker.process', () => {
     expect(setup.messenger.replyText.mock.calls[0]?.[1]).toBe([
       '发布是在周五。', '', 'Sources:', '[1] 发布计划 — https://example.com/plan',
     ].join('\n'));
+  });
+
+  it.each([
+    ['step_limit_reached', '已达到本次执行步数上限。'],
+    ['timeout_reached', '已达到本次执行时间上限。'],
+  ] as const)('sends a terminal %s reply once without retrying the Agent run', async (
+    outcome,
+    text,
+  ) => {
+    const setup = dependencies({
+      runAgent: vi.fn(async (): Promise<AgentReply> => ({
+        text,
+        sources: [],
+        usage: {},
+        outcome,
+        writeAttempts: [],
+      })),
+    });
+
+    await new MessageWorker(setup.options).process({
+      eventId: 'evt_1', payload: message(), attempts: 1,
+    });
+
+    expect(setup.messenger.replyText).toHaveBeenCalledOnce();
+    expect(setup.messenger.replyText).toHaveBeenCalledWith(
+      'om_1', text, expect.stringMatching(/^minori-/u),
+    );
+    expect(setup.eventStore.retried).toBeUndefined();
+    expect(setup.eventStore.completed).toEqual({ replyMessageId: 'om_reply_1' });
   });
 });

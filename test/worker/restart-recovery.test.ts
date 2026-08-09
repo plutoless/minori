@@ -85,7 +85,10 @@ describe('MessageWorker restart recovery', () => {
         _eventId: string, _attempt: number, key: string, attemptedAt: Date, text: string,
       ) => { marked = { key, attemptedAt, text }; }),
     };
-    const runAgent = vi.fn(async () => ({ text: 'prepared answer', sources: [], usage: {} }));
+    const runAgent = vi.fn(async () => ({
+      text: 'prepared answer', sources: [], usage: {},
+      outcome: 'completed' as const, writeAttempts: [],
+    }));
     const worker = new MessageWorker({
       eventStore,
       conversations: {

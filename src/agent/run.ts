@@ -1,14 +1,19 @@
 import {
   ToolLoopAgent,
-  stepCountIs,
   type LanguageModel,
 } from 'ai';
 import { KnowledgeWriteConflict } from '../lark/errors.js';
-import type { KnowledgeService } from '../lark/knowledge-service.js';
+import type { KnowledgeService, KnowledgeWriteResult } from '../lark/knowledge-service.js';
 import type { AgentRunStore } from '../storage/agent-run-store.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
 import { selectRecentHistory, type AgentHistoryMessage } from './context-window.js';
 import { TEAM_AGENT_INSTRUCTIONS } from './instructions.js';
+import {
+  budgetExhaustedText,
+  type AgentReplyOutcome,
+  type AgentRunOutcome,
+  type WriteAttemptReceipt,
+} from './run-outcome.js';
 import { SourceRegistry, type AgentSource } from './sources.js';
 import {
   createKnowledgeTools,
@@ -20,6 +25,8 @@ export type AgentReply = {
   text: string;
   sources: AgentSource[];
   usage: { inputTokens?: number; outputTokens?: number };
+  outcome: AgentReplyOutcome;
+  writeAttempts: WriteAttemptReceipt[];
 };
 
 export type AgentRunInput = {
@@ -40,7 +47,23 @@ export type TeamAgentDependencies = {
   writeAudit: KnowledgeWriteAudit;
 };
 
-export function createTeamAgent(dependencies: TeamAgentDependencies, maxSteps: number) {
+function createStepBudget(maxSteps: number) {
+  let exhausted = false;
+  return {
+    stopWhen: ({ steps }: { steps: Array<unknown> }) => {
+      exhausted = steps.length === maxSteps;
+      return exhausted;
+    },
+    exhausted: () => exhausted,
+  };
+}
+
+type StepBudget = ReturnType<typeof createStepBudget>;
+
+function createTeamAgentWithBudget(
+  dependencies: TeamAgentDependencies,
+  budget: StepBudget,
+) {
   return new ToolLoopAgent({
     id: 'minori-team-agent',
     model: dependencies.model,
@@ -51,9 +74,13 @@ export function createTeamAgent(dependencies: TeamAgentDependencies, maxSteps: n
       dependencies.sources,
       dependencies.writeAudit,
     ),
-    stopWhen: stepCountIs(maxSteps),
+    stopWhen: budget.stopWhen,
     providerOptions: { openai: { store: false } },
   });
+}
+
+export function createTeamAgent(dependencies: TeamAgentDependencies, maxSteps: number) {
+  return createTeamAgentWithBudget(dependencies, createStepBudget(maxSteps));
 }
 
 export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' | 'service'> & {
@@ -90,6 +117,7 @@ function createWriteAudit(
   store: AgentRunStore,
   agentRunId: string,
   signal: AbortSignal,
+  writeAttempts: WriteAttemptReceipt[],
 ): KnowledgeWriteAudit {
   return {
     async run(input, operation) {
@@ -107,6 +135,12 @@ function createWriteAudit(
         throw new WriteAuditUnavailable();
       }
 
+      const receipt: WriteAttemptReceipt = {
+        ...input,
+        outcome: 'unknown',
+      };
+      writeAttempts.push(receipt);
+
       try {
         signal.throwIfAborted();
         const result = await operation();
@@ -117,26 +151,43 @@ function createWriteAudit(
         } catch {
           throw new WriteAuditUnavailable();
         }
+        receipt.outcome = 'succeeded';
+        const identifiers = resultIdentifiers(result);
+        if (identifiers) receipt.resultIdentifiers = identifiers;
         return result;
       } catch (error) {
         if (error instanceof WriteAuditUnavailable) throw error;
+        const errorCategory = signal.aborted
+          ? AGENT_RUN_ABORTED_CATEGORY
+          : stableWriteErrorCategory(error);
         try {
           await withAuditFinalization(() => store.finishWrite(write.id, {
             success: false,
-            errorCategory: stableWriteErrorCategory(error),
+            errorCategory,
           }));
         } catch {
           throw new WriteAuditUnavailable();
         }
+        receipt.outcome = signal.aborted ? 'unknown' : 'failed';
+        receipt.errorCategory = errorCategory;
         throw error;
       }
     },
   };
 }
 
-function combinedSignal(signal: AbortSignal | undefined, timeoutMs: number) {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+function resultIdentifiers(result: unknown): WriteAttemptReceipt['resultIdentifiers'] {
+  const candidate = result as Partial<KnowledgeWriteResult>;
+  if (typeof candidate.token !== 'string'
+    || typeof candidate.title !== 'string'
+    || typeof candidate.url !== 'string'
+    || typeof candidate.revisionId !== 'number') return undefined;
+  return {
+    token: candidate.token,
+    title: candidate.title,
+    url: candidate.url,
+    revisionId: String(candidate.revisionId),
+  };
 }
 
 function withAbort<T>(
@@ -200,9 +251,12 @@ export async function runKnowledgeAgent(
   dependencies: RunKnowledgeAgentDependencies,
   signal?: AbortSignal,
 ): Promise<AgentReply> {
-  const runSignal = combinedSignal(signal, dependencies.timeoutMs);
+  const timeoutSignal = AbortSignal.timeout(dependencies.timeoutMs);
+  const runSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const sources = new SourceRegistry();
   const contextTokenTarget = dependencies.contextTokenTarget ?? 24_000;
+  const writeAttempts: WriteAttemptReceipt[] = [];
+  const stepBudget: StepBudget = createStepBudget(dependencies.maxSteps);
 
   let run: { id: string };
   try {
@@ -224,7 +278,7 @@ export async function runKnowledgeAgent(
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
   let toolCallCount = 0;
-  let outcome: 'completed' | 'failed' | 'aborted' = 'failed';
+  let outcome: Exclude<AgentRunOutcome, 'running'> = 'failed';
 
   try {
     const storedHistory = await withAbort(
@@ -246,11 +300,16 @@ export async function runKnowledgeAgent(
       && JSON.stringify(input.history) !== JSON.stringify(authoritativeHistory)) {
       throw new Error('conversation_history_mismatch');
     }
-    const agent = createTeamAgent({
+    const agent = createTeamAgentWithBudget({
       model: dependencies.model,
       service: dependencies.service,
       sources,
-      writeAudit: createWriteAudit(dependencies.agentRunStore, run.id, runSignal),
+      writeAudit: createWriteAudit(
+        dependencies.agentRunStore,
+        run.id,
+        runSignal,
+        writeAttempts,
+      ),
       history: {
         search: (query, limit) => dependencies.conversationStore.search(
           dependencies.conversationKey,
@@ -258,7 +317,7 @@ export async function runKnowledgeAgent(
           limit,
         ),
       },
-    }, dependencies.maxSteps);
+    }, stepBudget);
     const history = selectRecentHistory(
       authoritativeHistory,
       contextTokenTarget,
@@ -279,6 +338,18 @@ export async function runKnowledgeAgent(
     inputTokens = result.usage.inputTokens;
     outputTokens = result.usage.outputTokens;
     toolCallCount = result.toolCalls.length;
+    if (stepBudget.exhausted()) {
+      outcome = 'step_limit_reached';
+      return {
+        ...sources.finalize(budgetExhaustedText(outcome, writeAttempts)),
+        usage: {
+          ...(inputTokens !== undefined ? { inputTokens } : {}),
+          ...(outputTokens !== undefined ? { outputTokens } : {}),
+        },
+        outcome,
+        writeAttempts,
+      };
+    }
     const finalized = sources.finalize(result.text);
     outcome = 'completed';
     return {
@@ -287,8 +358,22 @@ export async function runKnowledgeAgent(
         ...(inputTokens !== undefined ? { inputTokens } : {}),
         ...(outputTokens !== undefined ? { outputTokens } : {}),
       },
+      outcome,
+      writeAttempts,
     };
   } catch (error) {
+    if (timeoutSignal.aborted) {
+      outcome = 'timeout_reached';
+      return {
+        ...sources.finalize(budgetExhaustedText(outcome, writeAttempts)),
+        usage: {
+          ...(inputTokens !== undefined ? { inputTokens } : {}),
+          ...(outputTokens !== undefined ? { outputTokens } : {}),
+        },
+        outcome,
+        writeAttempts,
+      };
+    }
     outcome = runSignal.aborted ? 'aborted' : 'failed';
     throw error;
   } finally {

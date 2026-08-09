@@ -139,6 +139,8 @@ describe('open team Agent release contract', () => {
         text: 'The Team Agent launches first [1].',
         sources: [{ id: 1, title: fetched.title, url: fetched.url }],
         usage: {},
+        outcome: 'completed',
+        writeAttempts: [],
       };
     });
     const messenger = new FakeMessenger();
@@ -260,7 +262,10 @@ describe('open team Agent release contract', () => {
       eventStore: restartedEvents,
       conversations: new PostgresConversationStore(database.db),
       messenger,
-      runAgent: vi.fn(async () => ({ text: 'recovered answer', sources: [], usage: {} })),
+      runAgent: vi.fn(async () => ({
+        text: 'recovered answer', sources: [], usage: {},
+        outcome: 'completed' as const, writeAttempts: [],
+      })),
       logger: { warn: vi.fn(), info: vi.fn() },
     });
     await restartedWorker.process(recovered!);
@@ -452,7 +457,10 @@ describe('open team Agent release contract', () => {
     });
     const worker = new MessageWorker({
       eventStore: events, conversations, messenger,
-      runAgent: vi.fn(async () => ({ text: 'safe answer', sources: [], usage: {} })),
+      runAgent: vi.fn(async () => ({
+        text: 'safe answer', sources: [], usage: {},
+        outcome: 'completed' as const, writeAttempts: [],
+      })),
       logger: { warn: vi.fn(), info: vi.fn() },
     });
     const incoming = normalizeMessageEvent(rawEvent(), { botOpenId: BOT_OPEN_ID })!;
@@ -466,7 +474,10 @@ describe('open team Agent release contract', () => {
       eventStore: restartedEvents,
       conversations: new PostgresConversationStore(database.db),
       messenger,
-      runAgent: vi.fn(async () => ({ text: 'safe answer', sources: [], usage: {} })),
+      runAgent: vi.fn(async () => ({
+        text: 'safe answer', sources: [], usage: {},
+        outcome: 'completed' as const, writeAttempts: [],
+      })),
       logger: { warn: vi.fn(), info: vi.fn() },
     });
     const [recovered] = await restartedEvents.claimReady(1, new Date(Date.now() + 60_000));
@@ -521,7 +532,10 @@ describe('open team Agent release contract', () => {
       if (active === 4) releaseAll();
       await allStarted;
       active -= 1;
-      return { text: 'concurrent answer', sources: [], usage: {} };
+      return {
+        text: 'concurrent answer', sources: [], usage: {},
+        outcome: 'completed', writeAttempts: [],
+      };
     });
     const worker = new MessageWorker({
       eventStore: events,

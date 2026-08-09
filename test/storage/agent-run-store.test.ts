@@ -115,4 +115,17 @@ describe('PostgresAgentRunStore', () => {
       errorCategory: 'knowledge_write_conflict',
     });
   });
+
+  it.each(['step_limit_reached', 'timeout_reached'] as const)(
+    'persists the explicit %s run outcome',
+    async (outcome) => {
+      const run = await store.start({ eventId: 'evt_1', model: '5.6-terra' });
+
+      await store.finish(run.id, { toolCallCount: 1, outcome });
+
+      const [runRow] = await database.db.select().from(agentRuns)
+        .where(eq(agentRuns.id, run.id));
+      expect(runRow?.outcome).toBe(outcome);
+    },
+  );
 });
