@@ -79,32 +79,31 @@ sudo install -m 0600 -o "$operator" -g "$operator_group" \
 sudoedit /opt/minori/minori.env
 ```
 
-The deployment operator must be able to use Docker and read the repository. If Docker was just installed, add that operator to the host's `docker` group and start a fresh login session before continuing.
+The deployment operator must be able to use Docker and read the operator-only host state. If Docker was just installed, add that operator to the host's `docker` group and start a fresh login session before continuing. The initial interactive OAuth authorization uses the approved release image and persistent Lark mount; it is not a deployment path. The Lark mount survives that one-off authorization container. If OAuth expires, credentials are lost, or the Dedicated Knowledge User changes, repeat the interactive authorization with the persistent mount; Minori intentionally has no credential backup or silent fallback identity.
 
-Keep the repository checkout on the host. For the first release, build the exact commit and authenticate the Dedicated Knowledge User before deployment. Run the authorization container directly in an interactive terminal so `/dev/tty` is available:
+## CI/CD operator runbook
 
-```bash
-COMMIT_SHA="$(git rev-parse HEAD)"
-git cat-file -e "${COMMIT_SHA}^{commit}"
-git archive "$COMMIT_SHA" | docker build --platform linux/amd64 \
-  --label "org.opencontainers.image.revision=$COMMIT_SHA" \
-  --tag "minori:${COMMIT_SHA}" -
-docker run --rm -it \
-  --env-file /opt/minori/minori.env \
-  -v /opt/minori/lark:/var/lib/minori/lark \
-  "minori:${COMMIT_SHA}" npm run lark:auth
-./scripts/deploy-vultr.sh "$COMMIT_SHA"
-```
+All production releases use Deployment Protocol `v1`: GitHub sends the approved immutable digest through the restricted server entrypoint. The host accepts only that protocol and keeps the current healthy image plus its two most recent verified healthy predecessors as its Local Rollback Set. Operators do not run a separate host-side release or rollback command. A rollback does not downgrade the database; the current runtime never reads or writes that table, which remains as inert `allowed_chats` compatibility.
 
-The archive build guarantees that the image receiving the App Secret and OAuth mount comes only from the verified commit, never dirty or untracked working-tree files. The deploy command accepts only a full 40-character commit SHA. It builds the image and loads the production Compose contract from that same detached commit, verifies the candidate image, applies backward-compatible migrations, replaces the running service under the stable `minori` Compose project, waits for readiness, and restores and verifies both the previous image and its saved Compose contract on failure. Because migrations run before replacement and rollback does not downgrade the database, the open-admission migration intentionally retains the obsolete `allowed_chats` table as inert compatibility for the fixed-point image. The current runtime never reads or writes that table; remove it only in a later release after the production rollback floor advances beyond `4f936ab`. Sanitized release records and commit-addressed `<commit>.compose.yaml` contracts are written under `/opt/minori/releases`. If an already-running Minori image has no saved contract, deployment stops before replacing it.
+### Normal PR and merge
 
-The Lark mount survives removal of the one-off authorization container. If OAuth expires, credentials are lost, or the Dedicated Knowledge User changes, rerun the same interactive `npm run lark:auth` command; Minori intentionally has no credential backup or silent fallback identity.
+Open a pull request to the Release Line, `main`. It must complete the observed required checks `CI / verify`, `CI / integration`, and `CI / image-amd64`; merge only through the pull request. The Emergency Merge Bypass belongs only to GitHub user `plutoless` (actor ID `471561`) and is pull-request-only, for repairing broken CI governance. It never permits a direct push, tag mutation, deployment, or Production Approval bypass.
 
-Rollback requires an already-built exact image. If the target is unhealthy, the command restores and verifies the version that was running before the attempt:
+### Public-package bootstrap
 
-```bash
-./scripts/rollback-vultr.sh minori:<full-commit-sha>
-```
+For the first CI release, create `main` at the deployed `v0.1.0` commit, configure the production Environment and restricted deployment key, then merge the CI/CD pull request. Then create and push `v0.1.1` from `main`. The tag causes GitHub to build and publish the first package, while deployment waits at Production Approval. Before approving, the operator changes the new GHCR package to **Public** exactly once, and Vultr proves an anonymous digest pull of the built immutable digest. The operator only then grants Production Approval. Do not add a package-admin token or bootstrap image.
+
+### Release Intent and Production Approval
+
+A protected `v*` tag whose version matches `package.json` and whose commit is contained in `main` is the Release Intent. GitHub validates it, publishes exactly one `linux/amd64` image, and passes its immutable digest unchanged to the GitHub `production` Environment. The same person may create the tag and grant Production Approval: Prevent self-review is disabled, making this a two-step confirmation, not two-person separation. GitHub Deployment status, Actions result/email, job summary, and sanitized server release record are the only notification surfaces.
+
+### Failure-category diagnosis
+
+Use GitHub deployment status, Actions result/email, the concise job summary, and the sanitized server release record to identify the stable failure category. Do not disclose secret values or raw log bodies. A GitHub outage means the current healthy release stays running; use interactive access for diagnosis, not a manual or emergency deploy path. There is no second Deployment Protocol `v1` release command.
+
+### One-time transition rehearsal
+
+After the first automated release is healthy, perform the single bounded rehearsal: `v0.1.1` -> `v0.1.0` -> the same `v0.1.1` digest. It reuses the saved `v0.1.0` contract and already approved `v0.1.1` digest without rebuilding either image, verifies readiness after each transition, and stops if either exact target or readiness check is unhealthy. This is a one-time acceptance action, not a normal rollback or alternate deploy path.
 
 ## Real acceptance
 
@@ -143,4 +142,4 @@ Troubleshooting:
 - `feishu`: verify app credentials, bot open ID, long connection, event subscription, bot availability, and app permissions.
 - `worker`: inspect redacted logs for stable error codes; do not copy raw secrets into tickets.
 
-For credential rotation, update `/opt/minori/minori.env` with mode `0600`, reauthenticate `/opt/minori/lark` when rotating the CLI app or user grant, then deploy an explicit commit again. Revoke the old credential only after readiness and the real group/private acceptance checks pass.
+For credential rotation, update `/opt/minori/minori.env` with mode `0600`, reauthenticate `/opt/minori/lark` when rotating the CLI app or user grant, then create a later approved GitHub Release Intent. Revoke the old credential only after readiness and the real group/private acceptance checks pass.

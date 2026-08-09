@@ -1,11 +1,28 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+
+const execFileAsync = promisify(execFile);
+const releaseContractTestImage = 'minori:release-contract-test';
 
 async function text(path: string) {
   return readFile(path, 'utf8');
 }
 
 describe('Team Agent release packaging contract', () => {
+  it('keeps the workflow handoff aligned with the forced-command v1 grammar', async () => {
+    const workflow = await text('.github/workflows/release.yml');
+    const entrypoint = await text('deploy/vultr/ci-deploy');
+
+    expect(workflow).toContain(
+      'remote_command="deploy v1 ${COMMIT_SHA} ${GHCR_IMAGE}@${BUILD_DIGEST}"',
+    );
+    expect(entrypoint).toContain(
+      "command_pattern='^deploy v1 ([0123456789abcdef]{40}) (ghcr\\.io/plutoless/minori@sha256:[0123456789abcdef]{64})$'",
+    );
+  });
+
   it('keeps production Compose strict and leaves Agent limits to the env file', async () => {
     const compose = await text('deploy/vultr/compose.production.yaml');
 
@@ -84,36 +101,88 @@ describe('Team Agent release packaging contract', () => {
     expect(activeDesignEvidence).not.toMatch(/\bURLs?\b/u);
   });
 
-  it('passes the fixed production env file through deploy and rollback Compose calls', async () => {
+  it('retires the legacy manual deploy and rollback entrypoints', async () => {
     const deploy = await text('scripts/deploy-vultr.sh');
     const rollback = await text('scripts/rollback-vultr.sh');
 
-    expect(deploy).toContain('MINORI_ENV_FILE="$env_file"');
-    expect(deploy.match(/MINORI_ENV_FILE=/gu)).toHaveLength(4);
-    expect(deploy).not.toContain('--env LARKSUITE_CLI_CONFIG_DIR=');
-    expect(deploy).not.toContain('--env LARKSUITE_CLI_DATA_DIR=');
-    expect(rollback).toContain('env_file="/opt/minori/minori.env"');
-    expect(rollback.match(/MINORI_ENV_FILE=/gu)).toHaveLength(2);
+    for (const retired of [deploy, rollback]) {
+      expect(retired).toContain('/opt/minori/bin/rehearse-release');
+      expect(retired).toContain('exit 2');
+      expect(retired).not.toContain('docker ');
+      expect(retired).not.toContain('git worktree');
+    }
+    expect(deploy).toContain('approved GitHub production release');
+    expect(rollback).toContain('no second operational deployment protocol');
   });
 
-  it('labels the deployed image with the exact release commit', async () => {
-    const deploy = await text('scripts/deploy-vultr.sh');
+  it('installs one restricted forced command without replacing unrelated authorized keys', async () => {
+    const installer = await text('deploy/vultr/install-ci-deploy.sh');
+    const entrypoint = await text('deploy/vultr/ci-deploy');
 
-    expect(deploy).toContain('--label "org.opencontainers.image.revision=$commit_sha"');
+    expect(installer).toContain('restrict,command=\"/opt/minori/bin/ci-deploy\"');
+    expect(installer).toContain('ambiguous_deployment_key');
+    expect(installer).toContain('cp -- "$authorized_keys" "$temporary_keys"');
+    expect(installer).toContain('stat -c \'%u %g %a\'');
+    expect(installer).toContain('(8#$mode & 8#022) == 0');
+    expect(entrypoint).toContain("installed_entrypoint='/opt/minori/bin/ci-deploy'");
+    expect(entrypoint).toContain("minori_root='/opt/minori'");
+    expect(entrypoint).toContain("lock_file='/run/lock/minori-ci-deploy.lock'");
+    expect(entrypoint).toContain('release_command=(env -i');
   });
 
-  it('documents exact-commit build, then OAuth, then deployment', async () => {
+  it('declares the exact first CI release version in both package manifests', async () => {
+    const manifest = JSON.parse(await text('package.json')) as { version: string };
+    const lockfile = JSON.parse(await text('package-lock.json')) as {
+      version: string;
+      packages: Record<string, { version?: string }>;
+    };
+
+    expect(manifest.version).toBe('0.1.1');
+    expect(lockfile.version).toBe('0.1.1');
+    expect(lockfile.packages[''].version).toBe('0.1.1');
+  });
+
+  it('documents the GitHub-only release operator paths without a legacy deploy command', async () => {
     const readme = await text('README.md');
-    const plan = await text('docs/superpowers/plans/2026-08-07-team-agent.md');
-    const build = readme.indexOf('git archive "$COMMIT_SHA" | docker build');
-    const oauth = readme.indexOf('"minori:${COMMIT_SHA}" npm run lark:auth');
-    const deploy = readme.indexOf('./scripts/deploy-vultr.sh "$COMMIT_SHA"');
+    const bootstrap = readme.indexOf('Public-package bootstrap');
+    const release = readme.indexOf('Release Intent and Production Approval');
+    const diagnosis = readme.indexOf('Failure-category diagnosis');
+    const rehearsal = readme.indexOf('One-time transition rehearsal');
 
-    expect(build).toBeGreaterThan(-1);
-    expect(oauth).toBeGreaterThan(build);
-    expect(deploy).toBeGreaterThan(oauth);
-    expect(plan).toContain('MINORI_ENV_FILE=./env.example');
-    expect(plan).toContain('Build the exact commit, bootstrap OAuth, and only then deploy');
+    expect(bootstrap).toBeGreaterThan(-1);
+    expect(release).toBeGreaterThan(bootstrap);
+    expect(diagnosis).toBeGreaterThan(release);
+    expect(rehearsal).toBeGreaterThan(diagnosis);
+    expect(readme).toContain('create and push `v0.1.1` from `main`');
+    expect(readme).toContain('GitHub `production` Environment');
+    expect(readme).toContain('changes the new GHCR package to **Public** exactly once');
+    expect(readme).toContain('anonymous digest pull');
+    expect(readme).toContain('only then grants Production Approval');
+    expect(readme).toContain('immutable digest');
+    expect(readme).toContain('current healthy image plus its two most recent verified healthy predecessors');
+    expect(readme).toContain('GitHub Deployment status, Actions result/email, job summary, and sanitized server release record');
+    expect(readme).toContain('same person may create the tag and grant Production Approval');
+    expect(readme).toContain('Prevent self-review is disabled');
+    expect(readme).toContain('two-step confirmation, not two-person separation');
+    expect(readme).toContain('current healthy release stays running');
+    expect(readme).toContain('diagnosis, not a manual or emergency deploy path');
+    expect(readme).toContain('`v0.1.1` -> `v0.1.0` -> the same `v0.1.1` digest');
+    expect(readme).not.toContain('./scripts/deploy-vultr.sh');
+    expect(readme).not.toContain('./scripts/rollback-vultr.sh');
+  });
+
+  it('keeps active delivery guidance on the literal Deployment Protocol v1 terms', async () => {
+    const readme = await text('README.md');
+    const context = await text('CONTEXT.md');
+    const design = await text('docs/superpowers/specs/2026-08-09-github-actions-ci-cd-design.md');
+    const adr = await text('docs/adr/0014-deliver-releases-by-approved-ghcr-digest.md');
+    const workflow = await text('.github/workflows/release.yml');
+
+    for (const guidance of [readme, context, design, adr]) {
+      expect(guidance).toContain('Deployment Protocol `v1`');
+      expect(guidance).toContain('immutable digest');
+    }
+    expect(workflow).toContain('deploy v1 ${COMMIT_SHA} ${GHCR_IMAGE}@${BUILD_DIGEST}');
   });
 
   it('keeps candidate migrations compatible with the fixed-point rollback image', async () => {
@@ -138,4 +207,35 @@ describe('Team Agent release packaging contract', () => {
     expect(runtime).toContain('chown -R 10001:10001 /app /var/lib/minori/lark /tmp/minori');
     expect(runtime).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED');
   });
+
+  it('embeds the exact immutable deployment contract at fixed runtime paths', async () => {
+    const dockerfile = await text('Dockerfile');
+    const protocol = await text('deploy/vultr/deployment-protocol');
+    const runtime = dockerfile.slice(dockerfile.indexOf('FROM node:22-bookworm-slim AS runtime'));
+
+    expect(protocol).toBe('v1\n');
+    expect(runtime).toContain(
+      'COPY --chown=minori:minori deploy/vultr/compose.production.yaml /opt/minori/release/compose.production.yaml',
+    );
+    expect(runtime).toContain(
+      'COPY --chown=minori:minori deploy/vultr/deployment-protocol /opt/minori/release/deployment-protocol',
+    );
+  });
+
+  it('keeps embedded release contracts immutable to the runtime user', async () => {
+    await execFileAsync('docker', [
+      'build', '--platform', 'linux/amd64', '-t', releaseContractTestImage, '.',
+    ]);
+    await execFileAsync('docker', [
+      'run', '--rm', '--user', '10001:10001', '--entrypoint', 'sh', releaseContractTestImage,
+      '-c', [
+        'test "$(stat -c %u:%g:%a /opt/minori/release/compose.production.yaml)" = 0:0:444',
+        'test "$(stat -c %u:%g:%a /opt/minori/release/deployment-protocol)" = 0:0:444',
+        'if (printf invalid > /opt/minori/release/compose.production.yaml) 2>/dev/null; then exit 1; fi',
+        'if (printf invalid > /opt/minori/release/deployment-protocol) 2>/dev/null; then exit 1; fi',
+        'if rm /opt/minori/release/compose.production.yaml 2>/dev/null; then exit 1; fi',
+        'if rm /opt/minori/release/deployment-protocol 2>/dev/null; then exit 1; fi',
+      ].join(' && '),
+    ]);
+  }, 60_000);
 });

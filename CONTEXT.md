@@ -103,3 +103,27 @@ _Avoid_: Failed reply, queued reply
 **Retained Conversation History**:
 Unexpired invoked messages and Minori replies from the current Group Context or private conversation that Minori has durably retained. Private runs automatically receive a recent retained context window. Group runs receive it only as a fallback when Live Group History is unavailable; successfully loaded Live Group History does not mix with retained records. Minori may search retained history only from that same conversation and does not summarize messages into long-term memory or expose another conversation.
 _Avoid_: Retained Thread History, Live Group History, global chat search, durable memory, hidden summary
+
+**Release Intent**:
+An operator-created protected `v*` tag whose version matches the application version and whose commit is contained in `main`. It is the explicit request to build a production candidate, not permission to deploy it.
+_Avoid_: Main push, automatic version bump, Production Approval, deployment
+
+**Production Approval**:
+The explicit GitHub Production Environment confirmation that admits one immutable release candidate to the restricted deployment path. In the first CI/CD release, the same operator may create the Release Intent and grant Production Approval, so this is a two-step safeguard rather than separation of duties.
+_Avoid_: Release Intent, two-person approval, automatic deployment, CI success
+
+**Emergency Merge Bypass**:
+The repository owner's audited, pull-request-only escape hatch for repairing broken CI governance when required checks cannot complete. It does not permit direct production deployment, tag mutation, or replacement of Release Intent and Production Approval.
+_Avoid_: Direct push, release bypass, tag overwrite, Production Approval
+
+**Local Rollback Set**:
+The production host's current healthy image plus its two most recent verified healthy predecessors. Compose contracts and sanitized release records outlive this local image set; remote GHCR retention is separate.
+_Avoid_: Entire release history, Docker cache, GHCR retention, unverified image
+
+**Deployment Protocol**:
+Deployment Protocol `v1` is the explicitly versioned command and immutable digest image-contract agreement between GitHub's approved deploy job and the stable Vultr deployment entrypoint. A release is admitted only when the requested protocol, image-declared protocol, and host-supported protocol are identical.
+_Avoid_: Workflow version, application version, implicit script compatibility, release tag
+
+**Release Line**:
+The canonical `main` branch whose history contains every commit eligible for a Release Intent. Temporary feature branches may propose changes to the Release Line but are never permanent release ancestry or alternate default branches.
+_Avoid_: Default feature branch, deployment branch, release tag, production environment

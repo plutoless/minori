@@ -1,0 +1,49 @@
+name: Quality gate
+
+on:
+  workflow_call:
+    inputs:
+      gate:
+        description: Validation gate to run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: ${{ inputs.gate }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate requested gate
+        env:
+          GATE: ${{ inputs.gate }}
+        run: |
+          case "$GATE" in
+            verify|integration|image-amd64) ;;
+            *) echo "unsupported gate" >&2; exit 1 ;;
+          esac
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - if: inputs.gate == 'verify'
+        run: npm run verify
+      - if: inputs.gate == 'verify'
+        run: git ls-files -z -- '*.sh' | xargs -0 -r -n 1 bash -n
+      - if: inputs.gate == 'verify'
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@03d0035246f3e81f36aed592ffb4bebf33a03106 -ignore 'unexpected key "queue" for "concurrency" section'
+      - if: inputs.gate == 'integration'
+        run: npm run test:integration
+      - if: inputs.gate == 'image-amd64'
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - if: inputs.gate == 'image-amd64'
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          labels: org.opencontainers.image.revision=${{ github.sha }}

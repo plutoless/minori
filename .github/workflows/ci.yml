@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: CI
+    uses: ./.github/workflows/quality-gate.yml
+    with:
+      gate: verify
+  integration:
+    name: CI
+    uses: ./.github/workflows/quality-gate.yml
+    with:
+      gate: integration
+  image-amd64:
+    name: CI
+    uses: ./.github/workflows/quality-gate.yml
+    with:
+      gate: image-amd64
