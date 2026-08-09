@@ -246,13 +246,32 @@ function withAuditFinalization<T>(operation: () => Promise<T>): Promise<T> {
   return withAbort(operation, AbortSignal.timeout(AUDIT_FINALIZATION_TIMEOUT_MS));
 }
 
+function createRunAbortSignals(signal: AbortSignal | undefined, timeoutMs: number) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  let firstAbortSource: 'external' | 'timeout' | undefined;
+  const recordExternalAbort = () => { firstAbortSource ??= 'external'; };
+  const recordTimeoutAbort = () => { firstAbortSource ??= 'timeout'; };
+  signal?.addEventListener('abort', recordExternalAbort, { once: true });
+  timeoutSignal.addEventListener('abort', recordTimeoutAbort, { once: true });
+  if (signal?.aborted) recordExternalAbort();
+  if (timeoutSignal.aborted) recordTimeoutAbort();
+  return {
+    runSignal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+    firstAbortSource: () => firstAbortSource,
+    dispose: () => {
+      signal?.removeEventListener('abort', recordExternalAbort);
+      timeoutSignal.removeEventListener('abort', recordTimeoutAbort);
+    },
+  };
+}
+
 export async function runKnowledgeAgent(
   input: AgentRunInput,
   dependencies: RunKnowledgeAgentDependencies,
   signal?: AbortSignal,
 ): Promise<AgentReply> {
-  const timeoutSignal = AbortSignal.timeout(dependencies.timeoutMs);
-  const runSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  const abortSignals = createRunAbortSignals(signal, dependencies.timeoutMs);
+  const { runSignal } = abortSignals;
   const sources = new SourceRegistry();
   const contextTokenTarget = dependencies.contextTokenTarget ?? 24_000;
   const writeAttempts: WriteAttemptReceipt[] = [];
@@ -272,6 +291,7 @@ export async function runKnowledgeAgent(
       })),
     );
   } catch {
+    abortSignals.dispose();
     throw new Error(AGENT_AUDIT_UNAVAILABLE);
   }
 
@@ -362,7 +382,7 @@ export async function runKnowledgeAgent(
       writeAttempts,
     };
   } catch (error) {
-    if (timeoutSignal.aborted) {
+    if (abortSignals.firstAbortSource() === 'timeout') {
       outcome = 'timeout_reached';
       return {
         ...sources.finalize(budgetExhaustedText(outcome, writeAttempts)),
@@ -386,6 +406,8 @@ export async function runKnowledgeAgent(
       }));
     } catch {
       throw new Error(AGENT_AUDIT_UNAVAILABLE);
+    } finally {
+      abortSignals.dispose();
     }
   }
 }

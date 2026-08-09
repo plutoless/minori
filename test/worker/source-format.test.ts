@@ -91,16 +91,69 @@ describe('formatAgentReply', () => {
           url: 'file:///private/provider-result', revisionId: '2',
         },
       },
+      {
+        toolName: 'appendDocument', outcome: 'succeeded',
+        sanitizedSummary: 'appended content to one wiki document',
+        targetIdentifiers: {},
+        resultIdentifiers: {
+          token: 'wikcnCreated', title: 'Created wiki document',
+          url: 'https://acme.larksuite.com/wiki/wikcnCreated', revisionId: '3',
+        },
+      },
+      {
+        toolName: 'appendDocument', outcome: 'unknown',
+        sanitizedSummary: 'appended content with userinfo URL',
+        targetIdentifiers: {},
+        resultIdentifiers: {
+          token: 'doxcnPrivate', title: 'Private title',
+          url: 'https://api-key:password@acme.feishu.cn/docx/private', revisionId: '4',
+        },
+      },
+      {
+        toolName: 'appendDocument', outcome: 'failed',
+        sanitizedSummary: 'appended content with token URL',
+        targetIdentifiers: {},
+        resultIdentifiers: {
+          token: 'doxcnPrivate', title: 'Private title',
+          url: 'https://acme.larksuite.com/wiki/private?access_token=secret#refresh-token',
+          revisionId: '5',
+        },
+      },
+      {
+        toolName: 'appendDocument', outcome: 'failed',
+        sanitizedSummary: 'appended content with unsupported host URL',
+        targetIdentifiers: {},
+        resultIdentifiers: {
+          token: 'doxcnPrivate', title: 'Private title',
+          url: 'https://evil.example.com/docx/private', revisionId: '6',
+        },
+      },
+      {
+        toolName: 'appendDocument', outcome: 'failed',
+        sanitizedSummary: 'appended content with unsupported path URL',
+        targetIdentifiers: {},
+        resultIdentifiers: {
+          token: 'doxcnPrivate', title: 'Private title',
+          url: 'https://acme.feishu.cn/open-apis/docx/private', revisionId: '7',
+        },
+      },
     ]);
 
     expect(text).toContain('执行时间上限');
     expect(text).toContain('没有自动重放');
     expect(text).toContain('已确认成功：created one document');
     expect(text).toContain('结果未知：replaced one exact text range');
+    expect(text).toContain(
+      '已确认成功：appended content to one wiki document — https://acme.larksuite.com/wiki/wikcnCreated',
+    );
+    expect(text).toContain('结果未知：appended content with userinfo URL');
+    expect(text).toContain('已确认失败：appended content with token URL');
+    expect(text).toContain('已确认失败：appended content with unsupported host URL');
+    expect(text).toContain('已确认失败：appended content with unsupported path URL');
     expect(text).toContain('https://acme.feishu.cn/docx/created');
     expect(text).toContain('继续');
     expect(text).not.toMatch(
-      /Sensitive document title|Private title|doxcnPrivate|provider_error_with_secret|file:\/\//u,
+      /Sensitive document title|Private title|doxcnPrivate|provider_error_with_secret|file:\/\/|api-key|password|access_token|refresh-token|evil\.example\.com|open-apis/u,
     );
     expect(interruptedAfterWriteText([])).toContain('写入开始后中断');
   });

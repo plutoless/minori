@@ -32,11 +32,28 @@ function singleLine(value: string, maximumLength = 240) {
     .slice(0, maximumLength);
 }
 
+const DOCUMENT_HOST_SUFFIXES = ['feishu.cn', 'larksuite.com', 'larkoffice.com'] as const;
+const DOCUMENT_PATH = /^\/(?:docx|docs|wiki)\/[A-Za-z0-9_-]+\/?$/u;
+
+function supportedDocumentHost(hostname: string) {
+  return DOCUMENT_HOST_SUFFIXES.some(
+    (suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`),
+  );
+}
+
 function safeUrl(value: string | undefined) {
   if (!value || value.length > 2_048) return undefined;
   try {
     const url = new URL(value);
-    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined;
+    if (url.protocol !== 'https:'
+      || url.username
+      || url.password
+      || url.port
+      || url.search
+      || url.hash
+      || !supportedDocumentHost(url.hostname)
+      || !DOCUMENT_PATH.test(url.pathname)) return undefined;
+    return url.href;
   } catch {
     return undefined;
   }

@@ -687,6 +687,34 @@ describe('runKnowledgeAgent', () => {
     });
   });
 
+  it('keeps external cancellation as the cause when the provider rejects after timeout', async () => {
+    let markModelStarted!: () => void;
+    const modelStarted = new Promise<void>((resolve) => { markModelStarted = resolve; });
+    const model = new MockLanguageModelV4({
+      doGenerate: (options) => new Promise((_resolve, reject) => {
+        markModelStarted();
+        options.abortSignal?.addEventListener('abort', () => {
+          setTimeout(() => reject(options.abortSignal?.reason), 30);
+        }, { once: true });
+      }),
+    });
+    const audit = agentRunStore();
+    const controller = new AbortController();
+    const pending = runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      agentRunStore: audit,
+      timeoutMs: 20,
+    }), controller.signal);
+
+    await modelStarted;
+    controller.abort(new Error('worker_stopped_first'));
+
+    await expect(pending).rejects.toThrow('worker_stopped_first');
+    expect(audit.finish).toHaveBeenCalledWith('run_1', {
+      toolCallCount: 0,
+      outcome: 'aborted',
+    });
+  });
+
   it('applies the same wall-clock deadline while loading recent history', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: generated([{ type: 'text', text: 'unused' }], 'stop'),
