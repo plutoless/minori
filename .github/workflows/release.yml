@@ -86,10 +86,10 @@ jobs:
         run: |
           {
             printf '### Release artifact\n'
-            printf -- '- Tag: `%s`\n' "$RELEASE_TAG"
-            printf -- '- SHA: `%s`\n' "$COMMIT_SHA"
-            printf -- '- Digest: `%s`\n' "$BUILD_DIGEST"
-            printf -- '- Result: `image_published`\n'
+            printf -- "- Tag: \`%s\`\n" "$RELEASE_TAG"
+            printf -- "- SHA: \`%s\`\n" "$COMMIT_SHA"
+            printf -- "- Digest: \`%s\`\n" "$BUILD_DIGEST"
+            printf -- "- Result: \`image_published\`\n"
           } >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
@@ -172,10 +172,10 @@ jobs:
           fi
           {
             printf '### Production deployment\n'
-            printf -- '- Tag: `%s`\n' "$RELEASE_TAG"
-            printf -- '- SHA: `%s`\n' "$COMMIT_SHA"
-            printf -- '- Digest: `%s`\n' "$BUILD_DIGEST"
-            printf -- '- Result: `%s`\n' "$result_category"
+            printf -- "- Tag: \`%s\`\n" "$RELEASE_TAG"
+            printf -- "- SHA: \`%s\`\n" "$COMMIT_SHA"
+            printf -- "- Digest: \`%s\`\n" "$BUILD_DIGEST"
+            printf -- "- Result: \`%s\`\n" "$result_category"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$ssh_status" -ne 0 || "$result_category" != 'success' ]]; then

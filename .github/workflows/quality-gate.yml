@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   quality:
+    name: ${{ inputs.gate }}
     runs-on: ubuntu-latest
     steps:
       - name: Validate requested gate

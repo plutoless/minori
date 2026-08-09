@@ -159,6 +159,7 @@ describe('GitHub Actions quality gate contract', () => {
       inputs: { gate: { required: true, type: 'string' } },
     });
     expect(qualityGate.permissions).toEqual({ contents: 'read' });
+    expect(qualityGate.jobs?.quality?.name).toBe('${{ inputs.gate }}');
 
     const steps = requiredSteps(qualityGate.jobs?.quality);
 
@@ -242,6 +243,7 @@ describe('GitHub Actions quality gate contract', () => {
 
     for (const [gate, job] of Object.entries(ci.jobs ?? {})) {
       expect(job).toEqual({
+        name: 'CI',
         uses: './.github/workflows/quality-gate.yml',
         with: { gate },
       });
@@ -361,7 +363,7 @@ describe('GitHub Actions release contract', () => {
       COMMIT_SHA: '${{ needs.validate.outputs.commit_sha }}',
       BUILD_DIGEST: '${{ steps.build.outputs.digest }}',
     });
-    expect(publishSummary.run).toContain('Result: `image_published`');
+    expect(publishSummary.run).toContain('Result: \\`image_published\\`');
   });
 
   it('holds the immutable digest at production approval and sends one strict SSH command', async () => {
