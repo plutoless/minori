@@ -50,6 +50,10 @@ async function workflow(path: string): Promise<Workflow> {
   return parse(await readFile(path, 'utf8')) as Workflow;
 }
 
+async function ruleset(path: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+}
+
 function allUses(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(allUses);
   if (value && typeof value === 'object') {
@@ -375,5 +379,62 @@ describe('GitHub Actions release contract', () => {
     expect(source).not.toMatch(/workflow_dispatch|StrictHostKeyChecking=no|set -x|scp\b|rsync\b|git checkout|docker login.*VULTR|GHCR.*(?:TOKEN|PASSWORD).*ssh/iu);
     expect(source.match(/secrets\.VULTR_DEPLOY_SSH_KEY/gu)).toHaveLength(1);
     expect(source.match(/environment:\s*production/gu)).toHaveLength(1);
+  });
+});
+
+describe('GitHub repository ruleset contracts', () => {
+  it('keeps the Release Line on main behind PRs and the three observed CI contexts', async () => {
+    const main = await ruleset('.github/rulesets/main.json');
+
+    expect(main).toMatchObject({
+      name: 'Release Line main',
+      target: 'branch',
+      enforcement: 'active',
+      conditions: { ref_name: { include: ['refs/heads/main'], exclude: [] } },
+      bypass_actors: [
+        { actor_id: 471561, actor_type: 'User', bypass_mode: 'pull_request' },
+      ],
+    });
+    expect(JSON.stringify(main)).not.toMatch(/\$\{|<[^>]+>|REPLACE_ME/u);
+
+    const rules = main.rules as Array<{ type: string; parameters?: Record<string, unknown> }>;
+    expect(rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'pull_request',
+        parameters: expect.objectContaining({
+          dismiss_stale_reviews_on_push: false,
+          dismissal_restriction: { enabled: false, allowed_actors: [] },
+          require_code_owner_review: false,
+          require_last_push_approval: false,
+          required_approving_review_count: 0,
+          required_review_thread_resolution: false,
+        }),
+      }),
+      expect.objectContaining({
+        type: 'required_status_checks',
+        parameters: expect.objectContaining({
+          required_status_checks: [
+            { context: 'CI / verify' },
+            { context: 'CI / integration' },
+            { context: 'CI / image-amd64' },
+          ],
+        }),
+      }),
+    ]));
+  });
+
+  it('keeps v tags immutable with no overwrite bypass', async () => {
+    const tags = await ruleset('.github/rulesets/release-tags.json');
+
+    expect(tags).toEqual(expect.objectContaining({
+      name: 'Immutable release tags',
+      target: 'tag',
+      enforcement: 'active',
+      conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } },
+      bypass_actors: [],
+    }));
+    expect(JSON.stringify(tags)).not.toMatch(/\$\{|<[^>]+>|REPLACE_ME/u);
+    const ruleTypes = (tags.rules as Array<{ type: string }>).map((rule) => rule.type);
+    expect(ruleTypes).toEqual(expect.arrayContaining(['update', 'deletion']));
   });
 });

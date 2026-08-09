@@ -130,18 +130,59 @@ describe('Team Agent release packaging contract', () => {
     expect(entrypoint).toContain('release_command=(env -i');
   });
 
-  it('documents exact-commit build, then OAuth, then deployment', async () => {
-    const readme = await text('README.md');
-    const plan = await text('docs/superpowers/plans/2026-08-07-team-agent.md');
-    const build = readme.indexOf('git archive "$COMMIT_SHA" | docker build');
-    const oauth = readme.indexOf('"minori:${COMMIT_SHA}" npm run lark:auth');
-    const deploy = readme.indexOf('./scripts/deploy-vultr.sh "$COMMIT_SHA"');
+  it('declares the exact first CI release version in both package manifests', async () => {
+    const manifest = JSON.parse(await text('package.json')) as { version: string };
+    const lockfile = JSON.parse(await text('package-lock.json')) as {
+      version: string;
+      packages: Record<string, { version?: string }>;
+    };
 
-    expect(build).toBeGreaterThan(-1);
-    expect(oauth).toBeGreaterThan(build);
-    expect(deploy).toBeGreaterThan(oauth);
-    expect(plan).toContain('MINORI_ENV_FILE=./env.example');
-    expect(plan).toContain('Build the exact commit, bootstrap OAuth, and only then deploy');
+    expect(manifest.version).toBe('0.1.1');
+    expect(lockfile.version).toBe('0.1.1');
+    expect(lockfile.packages[''].version).toBe('0.1.1');
+  });
+
+  it('documents the GitHub-only release operator paths without a legacy deploy command', async () => {
+    const readme = await text('README.md');
+    const bootstrap = readme.indexOf('Public-package bootstrap');
+    const release = readme.indexOf('Release Intent and Production Approval');
+    const diagnosis = readme.indexOf('Failure-category diagnosis');
+    const rehearsal = readme.indexOf('One-time transition rehearsal');
+
+    expect(bootstrap).toBeGreaterThan(-1);
+    expect(release).toBeGreaterThan(bootstrap);
+    expect(diagnosis).toBeGreaterThan(release);
+    expect(rehearsal).toBeGreaterThan(diagnosis);
+    expect(readme).toContain('create and push `v0.1.1` from `main`');
+    expect(readme).toContain('GitHub `production` Environment');
+    expect(readme).toContain('changes the new GHCR package to **Public** exactly once');
+    expect(readme).toContain('anonymous digest pull');
+    expect(readme).toContain('only then grants Production Approval');
+    expect(readme).toContain('immutable digest');
+    expect(readme).toContain('current healthy image plus its two most recent verified healthy predecessors');
+    expect(readme).toContain('GitHub Deployment status, Actions result/email, job summary, and sanitized server release record');
+    expect(readme).toContain('same person may create the tag and grant Production Approval');
+    expect(readme).toContain('Prevent self-review is disabled');
+    expect(readme).toContain('two-step confirmation, not two-person separation');
+    expect(readme).toContain('current healthy release stays running');
+    expect(readme).toContain('diagnosis, not a manual or emergency deploy path');
+    expect(readme).toContain('`v0.1.1` -> `v0.1.0` -> the same `v0.1.1` digest');
+    expect(readme).not.toContain('./scripts/deploy-vultr.sh');
+    expect(readme).not.toContain('./scripts/rollback-vultr.sh');
+  });
+
+  it('keeps active delivery guidance on the literal Deployment Protocol v1 terms', async () => {
+    const readme = await text('README.md');
+    const context = await text('CONTEXT.md');
+    const design = await text('docs/superpowers/specs/2026-08-09-github-actions-ci-cd-design.md');
+    const adr = await text('docs/adr/0014-deliver-releases-by-approved-ghcr-digest.md');
+    const workflow = await text('.github/workflows/release.yml');
+
+    for (const guidance of [readme, context, design, adr]) {
+      expect(guidance).toContain('Deployment Protocol `v1`');
+      expect(guidance).toContain('immutable digest');
+    }
+    expect(workflow).toContain('deploy v1 ${COMMIT_SHA} ${GHCR_IMAGE}@${BUILD_DIGEST}');
   });
 
   it('keeps candidate migrations compatible with the fixed-point rollback image', async () => {

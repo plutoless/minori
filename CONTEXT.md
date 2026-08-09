@@ -121,7 +121,7 @@ The production host's current healthy image plus its two most recent verified he
 _Avoid_: Entire release history, Docker cache, GHCR retention, unverified image
 
 **Deployment Protocol**:
-The explicitly versioned command and image-contract agreement between GitHub's approved deploy job and the stable Vultr deployment entrypoint. A release is admitted only when the requested protocol, image-declared protocol, and host-supported protocol are identical.
+Deployment Protocol `v1` is the explicitly versioned command and immutable digest image-contract agreement between GitHub's approved deploy job and the stable Vultr deployment entrypoint. A release is admitted only when the requested protocol, image-declared protocol, and host-supported protocol are identical.
 _Avoid_: Workflow version, application version, implicit script compatibility, release tag
 
 **Release Line**:
