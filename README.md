@@ -1,6 +1,6 @@
 # Minori
 
-Minori is an open-ended Team Agent for Feishu conversations where the Minori Feishu App is available. It uses a Dedicated Knowledge User through `lark-cli`, keeps 30 days of Agent Thread history in Neon, and replies with clickable Feishu sources. The Agent can answer directly, read authorized knowledge, and autonomously create, append, or make one exact targeted replacement in a document. It has no delete, move, overwrite, permission, sharing, raw API, shell, arbitrary HTTP, or filesystem tool.
+Minori is an open-ended Team Agent for Feishu conversations where the Minori Feishu App is available. It uses a Dedicated Knowledge User through `lark-cli`, keeps 30 days of invoked conversation history in Neon, and replies with clickable Feishu sources. The Agent can answer directly, read authorized knowledge, and autonomously create, append, or make one exact targeted replacement in a document. It has no delete, rename, move, overwrite, trash, permission, sharing, raw API, shell, arbitrary HTTP, or filesystem tool.
 
 ## Required services
 
@@ -13,11 +13,15 @@ Minori is an open-ended Team Agent for Feishu conversations where the Minori Fei
 
 1. Enable the bot and configure its Feishu App availability for the people and conversations that should be able to invoke Minori.
 2. Enable long connection event delivery and subscribe to `im.message.receive_v1`.
-3. Grant the message-read/reply permissions required by the app and `im:message.reactions:write_only` for the Processing Reaction.
+3. Grant the existing message-read/reply permissions and `im:message.reactions:write_only` for the Processing Reaction. For Live Group History and real member names, also grant exactly `im:message.group_msg` and `im:chat.members:read`, then publish an app version containing both grants. Do not add contact, media, chat-management, or user-impersonation authority.
 4. Add the bot to the intended groups. Feishu App availability and the events Feishu delivers to Minori are the sole admission boundary; Minori has no second chat or membership allowlist.
-5. Record the app ID, app secret, and bot open ID. The bot open ID is required for mention and reply-thread activation checks.
+5. Record the app ID, app secret, and bot open ID. The bot open ID is required for mention and direct-reply activation checks.
 
-Every Feishu-delivered private message can invoke Minori. In groups, a direct mention, a reply to Minori, or a continuation in a known Agent Thread can invoke it; unrelated group-timeline messages remain ignored. External collaborators may invoke Minori when Feishu delivers their messages under the app's availability settings.
+Minori sends ordinary private and group replies; Feishu topic-mode groups are unsupported. Every Feishu-delivered private message can invoke Minori. In an ordinary-message group, only a direct mention or a direct reply to Minori invokes it. Other group messages are context and never triggers. All invocations in one group share the group `chat_id` as their Group Context and serialize, while different groups and private chats retain the global four-conversation concurrency. External collaborators may invoke Minori when Feishu delivers their messages under the app's availability settings.
+
+When a group invocation begins, Minori transiently reads an initial Live Group History window of at most 20 ordinary messages at or before that invocation's cutoff. It labels supported text and rich-text messages with real display names resolved from the current group's member list, represents unsupported content with typed omission markers such as `[未读取：image 消息]`, and may page older messages through the run-scoped `readEarlierGroupHistory` tool. That tool cannot select another group or a later cutoff.
+
+Feishu remains the source of truth for ordinary group history: Minori does not mirror those message bodies, display names, or member Open IDs into Neon. Only invoked requests and Minori replies enter retained conversation history; Group Context audit metadata contains availability, counts, page count, cutoff, and a stable error category. If history or name lookup is unavailable, Minori records `group_history_unavailable`, tells the model that the older context could not be loaded, and continues with the Current Invocation. It never presents degraded history as successfully loaded or exposes the raw provider error.
 
 The same existing app is also bound to Lark CLI; Minori never creates a second app. Its user OAuth capabilities must cover the Docs, Drive, and Wiki domains. The Dedicated Knowledge User's native Feishu content permissions are the content boundary: share only the intended spaces, folders, and documents with that account. Every delivered member, including an external collaborator, receives answers and operations from this same Dedicated Knowledge User's Knowledge Boundary—not permissions scoped to the requesting member. Minori does not add a second content allowlist or elevate that user's access.
 
@@ -43,7 +47,7 @@ Required environment values:
 - `OPENAI_API_KEY`
 - `AI_MODEL` (the release example uses `5.6-terra`)
 - optional `OPENAI_BASE_URL`; it must support the OpenAI Responses API and structured tool calls
-- `AGENT_MAX_STEPS` (default `20`) and `AGENT_TIMEOUT_MS` (default `180000`)
+- `AGENT_MAX_STEPS` (default `40`) and `AGENT_TIMEOUT_MS` (default `300000`, or 300 seconds)
 - `LARKSUITE_CLI_CONFIG_DIR` and `LARKSUITE_CLI_DATA_DIR`
 
 OpenAI requests set `store: false`. Minori never falls back to Chat Completions when a custom base URL fails the Responses/tool-call probe.
@@ -59,7 +63,7 @@ docker compose up -d
 curl --fail http://127.0.0.1:3000/health/ready
 ```
 
-The application container runs as UID 10001 with a read-only root filesystem. Only the health port is bound, and only on `127.0.0.1`. Feishu communication uses the outbound long connection. Create, append, and patch do not require confirmation; each is recorded in the sanitized `agent_runs` / `tool_runs` audit trail. Append and patch read the current revision, and a targeted patch fails rather than overwriting when its exact phrase is not unique or the document changed concurrently.
+The application container runs as UID/GID `10001:10001` with a read-only root filesystem. The production image is `amd64`. Only the health port is bound, and only on `127.0.0.1`. Feishu communication uses the outbound long connection. Create, append, and patch do not require confirmation; each is recorded in the sanitized `agent_runs` / `tool_runs` audit trail. Append and patch read the current revision, and a targeted patch fails rather than overwriting when its exact phrase is not unique or the document changed concurrently.
 
 ## Vultr host bootstrap
 
@@ -82,7 +86,9 @@ Keep the repository checkout on the host. For the first release, build the exact
 ```bash
 COMMIT_SHA="$(git rev-parse HEAD)"
 git cat-file -e "${COMMIT_SHA}^{commit}"
-git archive "$COMMIT_SHA" | docker build -t "minori:${COMMIT_SHA}" -
+git archive "$COMMIT_SHA" | docker build --platform linux/amd64 \
+  --label "org.opencontainers.image.revision=$COMMIT_SHA" \
+  --tag "minori:${COMMIT_SHA}" -
 docker run --rm -it \
   --env-file /opt/minori/minori.env \
   -v /opt/minori/lark:/var/lib/minori/lark \
@@ -102,18 +108,21 @@ Rollback requires an already-built exact image. If the target is unhealthy, the 
 
 ## Real acceptance
 
-After deployment:
+After both Live Group History permissions are granted and published, verify through sanitized probes that history loading and group-member name resolution succeed in an ordinary-message test group containing Minori. If either grant is pending approval or publication, keep the current production image healthy and stop before Group Context acceptance.
 
-1. Send an ordinary private message; confirm `Typing` appears after durable receipt, Minori answers without a scenario phrase, and `Typing` disappears terminally.
-2. Ask a general question in a group where the app is available by directly mentioning Minori; confirm it can answer without forcing a knowledge workflow.
-3. Continue in the same Agent Thread without mentioning it again, then ask a knowledge question and open the returned source link.
-4. If an external test identity is available, ask from that collaborator and confirm the Feishu-delivered request is accepted.
-5. Create a disposable document under an authorized fixture parent, append a clearly marked section, and patch one unique phrase.
-6. Make a concurrent edit before another patch; confirm Minori re-reads or reports a conflict rather than overwriting.
-7. Confirm the final reply includes the document URL and concise write receipt, and the audit table records sanitized create, append, patch, and conflict outcomes.
-8. Restart the service, continue in private chat, confirm conversation continuity, Lark readiness, and another knowledge read, then remove the disposable document manually in Feishu because Minori has no delete tool.
+Against one exact commit and image:
 
-Record only message IDs, document URLs, commit SHA, image tag, timestamps, readiness categories, and pass/fail outcomes in the gitignored `acceptance.local.jsonl`. Do not record tokens, message bodies, or document contents.
+1. Send a private message; verify an ordinary reply, `Typing` after durable persistence, and terminal `Typing` removal.
+2. In an ordinary-message group, send several human messages from two people, then directly mention Minori and request a summary. Verify both display names and pre-trigger content influence the answer without creating a topic.
+3. Send a new top-level direct mention in the same group and verify it serializes under the same Group Context.
+4. Directly reply to Minori without another mention and verify it invokes Minori with recent group history.
+5. Send an unrelated ordinary group message and verify it does not enqueue an Agent event.
+6. Ask for information older than 20 messages and verify `readEarlierGroupHistory` is audited with a page count greater than one while ordinary group bodies and names remain absent from Neon.
+7. Verify `group_history_unavailable` locally with a controlled permission/API double; do not revoke a production permission during acceptance.
+8. Restart the service and repeat one private and one group invocation. Verify readiness, persisted OAuth, Group Context, and ordinary non-topic replies remain healthy.
+9. Re-run one real knowledge read and source link, then disposable create, append, and exact patch operations. Preserve the Write Replay Boundary evidence, and manually remove the disposable document in Feishu because Minori has no delete tool.
+
+Append one object per check to the gitignored `acceptance.local.jsonl`. Records may contain only the check name, exact full commit and image, trigger/reply IDs for invoked messages, cutoff timestamp, history status/count/page count, readiness category, timestamp, and pass/fail result. Never record group-history bodies, member names, Open IDs, prompts, provider output, OAuth data, environment values, credentials, or document contents.
 
 ## Operations
 

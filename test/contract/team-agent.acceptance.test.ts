@@ -368,7 +368,7 @@ describe('open team Agent release contract', () => {
         }, signal);
       },
     });
-    const first = normalizeMessageEvent(rawEvent({
+    const groupMention = normalizeMessageEvent(rawEvent({
       event_id: 'evt_context_1',
       sender: { sender_type: 'user', sender_id: { open_id: 'ou_current_1' } },
       message: {
@@ -379,22 +379,41 @@ describe('open team Agent release contract', () => {
         mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }],
       },
     }), { botOpenId: BOT_OPEN_ID })!;
-    const second = normalizeMessageEvent(rawEvent({
+    const groupReply = normalizeMessageEvent(rawEvent({
       event_id: 'evt_context_2',
       sender: { sender_type: 'user', sender_id: { open_id: 'ou_current_2' } },
       message: {
-        message_id: 'om_context_2', parent_id: 'om_root_b',
+        message_id: 'om_context_2', parent_id: 'om_minori_reply',
         chat_id: 'oc_team', chat_type: 'group',
         message_type: 'text', create_time: '1786202460000',
-        content: JSON.stringify({ text: '@_user_1 what changed?' }),
-        mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }],
+        content: JSON.stringify({ text: 'what changed?' }),
+        mentions: [],
       },
-    }), { botOpenId: BOT_OPEN_ID })!;
+    }), { botOpenId: BOT_OPEN_ID, repliedToBot: true })!;
+    const unrelatedTimelineCandidate = normalizeMessageEvent(rawEvent({
+      event_id: 'evt_context_noise',
+      message: {
+        message_id: 'om_context_noise', root_id: 'om_root_a',
+        chat_id: 'oc_team', chat_type: 'group',
+        message_type: 'text', create_time: '1786202470000',
+        content: JSON.stringify({ text: 'unrelated timeline message' }),
+        mentions: [],
+      },
+    }), { botOpenId: BOT_OPEN_ID });
+    const normalizedTimelineEvents = [
+      groupMention,
+      groupReply,
+      unrelatedTimelineCandidate,
+    ].filter((event): event is NormalizedMessage => event !== null);
+    const unrelatedTimelineEvent = normalizedTimelineEvents.find(
+      (event) => event.eventId === 'evt_context_noise',
+    );
 
-    expect(first.conversationKey).toBe('oc_team');
-    expect(second.conversationKey).toBe('oc_team');
-    await events.enqueue(first);
-    await events.enqueue(second);
+    expect(groupMention.conversationKey).toBe('oc_team');
+    expect(groupReply.conversationKey).toBe('oc_team');
+    expect(unrelatedTimelineEvent).toBeUndefined();
+    await events.enqueue(groupMention);
+    await events.enqueue(groupReply);
     const firstBatch = await events.claimReady(4, new Date(Date.now() + 60_000));
     expect(firstBatch.map(({ eventId }) => eventId)).toEqual(['evt_context_1']);
     await worker.process(firstBatch[0]!);
@@ -426,6 +445,17 @@ describe('open team Agent release contract', () => {
     expect(persistedBodies).not.toContain('Alice');
     expect(persistedBodies).not.toContain('Bob');
     expect(persistedBodies).not.toContain('Carol');
+    const persistedOrdinaryHistoryRows = async () => (await database.pool.query(
+      `select message_id from messages
+       where content in (
+         'Initial Alice context.',
+         '[未读取：image 消息]',
+         'Earlier Minori context.',
+         'Second invocation context.',
+         'Transient older-page decision.'
+       )`,
+    )).rows;
+    expect(await persistedOrdinaryHistoryRows()).toHaveLength(0);
 
     const runs = await database.db.select().from(agentRuns);
     expect(runs.map((run) => ({

@@ -1,5 +1,7 @@
 # Open Team Agent Runtime Implementation Plan
 
+> **Superseded for future interaction and context work:** Use `docs/superpowers/plans/2026-08-08-live-group-context.md`. The material below remains the historical implementation and release evidence for the completed open-admission work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the already-authenticated Minori candidate as an open Feishu Team Agent whose admission follows Feishu delivery, whose queued messages receive immediate lightweight acknowledgement, and whose execution limits and write failures never cause blind whole-run replay.

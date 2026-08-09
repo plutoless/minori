@@ -38,6 +38,24 @@ describe('Team Agent release packaging contract', () => {
     expect(productionEnvironment).toContain('AGENT_TIMEOUT_MS=300000');
   });
 
+  it('documents the exact Bot Authority required for Live Group History', async () => {
+    const readme = await text('README.md');
+
+    expect(readme).toContain('im:message.group_msg');
+    expect(readme).toContain('im:chat.members:read');
+  });
+
+  it('keeps active product guidance on ordinary replies and Group Context', async () => {
+    const readme = await text('README.md');
+
+    expect(readme).toContain('ordinary private and group replies');
+    expect(readme).toContain('topic-mode groups are unsupported');
+    expect(readme).toContain('Group Context');
+    expect(readme).not.toMatch(
+      /Agent Threads?|known Agent Thread|(?:supports?|creates?|sends?) topic replies/iu,
+    );
+  });
+
   it('passes the fixed production env file through deploy and rollback Compose calls', async () => {
     const deploy = await text('scripts/deploy-vultr.sh');
     const rollback = await text('scripts/rollback-vultr.sh');

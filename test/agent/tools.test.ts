@@ -35,7 +35,7 @@ function service(): KnowledgeService {
 }
 
 describe('createKnowledgeTools', () => {
-  it('exposes exactly the approved typed knowledge authority', () => {
+  it('exposes the Initial Typed Write Set, knowledge reads, and retained history in p2p', () => {
     const tools = createKnowledgeTools(
       service(),
       { search: vi.fn().mockResolvedValue([]) },
@@ -55,8 +55,9 @@ describe('createKnowledgeTools', () => {
       'searchConversationHistory',
     ]);
     expect(Object.keys(tools).join(' ')).not.toMatch(
-      /delete|move|overwrite|permission|sharing|shell|http|filesystem|raw/iu,
+      /delete|rename|move|trash|overwrite|permission|sharing|shell|http|filesystem|raw/iu,
     );
+    expect(tools).not.toHaveProperty('readEarlierGroupHistory');
     const fetchSchema = tools.fetchDocument.inputSchema as {
       safeParse(value: unknown): { success: boolean };
     };
@@ -216,6 +217,21 @@ describe('createKnowledgeTools', () => {
     );
     const groupTool = tools.readEarlierGroupHistory;
     expect(groupTool).toBeDefined();
+    expect(Object.keys(tools)).toEqual([
+      'searchKnowledge',
+      'fetchDocument',
+      'listKnowledgeSpaces',
+      'listKnowledgeNodes',
+      'getKnowledgeNode',
+      'createDocument',
+      'appendDocument',
+      'patchDocument',
+      'searchConversationHistory',
+      'readEarlierGroupHistory',
+    ]);
+    expect(Object.keys(tools).join(' ')).not.toMatch(
+      /delete|rename|move|trash|overwrite|permission|sharing|shell|http|filesystem|raw/iu,
+    );
     const schema = groupTool!.inputSchema as {
       safeParse(value: unknown): { success: boolean };
     };

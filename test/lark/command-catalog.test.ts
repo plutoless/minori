@@ -11,7 +11,7 @@ describe('buildInvocation', () => {
     });
   });
 
-  it('maps every allowed read command to a fixed CLI shortcut', () => {
+  it('maps every approved knowledge read to a fixed CLI shortcut', () => {
     expect(buildInvocation({
       id: 'drive.search', query: 'roadmap', spaceIds: ['spc_1', 'spc_2'],
     }).args).toEqual([
@@ -41,7 +41,7 @@ describe('buildInvocation', () => {
       .toEqual(['auth', 'status', '--json', '--verify']);
   });
 
-  it('passes document content only through stdin for allowed typed writes', () => {
+  it('maps exactly the Initial Typed Write Set through fixed commands and stdin', () => {
     expect(buildInvocation({
       id: 'docs.create', title: 'Weekly update', content: '# Progress', parentToken: 'fld_1',
     })).toEqual({
@@ -86,6 +86,14 @@ describe('buildInvocation', () => {
     buildInvocation({ id: 'api.raw', path: '/open-apis/wiki/v2/spaces' });
     // @ts-expect-error destructive document operations are intentionally impossible
     buildInvocation({ id: 'docs.delete', doc: 'dox_1' });
+    // @ts-expect-error rename authority is intentionally impossible
+    buildInvocation({ id: 'docs.rename', doc: 'dox_1', title: 'Renamed' });
+    // @ts-expect-error move authority is intentionally impossible
+    buildInvocation({ id: 'docs.move', doc: 'dox_1', parentToken: 'fld_2' });
+    // @ts-expect-error trash authority is intentionally impossible
+    buildInvocation({ id: 'docs.trash', doc: 'dox_1' });
+    // @ts-expect-error permission authority is intentionally impossible
+    buildInvocation({ id: 'docs.permission', doc: 'dox_1', member: 'ou_other' });
     // @ts-expect-error raw shell commands are intentionally impossible
     buildInvocation({ id: 'shell.exec', command: 'rm -rf /' });
     // @ts-expect-error arbitrary HTTP requests are intentionally impossible
