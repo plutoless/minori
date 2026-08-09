@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
@@ -9,6 +12,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const entrypoint = 'deploy/vultr/ci-deploy';
+const installer = 'deploy/vultr/install-ci-deploy.sh';
 
 async function run(
   runtime: Awaited<ReturnType<typeof createFakeDeployRuntime>>,
@@ -31,7 +35,7 @@ async function run(
   }
 }
 
-describe('restricted forced-command parser', () => {
+describe('restricted forced-command parser', { timeout: 15_000 }, () => {
   it('passes one completely validated Deployment Protocol v1 request to the release engine', async () => {
     const runtime = await createFakeDeployRuntime();
     await runtime.installFakeReleaseEngine(
@@ -82,6 +86,19 @@ describe('restricted forced-command parser', () => {
     expect(await runtime.logText('docker.log')).toBe('');
   });
 
+  it.each([
+    ['uppercase SHA', `deploy v1 ${shaA.toUpperCase()} ${digestA}`],
+    ['uppercase digest', `deploy v1 ${shaA} ghcr.io/plutoless/minori@sha256:${'A'.repeat(64)}`],
+  ])('rejects %s under a hostile inherited locale before invoking the engine', async (_name, command) => {
+    const runtime = await createFakeDeployRuntime();
+    await runtime.installFakeReleaseEngine(`#!/usr/bin/env bash\nprintf called >> "$FAKE_RUNTIME_LOG/release.log"\n`);
+
+    const result = await run(runtime, command, [], { LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' });
+
+    expect(result).toEqual(expect.objectContaining({ code: 2, stdout: 'minori_deploy result=rejected\n', stderr: '' }));
+    expect(await runtime.logText('release.log')).toBe('');
+  });
+
   it('rejects lock contention without invoking the release engine', async () => {
     const runtime = await createFakeDeployRuntime();
     await runtime.installFakeReleaseEngine(`#!/usr/bin/env bash\nprintf called >> "$FAKE_RUNTIME_LOG/release.log"\n`);
@@ -97,6 +114,7 @@ describe('restricted forced-command parser', () => {
     ['failed_before_replace', 'failed_before_replace'],
     ['rolled_back', 'rolled_back'],
     ['rollback_failed', 'rollback_failed'],
+    ['recovery_failed', 'recovery_failed'],
   ])('propagates only the stable %s engine category', async (engineCategory, deployCategory) => {
     const runtime = await createFakeDeployRuntime();
     await runtime.installFakeReleaseEngine(
@@ -126,4 +144,60 @@ describe('restricted forced-command parser', () => {
       stderr: '',
     }));
   });
+});
+
+async function installerFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'minori-installer-test-'));
+  const key = join(root, 'deployment-key');
+  await execFileAsync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);
+  return { root, publicKey: `${key}.pub`, authorizedKeys: join(root, 'root', '.ssh', 'authorized_keys') };
+}
+
+async function runInstaller(root: string, publicKey: string) {
+  try {
+    const result = await execFileAsync(installer, [publicKey], {
+      env: { ...process.env, MINORI_INSTALL_TEST_MODE: '1', MINORI_INSTALL_TEST_ROOT: root },
+    });
+    return { code: 0, ...result };
+  } catch (error) {
+    const failure = error as { code: number | string; stdout?: string; stderr?: string };
+    return { code: failure.code, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' };
+  }
+}
+
+describe('isolated forced-command installer', { timeout: 15_000 }, () => {
+  it('installs exact forced-command leaves and preserves unrelated authorized keys lines', async () => {
+    const fixture = await installerFixture();
+    await mkdir(dirname(fixture.authorizedKeys), { recursive: true, mode: 0o700 });
+    await writeFile(fixture.authorizedKeys, 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBOGUS unrelated@example\n', { mode: 0o600 });
+
+    const result = await runInstaller(fixture.root, fixture.publicKey);
+
+    expect(result).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_ci_install result=success\n', stderr: '' }));
+    const authorized = await readFile(fixture.authorizedKeys, 'utf8');
+    expect(authorized).toContain('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBOGUS unrelated@example\n');
+    expect(authorized).toContain('restrict,command="/opt/minori/bin/ci-deploy" ssh-ed25519 ');
+    await expect(readFile(join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy'), 'utf8')).resolves.toContain('SSH_ORIGINAL_COMMAND');
+  });
+
+  it.each(['install root', 'bin directory', 'installed leaf'])(
+    'rejects a symlinked %s before authorized_keys or a target is changed',
+    async (targetKind) => {
+      const fixture = await installerFixture();
+      const target = join(fixture.root, 'symlink-target');
+      await mkdir(target, { recursive: true });
+      const installRoot = join(fixture.root, 'opt', 'minori');
+      const bin = join(installRoot, 'bin');
+      const leaf = join(bin, 'ci-deploy');
+      const targetPath = targetKind === 'install root' ? installRoot : targetKind === 'bin directory' ? bin : leaf;
+      await mkdir(dirname(targetPath), { recursive: true });
+      await symlink(target, targetPath);
+
+      const result = await runInstaller(fixture.root, fixture.publicKey);
+
+      expect(result).toEqual(expect.objectContaining({ code: 1, stderr: 'minori_ci_install result=unsafe_installation\n' }));
+      await expect(readFile(fixture.authorizedKeys, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(join(target, 'sentinel'), 'utf8').catch(() => 'absent')).toBe('absent');
+    },
+  );
 });

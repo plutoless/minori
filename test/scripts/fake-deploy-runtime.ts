@@ -33,8 +33,8 @@ next_sequence_value() {
 }
 
 if [[ "\${1:-}" == inspect && "\${2:-}" == --format ]]; then
-  if [[ -z "\${FAKE_CURRENT_IMAGE:-}" ]]; then exit 1; fi
-  printf '%s\n' "$FAKE_CURRENT_IMAGE"
+  if [[ ! -s "$FAKE_RUNTIME_LOG/current.image" ]]; then exit 1; fi
+  cat "$FAKE_RUNTIME_LOG/current.image"
   exit 0
 fi
 if [[ "\${1:-}" == pull ]]; then
@@ -118,7 +118,13 @@ if [[ "\${1:-}" == compose ]]; then
         printf '%s\n' "\${FAKE_SAVED_COMPOSE_IMAGE:-$MINORI_IMAGE}"
       fi
       ;;
-    *'up -d --no-build'*) next_sequence_value compose-up ;;
+    *'up -d --no-build'*)
+      if next_sequence_value compose-up; then
+        printf '%s\n' "$MINORI_IMAGE" > "$FAKE_RUNTIME_LOG/current.image"
+      else
+        exit 1
+      fi
+      ;;
     *) exit 1 ;;
   esac
   exit
@@ -198,6 +204,7 @@ export async function createFakeDeployRuntime() {
   await Promise.all([
     writeFile(join(root, 'minori.env'), 'DATABASE_URL=postgres://redacted\n', { mode: 0o600 }),
     writeFile(join(root, 'release', 'deployment-protocol'), 'v1\n'),
+    writeFile(join(log, 'current.image'), `minori:${shaB}\n`),
     writeFile(
       join(root, 'releases', `${shaB}.compose.yaml`),
       'services:\n  app:\n    image: ${MINORI_IMAGE}\n',
@@ -218,7 +225,6 @@ export async function createFakeDeployRuntime() {
     FAKE_RUNTIME_LOG: log,
     FAKE_REQUEST_SHA: shaA,
     FAKE_REQUEST_IMAGE: digestA,
-    FAKE_CURRENT_IMAGE: `minori:${shaB}`,
     FAKE_SHA_A: shaA,
     FAKE_SHA_B: shaB,
     FAKE_SHA_C: shaC,
@@ -239,6 +245,12 @@ export async function createFakeDeployRuntime() {
       } catch {
         return '';
       }
+    },
+    async setCurrentImage(image: string) {
+      await writeFile(join(log, 'current.image'), image ? `${image}\n` : '');
+    },
+    async currentImage() {
+      return (await readFile(join(log, 'current.image'), 'utf8')).trim();
     },
     async installFakeReleaseEngine(body = '#!/usr/bin/env bash\nexit 0\n') {
       await executable(join(root, 'bin', 'minori-release'), body);

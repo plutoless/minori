@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, readdir, readFile, stat } from 'node:fs/promises';
+import { chmod, lstat, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
@@ -22,9 +22,14 @@ const rehearsal = 'deploy/vultr/rehearse-release.sh';
 type Runtime = Awaited<ReturnType<typeof createFakeDeployRuntime>>;
 
 async function run(runtime: Runtime, extraEnv: NodeJS.ProcessEnv = {}, args = ['v1', shaA, digestA]) {
+  const effectiveEnv = { ...extraEnv };
+  if (Object.prototype.hasOwnProperty.call(effectiveEnv, 'FAKE_CURRENT_IMAGE')) {
+    await runtime.setCurrentImage(effectiveEnv.FAKE_CURRENT_IMAGE ?? '');
+    delete effectiveEnv.FAKE_CURRENT_IMAGE;
+  }
   try {
     const result = await execFileAsync(releaseEngine, args, {
-      env: { ...runtime.env, ...extraEnv },
+      env: { ...runtime.env, ...effectiveEnv },
     });
     return { code: 0, ...result };
   } catch (error) {
@@ -38,9 +43,14 @@ async function runRehearsal(
   extraEnv: NodeJS.ProcessEnv = {},
   args = [shaA, digestA],
 ) {
+  const effectiveEnv = { ...extraEnv };
+  if (Object.prototype.hasOwnProperty.call(effectiveEnv, 'FAKE_CURRENT_IMAGE')) {
+    await runtime.setCurrentImage(effectiveEnv.FAKE_CURRENT_IMAGE ?? '');
+    delete effectiveEnv.FAKE_CURRENT_IMAGE;
+  }
   try {
     const result = await execFileAsync(rehearsal, args, {
-      env: { ...runtime.env, ...extraEnv },
+      env: { ...runtime.env, ...effectiveEnv },
     });
     return { code: 0, ...result };
   } catch (error) {
@@ -53,6 +63,21 @@ async function records(runtime: Runtime) {
   const directory = join(runtime.root, 'releases', 'records');
   const names = await readdir(directory);
   return Promise.all(names.sort().map(async (name) => JSON.parse(await readFile(join(directory, name), 'utf8'))));
+}
+
+async function rehearsalRecords(runtime: Runtime) {
+  const directory = join(runtime.root, 'releases', 'rehearsal-records');
+  const names = await readdir(directory);
+  return Promise.all(names.sort().map(async (name) => JSON.parse(await readFile(join(directory, name), 'utf8'))));
+}
+
+async function pendingExists(runtime: Runtime) {
+  try {
+    await lstat(join(runtime.root, 'releases', 'pending.tsv'));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function seedDigestState(
@@ -68,7 +93,7 @@ async function seedDigestState(
   return completeRows;
 }
 
-describe('transactional digest release engine', () => {
+describe('transactional digest release engine', { timeout: 15_000 }, () => {
   it.each([
     ['pull failure', { FAKE_FAIL: 'pull' }],
     ['image protocol mismatch', { FAKE_PROTOCOL: 'v2' }],
@@ -307,15 +332,18 @@ describe('transactional digest release engine', () => {
     expect(await runtime.logText('docker.log')).toBe('');
   });
 
-  it('rejects a production env file that is not mode 0600 before Docker is touched', async () => {
-    const runtime = await createFakeDeployRuntime();
-    await chmod(join(runtime.root, 'minori.env'), 0o640);
+  it.each([0o200, 0o400, 0o640, 0o700])(
+    'rejects a production env file with mode %s before Docker is touched',
+    async (mode) => {
+      const runtime = await createFakeDeployRuntime();
+      await chmod(join(runtime.root, 'minori.env'), mode);
 
-    const result = await run(runtime);
+      const result = await run(runtime);
 
-    expect(result.code).toBe(1);
-    expect(await runtime.logText('docker.log')).toBe('');
-  });
+      expect(result.code).toBe(1);
+      expect(await runtime.logText('docker.log')).toBe('');
+    },
+  );
 
   it('validates the captured current Compose contract before pulling the candidate', async () => {
     const runtime = await createFakeDeployRuntime();
@@ -342,9 +370,99 @@ describe('transactional digest release engine', () => {
     expect(await runtime.logText('docker.log')).toBe('');
     expect(await records(runtime)).toEqual([]);
   });
+
+  it.each(['after_journal', 'after_candidate_switch', 'after_candidate_ready', 'after_state_write'])(
+    'restores exact service and durable state on an interrupt at %s',
+    async (point) => {
+      const runtime = await createFakeDeployRuntime();
+      const priorRows = await seedDigestState(runtime);
+      await runtime.setCurrentImage(digestB);
+      const originalState = `${priorRows[0].join('\t')}\n`;
+
+      const result = await run(runtime, { MINORI_TEST_INTERRUPT_AT: point });
+
+      expect(result.stdout).toBe('minori_release result=rolled_back\n');
+      expect(await runtime.currentImage()).toBe(digestB);
+      expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(originalState);
+      expect(await pendingExists(runtime)).toBe(false);
+    },
+  );
+
+  it.each(['after_journal', 'after_candidate_switch', 'after_state_write'])(
+    'reconciles a crash journal before admitting a restart at %s',
+    async (point) => {
+      const runtime = await createFakeDeployRuntime();
+      await seedDigestState(runtime);
+      await runtime.setCurrentImage(digestB);
+
+      await run(runtime, { MINORI_TEST_CRASH_AT: point });
+      expect(await pendingExists(runtime)).toBe(true);
+
+      const restarted = await run(runtime);
+
+      expect(restarted).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_release result=success\n' }));
+      expect(await runtime.currentImage()).toBe(digestA);
+      expect((await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).split('\n')[0]).toContain(`\t${digestA}\t`);
+      expect(await pendingExists(runtime)).toBe(false);
+      const docker = await runtime.logText('docker.log');
+      if (point === 'after_candidate_switch') {
+        expect(docker.lastIndexOf(`image=${digestB} :: compose --project-name minori`)).toBeGreaterThan(
+          docker.indexOf(`image=${digestA} :: compose --project-name minori`),
+        );
+      }
+    },
+    15_000,
+  );
+
+  it.each(['mismatched original metadata', 'leading header tab', 'trailing header tab', 'mode 0400', 'mode 0640'])(
+    'rejects a pending journal with %s before a new pull or switch',
+    async (scenario) => {
+      const runtime = await createFakeDeployRuntime();
+      await seedDigestState(runtime);
+      await runtime.setCurrentImage(digestB);
+      await run(runtime, { MINORI_TEST_CRASH_AT: 'after_journal' });
+      const pending = join(runtime.root, 'releases', 'pending.tsv');
+      if (scenario === 'mismatched original metadata') {
+        const contents = await readFile(pending, 'utf8');
+        await writeFile(pending, contents.replace(`original\tv1\t${shaB}`, `original\tv1\t${shaC}`), { mode: 0o600 });
+      } else if (scenario === 'leading header tab' || scenario === 'trailing header tab') {
+        const lines = (await readFile(pending, 'utf8')).split('\n');
+        lines[0] = scenario === 'leading header tab' ? `\t${lines[0]}` : `${lines[0]}\t`;
+        await writeFile(pending, lines.join('\n'), { mode: 0o600 });
+      } else {
+        await chmod(pending, scenario === 'mode 0400' ? 0o400 : 0o640);
+      }
+      const before = (await runtime.logText('docker.log')).length;
+
+      const restarted = await run(runtime);
+
+      expect(restarted).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=recovery_failed\n' }));
+      const newDocker = (await runtime.logText('docker.log')).slice(before);
+      expect(newDocker).not.toContain('pull');
+      expect(newDocker).not.toContain('up -d --no-build');
+      expect(await pendingExists(runtime)).toBe(true);
+    },
+    15_000,
+  );
+
+  it.each(['replaced', 'healthy', 'state_written'])(
+    'rolls back when durable journal phase %s cannot be written',
+    async (phase) => {
+      const runtime = await createFakeDeployRuntime();
+      const rows = await seedDigestState(runtime);
+      await runtime.setCurrentImage(digestB);
+
+      const result = await run(runtime, { MINORI_TEST_FAIL_PENDING_PHASE: phase });
+
+      expect(result).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=rolled_back\n' }));
+      expect(await runtime.currentImage()).toBe(digestB);
+      expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(`${rows[0].join('\t')}\n`);
+      expect(await pendingExists(runtime)).toBe(false);
+    },
+  );
 });
 
-describe('bounded saved-release rehearsal', () => {
+describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
   it('switches only to saved position 1 and restores the exact saved position 0 digest', async () => {
     const runtime = await createFakeDeployRuntime();
     const rows = await seedDigestState(runtime, [
@@ -455,5 +573,148 @@ describe('bounded saved-release rehearsal', () => {
     expect(docker.lastIndexOf(`image=${digestA} :: compose --project-name minori`)).toBeGreaterThan(
       docker.indexOf(`image=${digestB} :: compose --project-name minori`),
     );
+  });
+
+  it.each([0o200, 0o400, 0o640, 0o700])(
+    'rejects env mode %s before a rehearsal switch',
+    async (mode) => {
+      const runtime = await createFakeDeployRuntime();
+      await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB]]);
+      await runtime.setCurrentImage(digestA);
+      await chmod(join(runtime.root, 'minori.env'), mode);
+
+      const result = await runRehearsal(runtime);
+
+      expect(result.code).toBe(2);
+      expect(await runtime.logText('docker.log')).toBe('');
+    },
+  );
+
+  it.each(['group writable Lark directory', 'symlinked Lark directory'])(
+    'rejects a %s before a rehearsal switch',
+    async (scenario) => {
+      const runtime = await createFakeDeployRuntime();
+      await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB]]);
+      await runtime.setCurrentImage(digestA);
+      const lark = join(runtime.root, 'lark');
+      if (scenario === 'group writable Lark directory') {
+        await chmod(lark, 0o770);
+      } else {
+        const target = join(runtime.root, 'lark-target');
+        await rm(lark, { recursive: true });
+        await symlink(target, lark);
+      }
+
+      const result = await runRehearsal(runtime);
+
+      expect(result.code).toBe(2);
+      expect(await runtime.logText('docker.log')).toBe('');
+    },
+  );
+
+  it.each(['after_rehearsal_journal', 'after_predecessor_switch', 'after_current_switch'])(
+    'restores position 0 and clears the journal on an interrupt at %s',
+    async (point) => {
+      const runtime = await createFakeDeployRuntime();
+      const rows = await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB], [shaC, digestC]]);
+      await runtime.setCurrentImage(digestA);
+      const originalState = `${rows.map((row) => row.join('\t')).join('\n')}\n`;
+
+      const result = await runRehearsal(runtime, { MINORI_TEST_INTERRUPT_AT: point });
+
+      expect(result.stdout).toBe('minori_rehearsal result=interrupted_restored\n');
+      expect(await runtime.currentImage()).toBe(digestA);
+      expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(originalState);
+      expect(await pendingExists(runtime)).toBe(false);
+    },
+  );
+
+  it('recovers a crash after the predecessor switch before running a new rehearsal', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB]]);
+    await runtime.setCurrentImage(digestA);
+
+    await runRehearsal(runtime, { MINORI_TEST_CRASH_AT: 'after_predecessor_switch' });
+    expect(await runtime.currentImage()).toBe(digestB);
+    expect(await pendingExists(runtime)).toBe(true);
+
+    const restarted = await runRehearsal(runtime);
+
+    expect(restarted).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_rehearsal result=success\n' }));
+    expect(await runtime.currentImage()).toBe(digestA);
+    expect(await pendingExists(runtime)).toBe(false);
+  }, 15_000);
+
+  it('falls back to the proven predecessor and durably promotes it when forward restore fails', async () => {
+    const runtime = await createFakeDeployRuntime();
+    const rows = await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB], [shaC, digestC]]);
+    await runtime.setCurrentImage(digestA);
+
+    const result = await runRehearsal(runtime, { FAKE_READY_SEQUENCE: '1,0,1' });
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 1,
+      stdout: 'minori_rehearsal result=restore_failed_recovered_predecessor\n',
+    }));
+    expect(await runtime.currentImage()).toBe(digestB);
+    expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(
+      `${rows[1].join('\t')}\n${rows[0].join('\t')}\n${rows[2].join('\t')}\n`,
+    );
+    expect(await pendingExists(runtime)).toBe(false);
+    expect(await rehearsalRecords(runtime)).toEqual([
+      {
+        protocol: 'v1',
+        timestamp: '2026-08-09T12:34:56Z',
+        result: 'restore_failed_recovered_predecessor',
+        recoveredSha: shaB,
+        recoveredImage: digestB,
+      },
+    ]);
+  });
+
+  it.each(['after_fallback_switch', 'after_fallback_state'])(
+    'reconciles a crash at %s to the proven predecessor',
+    async (point) => {
+      const runtime = await createFakeDeployRuntime();
+      const rows = await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB], [shaC, digestC]]);
+      await runtime.setCurrentImage(digestA);
+
+      await runRehearsal(runtime, {
+        FAKE_READY_SEQUENCE: '1,0,1',
+        MINORI_TEST_CRASH_AT: point,
+      });
+      expect(await runtime.currentImage()).toBe(digestB);
+      expect(await pendingExists(runtime)).toBe(true);
+
+      const restarted = await runRehearsal(runtime, { FAKE_READY_SEQUENCE: '1' });
+
+      expect(restarted).toEqual(expect.objectContaining({ code: 2, stdout: 'minori_rehearsal result=rejected\n' }));
+      expect(await runtime.currentImage()).toBe(digestB);
+      expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(
+        `${rows[1].join('\t')}\n${rows[0].join('\t')}\n${rows[2].join('\t')}\n`,
+      );
+      expect(await pendingExists(runtime)).toBe(false);
+      expect(await rehearsalRecords(runtime)).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ['predecessor_proven', '1'],
+    ['restoring_current', '1'],
+    ['fallback', '1,0,1'],
+  ])('restores position 0 when rehearsal journal phase %s cannot be written', async (phase, readySequence) => {
+    const runtime = await createFakeDeployRuntime();
+    const rows = await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB]]);
+    await runtime.setCurrentImage(digestA);
+
+    const result = await runRehearsal(runtime, {
+      FAKE_READY_SEQUENCE: readySequence,
+      MINORI_TEST_FAIL_PENDING_PHASE: phase,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_rehearsal result=journal_failed_restored\n' }));
+    expect(await runtime.currentImage()).toBe(digestA);
+    expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(`${rows.map((row) => row.join('\t')).join('\n')}\n`);
+    expect(await pendingExists(runtime)).toBe(false);
   });
 });

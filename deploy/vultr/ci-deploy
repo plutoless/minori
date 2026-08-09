@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 umask 077
+LC_ALL=C
+LANG=C
+IFS=$' \t\n'
+unset BASH_ENV ENV CDPATH
+export LC_ALL LANG IFS
 
 emit_and_exit() {
   printf 'minori_deploy result=%s\n' "$1"
@@ -12,7 +17,7 @@ if [[ $# -ne 0 ]]; then
 fi
 
 original_command="${SSH_ORIGINAL_COMMAND-}"
-command_pattern='^deploy v1 ([0-9a-f]{40}) (ghcr\.io/plutoless/minori@sha256:[0-9a-f]{64})$'
+command_pattern='^deploy v1 ([0123456789abcdef]{40}) (ghcr\.io/plutoless/minori@sha256:[0123456789abcdef]{64})$'
 if [[ ! "$original_command" =~ $command_pattern ]]; then
   emit_and_exit rejected 2
 fi
@@ -62,5 +67,6 @@ case "$release_output" in
   'minori_release result=failed_before_replace') emit_and_exit failed_before_replace 1 ;;
   'minori_release result=rolled_back') emit_and_exit rolled_back 1 ;;
   'minori_release result=rollback_failed') emit_and_exit rollback_failed 1 ;;
+  'minori_release result=recovery_failed') emit_and_exit recovery_failed 1 ;;
   *) emit_and_exit failed 1 ;;
 esac
