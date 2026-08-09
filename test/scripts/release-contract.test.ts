@@ -138,4 +138,18 @@ describe('Team Agent release packaging contract', () => {
     expect(runtime).toContain('chown -R 10001:10001 /app /var/lib/minori/lark /tmp/minori');
     expect(runtime).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED');
   });
+
+  it('embeds the exact immutable deployment contract at fixed runtime paths', async () => {
+    const dockerfile = await text('Dockerfile');
+    const protocol = await text('deploy/vultr/deployment-protocol');
+    const runtime = dockerfile.slice(dockerfile.indexOf('FROM node:22-bookworm-slim AS runtime'));
+
+    expect(protocol).toBe('v1\n');
+    expect(runtime).toContain(
+      'COPY --chown=minori:minori deploy/vultr/compose.production.yaml /opt/minori/release/compose.production.yaml',
+    );
+    expect(runtime).toContain(
+      'COPY --chown=minori:minori deploy/vultr/deployment-protocol /opt/minori/release/deployment-protocol',
+    );
+  });
 });
