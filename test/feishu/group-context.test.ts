@@ -76,6 +76,14 @@ describe('FeishuGroupContextSource', () => {
       items: [
         userMessage('om_later', 'ou_future', '2026-08-08T10:00:00.501Z', 'future body'),
         userMessage('om_trigger', 'ou_current', '2026-08-08T10:00:00.500Z', 'trigger body'),
+        userMessage('om_at_cutoff', 'ou_zhang', '2026-08-08T10:00:00.500Z', 'cutoff context'),
+        userMessage(
+          'om_post', 'ou_zhang', '2026-08-08T09:59:59.500Z',
+          JSON.stringify({
+            title: 'Rich context',
+            content: [[{ tag: 'text', text: 'decision in post' }]],
+          }), 'post',
+        ),
         userMessage(
           'om_image', 'ou_external', '2026-08-08T09:59:59.000Z',
           JSON.stringify({ image_key: 'img_secret' }), 'image',
@@ -108,11 +116,17 @@ describe('FeishuGroupContextSource', () => {
           role: 'user',
           content: '[未读取：image 消息]',
         }),
+        expect.objectContaining({
+          speakerName: '张三', role: 'user', content: 'Rich context\ndecision in post',
+        }),
+        expect.objectContaining({
+          speakerName: '张三', role: 'user', content: 'cutoff context',
+        }),
       ],
       currentSenderName: '李四',
       audit: {
         status: 'loaded',
-        messageCount: 3,
+        messageCount: 5,
         pageCallCount: 1,
         cutoff,
       },
@@ -150,8 +164,13 @@ describe('FeishuGroupContextSource', () => {
         items: [userMessage('om_older', 'ou_zhang', '2026-08-08T09:00:00.000Z', 'older')],
       } })
       .mockResolvedValueOnce({ data: {
-        has_more: false,
+        has_more: true,
+        page_token: 'provider_page_4',
         items: [userMessage('om_oldest', 'ou_zhang', '2026-08-08T08:00:00.000Z', 'oldest')],
+      } })
+      .mockResolvedValueOnce({ data: {
+        has_more: false,
+        items: [userMessage('om_ancient', 'ou_zhang', '2026-08-08T07:00:00.000Z', 'ancient')],
       } });
     client.im.v1.chatMembers.get.mockResolvedValue({ data: {
       has_more: false,
@@ -182,6 +201,8 @@ describe('FeishuGroupContextSource', () => {
       .rejects.toThrow('invalid_group_history_cursor');
     await expect(reader.readEarlier({ cursor: 'provider_page_3', limit: 20 }))
       .rejects.toThrow('invalid_group_history_cursor');
+    await expect(reader.readEarlier({ limit: 20 }))
+      .rejects.toThrow('invalid_group_history_cursor');
     await expect(reader.readEarlier({ cursor: 'group_cursor_1', limit: 51 }))
       .rejects.toThrow('invalid_group_history_limit');
     await expect(reader.readEarlier({ cursor: 'group_cursor_1', limit: 0 }))
@@ -200,7 +221,15 @@ describe('FeishuGroupContextSource', () => {
     await expect(reader.readEarlier({ cursor: 'group_cursor_1', limit: 20 }))
       .resolves.toMatchObject({
         messages: [expect.objectContaining({ content: 'oldest' })],
+        nextCursor: 'group_cursor_2',
         audit: { status: 'loaded', messageCount: 3, pageCallCount: 3 },
+      });
+    await expect(reader.readEarlier({ cursor: 'group_cursor_1', limit: 20 }))
+      .rejects.toThrow('invalid_group_history_cursor');
+    await expect(reader.readEarlier({ cursor: 'group_cursor_2', limit: 20 }))
+      .resolves.toMatchObject({
+        messages: [expect.objectContaining({ content: 'ancient' })],
+        audit: { status: 'loaded', messageCount: 4, pageCallCount: 4 },
       });
     expect(client.im.v1.message.list).toHaveBeenLastCalledWith({ params: {
       container_id_type: 'chat',
@@ -208,11 +237,11 @@ describe('FeishuGroupContextSource', () => {
       end_time: String(Math.floor(cutoff.getTime() / 1_000)),
       sort_type: 'ByCreateTimeDesc',
       page_size: 20,
-      page_token: 'provider_page_3',
+      page_token: 'provider_page_4',
     } });
   });
 
-  it('advances consecutive cursorless reads through unique older pages', async () => {
+  it('allows only the first older-page request to omit a cursor', async () => {
     const client = sdk();
     client.im.v1.message.list.mockImplementation(async ({ params }) => {
       if (params.page_token === undefined) {
@@ -253,25 +282,24 @@ describe('FeishuGroupContextSource', () => {
     const reader = openReader(client);
 
     await reader.loadInitial();
-    const first = await reader.readEarlier({ limit: 20 });
-    const second = await reader.readEarlier({ limit: 20 });
+    const [first, duplicate] = await Promise.allSettled([
+      reader.readEarlier({ limit: 20 }),
+      reader.readEarlier({ limit: 20 }),
+    ]);
 
     expect(first).toMatchObject({
-      messages: [expect.objectContaining({ content: 'older' })],
-      audit: { messageCount: 2, pageCallCount: 2 },
+      status: 'fulfilled',
+      value: {
+        messages: [expect.objectContaining({ content: 'older' })],
+        nextCursor: 'group_cursor_1',
+        audit: { messageCount: 2, pageCallCount: 2 },
+      },
     });
-    expect(second).toMatchObject({
-      messages: [expect.objectContaining({ content: 'oldest' })],
-      audit: { messageCount: 3, pageCallCount: 3 },
+    expect(duplicate).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({ message: 'invalid_group_history_cursor' }),
     });
-    expect(client.im.v1.message.list).toHaveBeenLastCalledWith({ params: {
-      container_id_type: 'chat',
-      container_id: 'oc_team',
-      end_time: String(Math.floor(cutoff.getTime() / 1_000)),
-      sort_type: 'ByCreateTimeDesc',
-      page_size: 20,
-      page_token: 'provider_page_3',
-    } });
+    expect(client.im.v1.message.list).toHaveBeenCalledTimes(2);
   });
 
   it('keeps other bot output as non-Minori background', async () => {

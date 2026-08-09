@@ -75,7 +75,7 @@ describe('PostgresEventStore', () => {
     expect(secondClaim.map((claimed) => claimed.eventId)).toEqual(['evt_2']);
   });
 
-  it('does not let concurrent workers claim two events from one Group Context across reply roots', async () => {
+  it('does not let concurrent workers claim two events from one Group Context', async () => {
     await store.enqueue(event({ messageId: 'om_1' }));
     await store.enqueue(event({ eventId: 'evt_2', messageId: 'om_2', conversationKey: 'oc_1' }));
     const leaseUntil = new Date(Date.now() + 60_000);

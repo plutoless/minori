@@ -63,6 +63,12 @@ const MAX_PAGE_SIZE = 50;
 const UNRESOLVED_MEMBER_NAME = '姓名不可用的成员';
 const OTHER_BOT_NAME = '其他机器人';
 
+type HistoryTraversalState =
+  | { kind: 'not_loaded' }
+  | { kind: 'first'; providerToken?: string }
+  | { kind: 'opaque'; cursor: string; providerToken: string }
+  | { kind: 'exhausted' };
+
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason === undefined ? new Error('operation_aborted') : signal.reason;
 }
@@ -91,10 +97,9 @@ function validProviderPageToken(hasMore: boolean | undefined, pageToken: string 
 }
 
 class FeishuScopedGroupContextReader implements ScopedGroupContextReader {
-  private readonly providerCursors = new Map<string, string>();
   private readonly memberNames = new Map<string, string>();
   private nextOpaqueCursor = 1;
-  private firstEarlierProviderToken: string | undefined;
+  private historyTraversal: HistoryTraversalState = { kind: 'not_loaded' };
   private memberProviderToken: string | undefined;
   private membersStarted = false;
   private membersExhausted = false;
@@ -112,7 +117,10 @@ class FeishuScopedGroupContextReader implements ScopedGroupContextReader {
   async loadInitial(signal?: AbortSignal): Promise<InitialGroupContext> {
     signal?.throwIfAborted();
     const loaded = await this.loadProviderPage(undefined, INITIAL_MESSAGE_LIMIT, signal);
-    this.firstEarlierProviderToken = loaded.nextProviderToken;
+    this.historyTraversal = {
+      kind: 'first',
+      ...(loaded.nextProviderToken ? { providerToken: loaded.nextProviderToken } : {}),
+    };
     const targetIds = new Set(loaded.messages.flatMap((message) => (
       message.speakerKind === 'member' && message.senderId ? [message.senderId] : []
     )));
@@ -139,15 +147,16 @@ class FeishuScopedGroupContextReader implements ScopedGroupContextReader {
       throw new Error('invalid_group_history_limit');
     }
 
-    const requestedCursor = input.cursor;
-    const usesImplicitCursor = requestedCursor === undefined;
-    let providerToken: string | undefined;
-    if (requestedCursor !== undefined) {
-      providerToken = this.providerCursors.get(requestedCursor);
-      if (!providerToken) throw new Error('invalid_group_history_cursor');
-    } else {
-      providerToken = this.firstEarlierProviderToken;
+    const traversal = this.historyTraversal;
+    const isFirstRequest = traversal.kind === 'first' && input.cursor === undefined;
+    const isExpectedCursor = traversal.kind === 'opaque' && input.cursor === traversal.cursor;
+    if (!isFirstRequest && !isExpectedCursor) {
+      throw new Error('invalid_group_history_cursor');
     }
+    const providerToken = traversal.kind === 'first' || traversal.kind === 'opaque'
+      ? traversal.providerToken
+      : undefined;
+    this.historyTraversal = { kind: 'exhausted' };
 
     if (this.historyUnavailable || !providerToken) {
       return { messages: [], audit: this.audit() };
@@ -158,10 +167,9 @@ class FeishuScopedGroupContextReader implements ScopedGroupContextReader {
       message.speakerKind === 'member' && message.senderId ? [message.senderId] : []
     )));
     await this.resolveMemberNames(targetIds, signal);
-    if (usesImplicitCursor) this.firstEarlierProviderToken = loaded.nextProviderToken;
 
     const nextCursor = loaded.nextProviderToken
-      ? this.registerProviderCursor(loaded.nextProviderToken)
+      ? this.registerNextProviderCursor(loaded.nextProviderToken)
       : undefined;
     return {
       messages: this.renderMessages(loaded.messages),
@@ -332,10 +340,10 @@ class FeishuScopedGroupContextReader implements ScopedGroupContextReader {
     });
   }
 
-  private registerProviderCursor(providerToken: string): string {
+  private registerNextProviderCursor(providerToken: string): string {
     const opaqueCursor = `group_cursor_${this.nextOpaqueCursor}`;
     this.nextOpaqueCursor += 1;
-    this.providerCursors.set(opaqueCursor, providerToken);
+    this.historyTraversal = { kind: 'opaque', cursor: opaqueCursor, providerToken };
     return opaqueCursor;
   }
 

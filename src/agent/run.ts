@@ -367,6 +367,9 @@ export async function runKnowledgeAgent(
       runSignal,
     );
     const authoritativeHistory = storedHistory.map(({ role, content }) => ({ role, content }));
+    const retainedHistoryBeforeInvocation = storedHistory
+      .filter((message) => message.messageId !== dependencies.triggerMessageId)
+      .map(({ role, content }) => ({ role, content }));
     const trigger = storedHistory.find(
       (message) => message.messageId === dependencies.triggerMessageId,
     );
@@ -453,6 +456,9 @@ export async function runKnowledgeAgent(
     }, stepBudget);
     const history = input.trigger.chatType === 'group'
       ? selectRecentHistory([
+        ...(initialGroupContext!.audit.status === 'unavailable'
+          ? retainedHistoryBeforeInvocation
+          : []),
         ...groupModelMessages(initialGroupContext!),
         {
           role: 'user',

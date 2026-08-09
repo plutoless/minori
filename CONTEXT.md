@@ -49,7 +49,7 @@ The ordinary Feishu group chat identified by its chat ID and used as shared cont
 _Avoid_: Agent Thread, Group Reply Chain, Feishu topic, always-on Agent
 
 **Live Group History**:
-A bounded window of ordinary messages read from the current Group Context only when Minori is invoked. It may be sent to the model for that run but is not copied wholesale into Minori's persistence; Feishu remains its source of truth.
+A bounded window of ordinary messages read from the current Group Context only when Minori is invoked. When it loads, it supplies group background without mixing in Retained Conversation History. It may be sent to the model for that run but is not copied wholesale into Minori's persistence; Feishu remains its source of truth. If it is unavailable, the group run instead receives prior Retained Conversation History, a stable limitation fact, and the distinct Current Invocation.
 _Avoid_: Retained Conversation History, group mirror, always-on ingestion
 
 **Current Invocation**:
@@ -101,5 +101,5 @@ A reply whose Feishu send was attempted but whose success was not durably record
 _Avoid_: Failed reply, queued reply
 
 **Retained Conversation History**:
-Unexpired messages from the current Group Context or private conversation that Minori has durably retained. Minori automatically supplies a recent context window and may read additional live history only from that same conversation; it does not summarize messages into long-term memory or expose another conversation.
+Unexpired invoked messages and Minori replies from the current Group Context or private conversation that Minori has durably retained. Private runs automatically receive a recent retained context window. Group runs receive it only as a fallback when Live Group History is unavailable; successfully loaded Live Group History does not mix with retained records. Minori may search retained history only from that same conversation and does not summarize messages into long-term memory or expose another conversation.
 _Avoid_: Retained Thread History, Live Group History, global chat search, durable memory, hidden summary

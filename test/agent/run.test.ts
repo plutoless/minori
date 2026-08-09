@@ -68,6 +68,10 @@ function conversationStore(
         content: 'Earlier context', createdAt: new Date('2026-08-05T00:00:00Z'),
       },
       {
+        messageId: 'om_prior_reply', conversationId: 'conv_1', role: 'assistant',
+        content: 'Earlier Minori reply', createdAt: new Date('2026-08-05T00:00:30Z'),
+      },
+      {
         messageId: 'om_trigger', conversationId: 'conv_1', role: 'user',
         content: prompt, createdAt: new Date('2026-08-05T00:01:00Z'),
       },
@@ -199,6 +203,7 @@ describe('runKnowledgeAgent', () => {
     expect(serializedMessages).toContain('[Live Group History][Minori]');
     expect(serializedMessages).toContain('[Current Invocation][Carol] summarize above');
     expect(serializedMessages).not.toContain('Earlier context');
+    expect(serializedMessages).not.toContain('Earlier Minori reply');
     expect(serializedMessages).not.toContain('ou_');
     expect(serializedMessages.lastIndexOf('[Current Invocation]'))
       .toBeGreaterThan(serializedMessages.lastIndexOf('[Live Group History]'));
@@ -218,11 +223,12 @@ describe('runKnowledgeAgent', () => {
 
     expect(group.source.open).not.toHaveBeenCalled();
     expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain('Earlier context');
+    expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain('Earlier Minori reply');
     expect(model.doGenerateCalls[0]?.tools?.map(({ name }) => name))
       .not.toContain('readEarlierGroupHistory');
   });
 
-  it('runs once with Current Invocation and a stable fact when group history is unavailable', async () => {
+  it('falls back to retained conversation records before Current Invocation when group history is unavailable', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: generated([{ type: 'text', text: 'I can answer from the request.' }], 'stop'),
     });
@@ -243,8 +249,13 @@ describe('runKnowledgeAgent', () => {
 
     expect(model.doGenerateCalls).toHaveLength(1);
     const serializedMessages = JSON.stringify(model.doGenerateCalls[0]?.prompt);
+    expect(serializedMessages).toContain('Earlier context');
+    expect(serializedMessages).toContain('Earlier Minori reply');
     expect(serializedMessages).toContain('group_history_unavailable');
     expect(serializedMessages).toContain('[Current Invocation][Carol] summarize above');
+    expect(serializedMessages.lastIndexOf('[Current Invocation]'))
+      .toBeGreaterThan(serializedMessages.lastIndexOf('Earlier Minori reply'));
+    expect(serializedMessages.match(/summarize above/gu)).toHaveLength(1);
     expect(serializedMessages).not.toContain('provider denied history for oc_team');
     expect(audit.recordGroupHistory).toHaveBeenCalledWith('run_1', unavailableAudit);
   });
@@ -301,7 +312,7 @@ describe('runKnowledgeAgent', () => {
       outcome: 'completed', writeAttempts: [],
     });
     expect(model.doGenerateCalls[0]?.prompt.map((message) => message.role)).toEqual([
-      'system', 'user', 'user',
+      'system', 'user', 'assistant', 'user',
     ]);
   });
 

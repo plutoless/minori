@@ -7,6 +7,20 @@ import type {
   ScopedGroupContextReader,
 } from '../../src/feishu/group-context.js';
 
+const BASE_TOOL_NAMES = [
+  'searchKnowledge',
+  'fetchDocument',
+  'listKnowledgeSpaces',
+  'listKnowledgeNodes',
+  'getKnowledgeNode',
+  'createDocument',
+  'appendDocument',
+  'patchDocument',
+  'searchConversationHistory',
+] as const;
+const FORBIDDEN_TOOL_AUTHORITY =
+  /delete|rename|move|trash|overwrite|permission|sharing|shell|http|filesystem|raw/iu;
+
 function service(): KnowledgeService {
   return {
     search: vi.fn().mockResolvedValue([]),
@@ -43,20 +57,8 @@ describe('createKnowledgeTools', () => {
       { run: (_input, operation) => operation() },
     );
 
-    expect(Object.keys(tools)).toEqual([
-      'searchKnowledge',
-      'fetchDocument',
-      'listKnowledgeSpaces',
-      'listKnowledgeNodes',
-      'getKnowledgeNode',
-      'createDocument',
-      'appendDocument',
-      'patchDocument',
-      'searchConversationHistory',
-    ]);
-    expect(Object.keys(tools).join(' ')).not.toMatch(
-      /delete|rename|move|trash|overwrite|permission|sharing|shell|http|filesystem|raw/iu,
-    );
+    expect(Object.keys(tools)).toEqual(BASE_TOOL_NAMES);
+    expect(Object.keys(tools).join(' ')).not.toMatch(FORBIDDEN_TOOL_AUTHORITY);
     expect(tools).not.toHaveProperty('readEarlierGroupHistory');
     const fetchSchema = tools.fetchDocument.inputSchema as {
       safeParse(value: unknown): { success: boolean };
@@ -217,21 +219,8 @@ describe('createKnowledgeTools', () => {
     );
     const groupTool = tools.readEarlierGroupHistory;
     expect(groupTool).toBeDefined();
-    expect(Object.keys(tools)).toEqual([
-      'searchKnowledge',
-      'fetchDocument',
-      'listKnowledgeSpaces',
-      'listKnowledgeNodes',
-      'getKnowledgeNode',
-      'createDocument',
-      'appendDocument',
-      'patchDocument',
-      'searchConversationHistory',
-      'readEarlierGroupHistory',
-    ]);
-    expect(Object.keys(tools).join(' ')).not.toMatch(
-      /delete|rename|move|trash|overwrite|permission|sharing|shell|http|filesystem|raw/iu,
-    );
+    expect(Object.keys(tools)).toEqual([...BASE_TOOL_NAMES, 'readEarlierGroupHistory']);
+    expect(Object.keys(tools).join(' ')).not.toMatch(FORBIDDEN_TOOL_AUTHORITY);
     const schema = groupTool!.inputSchema as {
       safeParse(value: unknown): { success: boolean };
     };
@@ -271,34 +260,47 @@ describe('createKnowledgeTools', () => {
     expect(JSON.stringify(result)).not.toContain('provider_secret_error');
   });
 
-  it('serializes concurrent earlier-group-history pages with monotonic cumulative audits', async () => {
+  it('serializes read and audit while rejecting duplicate or reused group-history traversal', async () => {
     const cutoff = new Date('2026-08-08T10:00:00.000Z');
-    let nextPage = 1;
-    let pageCallCount = 1;
+    const activity: string[] = [];
+    let expectedCursor: string | undefined;
+    let firstRequest = true;
+    let page = 1;
     const reader: ScopedGroupContextReader = {
       loadInitial: vi.fn(),
-      readEarlier: vi.fn(async () => {
-        const page = nextPage;
-        pageCallCount += 1;
+      readEarlier: vi.fn(async (input) => {
+        if (firstRequest) {
+          if (input.cursor !== undefined) throw new Error('invalid_group_history_cursor');
+          firstRequest = false;
+        } else if (input.cursor !== expectedCursor) {
+          activity.push('read:invalid');
+          throw new Error('invalid_group_history_cursor');
+        }
+        const currentPage = page;
+        expectedCursor = `group_cursor_${currentPage}`;
+        activity.push(`read:${currentPage}`);
         await Promise.resolve();
-        nextPage = page + 1;
+        page += 1;
         return {
           messages: [{
-            speakerName: `Member ${page}`,
+            speakerName: `Member ${currentPage}`,
             role: 'user' as const,
-            content: `Older page ${page}`,
-            occurredAt: new Date(`2026-08-08T0${page}:00:00.000Z`),
+            content: `Older page ${currentPage}`,
+            occurredAt: new Date(`2026-08-08T0${currentPage}:00:00.000Z`),
           }],
+          nextCursor: expectedCursor,
           audit: {
             status: 'loaded' as const,
-            messageCount: nextPage,
-            pageCallCount,
+            messageCount: page,
+            pageCallCount: page,
             cutoff,
           },
         };
       }),
     };
-    const recordAudit = vi.fn().mockResolvedValue(undefined);
+    const recordAudit = vi.fn(async (audit: GroupHistoryAudit) => {
+      activity.push(`audit:${audit.pageCallCount}`);
+    });
     const tools = createKnowledgeTools(
       service(),
       { search: vi.fn().mockResolvedValue([]) },
@@ -307,7 +309,7 @@ describe('createKnowledgeTools', () => {
       { reader, recordAudit },
     );
 
-    const [first, second] = await Promise.all([
+    const [first, duplicate] = await Promise.allSettled([
       tools.readEarlierGroupHistory!.execute?.(
         { limit: 20 }, { toolCallId: 'call_page_1', messages: [] },
       ),
@@ -316,18 +318,34 @@ describe('createKnowledgeTools', () => {
       ),
     ]);
 
-    expect.soft(first?.messages).toEqual([
+    expect(first).toMatchObject({ status: 'fulfilled' });
+    expect(first.status === 'fulfilled' ? first.value?.messages : undefined).toEqual([
       expect.objectContaining({ content: 'Older page 1' }),
     ]);
-    expect.soft(second?.messages).toEqual([
+    expect(duplicate).toMatchObject({
+      status: 'rejected', reason: expect.objectContaining({ message: 'invalid_group_history_cursor' }),
+    });
+    const next = await tools.readEarlierGroupHistory!.execute?.(
+      { cursor: 'group_cursor_1', limit: 20 },
+      { toolCallId: 'call_page_3', messages: [] },
+    );
+    await expect(tools.readEarlierGroupHistory!.execute?.(
+      { cursor: 'group_cursor_1', limit: 20 },
+      { toolCallId: 'call_page_4', messages: [] },
+    )).rejects.toThrow('invalid_group_history_cursor');
+    expect(next?.messages).toEqual([
       expect.objectContaining({ content: 'Older page 2' }),
     ]);
-    expect.soft(recordAudit.mock.calls.map(([audit]) => ({
+    expect(recordAudit.mock.calls.map(([audit]) => ({
       messageCount: audit.messageCount,
       pageCallCount: audit.pageCallCount,
     }))).toEqual([
       { messageCount: 2, pageCallCount: 2 },
       { messageCount: 3, pageCallCount: 3 },
+    ]);
+    expect(activity).toEqual([
+      'read:1', 'audit:2', 'read:invalid',
+      'read:2', 'audit:3', 'read:invalid',
     ]);
   });
 

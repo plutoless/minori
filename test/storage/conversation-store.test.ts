@@ -86,7 +86,7 @@ describe('PostgresConversationStore', () => {
     expect(recent[0]?.content).toBe('original');
   });
 
-  it('searches Chinese and English only inside the current Group Context', async () => {
+  it('searches Chinese and English only inside the current Retained Conversation History', async () => {
     const firstId = await store.getOrCreateConversation({
       conversationKey: 'oc_1', chatId: 'oc_1', type: 'group',
     });
