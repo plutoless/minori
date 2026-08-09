@@ -41,7 +41,7 @@ describe('buildInvocation', () => {
       .toEqual(['auth', 'status', '--json']);
   });
 
-  it('passes document content only through stdin for allowed reversible writes', () => {
+  it('passes document content only through stdin for allowed typed writes', () => {
     expect(buildInvocation({
       id: 'docs.create', title: 'Weekly update', content: '# Progress', parentToken: 'fld_1',
     })).toEqual({

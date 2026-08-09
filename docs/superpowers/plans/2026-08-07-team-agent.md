@@ -799,7 +799,7 @@ git commit -m "feat: prevent team agent replay after writes"
 - Produces: one exact-commit amd64 image and one healthy Minori Compose service on `198.13.34.221`.
 - Produces: real private-chat-first, group-thread, knowledge read/write, restart, and credential-persistence evidence without message/document bodies.
 
-- [ ] **Step 1: Rewrite the release acceptance contract**
+- [x] **Step 1: Rewrite the release acceptance contract**
 
 The integration suite must prove:
 
@@ -814,14 +814,14 @@ The integration suite must prove:
 
 Rename test descriptions from “eligible” and “reversible” to “Feishu delivered” and “typed”. Update `test/scripts/release-contract.test.ts` so it asserts no `ALLOWED_CHAT_IDS` appears in either environment example or README.
 
-- [ ] **Step 2: Run the full local release gate**
+- [x] **Step 2: Run the full local release gate**
 
 Run:
 
 ```bash
 npm run verify
 npm run test:integration
-MINORI_IMAGE=minori:plan-check MINORI_ENV_FILE=./deploy/vultr/env.example \
+MINORI_IMAGE=minori:plan-check MINORI_ENV_FILE=./env.example \
   docker compose -f deploy/vultr/compose.production.yaml config
 docker build --tag minori:local-open-team-agent .
 docker run --rm --entrypoint node minori:local-open-team-agent -e \
@@ -835,7 +835,7 @@ Expected:
 - image reports UID/GID `10001:10001` and the local architecture;
 - a no-secret `npm run runtime:verify` fails only with sanitized unconfigured/degraded categories.
 
-- [ ] **Step 3: Commit the exact release candidate**
+- [x] **Step 3: Commit the exact release candidate**
 
 ```bash
 git add README.md .env.example deploy test docs CONTEXT.md

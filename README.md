@@ -104,13 +104,14 @@ Rollback requires an already-built exact image. If the target is unhealthy, the 
 
 After deployment:
 
-1. Ask a general question in a group where the app is available by mentioning Minori; confirm it can answer without forcing a knowledge workflow.
-2. Continue in the same Agent Thread without mentioning it again, then ask a knowledge question and open the returned source link.
-3. Ask a question in a private chat, including from an external collaborator allowed by the Feishu App availability policy.
-4. Create a disposable document under an authorized fixture parent, append a clearly marked section, and patch one unique phrase.
-5. Make a concurrent edit before another patch; confirm Minori re-reads or reports a conflict rather than overwriting.
-6. Confirm the final reply includes the document URL and concise write receipt, and the audit table records sanitized create, append, patch, and conflict outcomes.
-7. Restart the service, confirm conversation continuity, Lark readiness, and another knowledge read, then remove the disposable document manually in Feishu because Minori has no delete tool.
+1. Send an ordinary private message; confirm `Typing` appears after durable receipt, Minori answers without a scenario phrase, and `Typing` disappears terminally.
+2. Ask a general question in a group where the app is available by directly mentioning Minori; confirm it can answer without forcing a knowledge workflow.
+3. Continue in the same Agent Thread without mentioning it again, then ask a knowledge question and open the returned source link.
+4. If an external test identity is available, ask from that collaborator and confirm the Feishu-delivered request is accepted.
+5. Create a disposable document under an authorized fixture parent, append a clearly marked section, and patch one unique phrase.
+6. Make a concurrent edit before another patch; confirm Minori re-reads or reports a conflict rather than overwriting.
+7. Confirm the final reply includes the document URL and concise write receipt, and the audit table records sanitized create, append, patch, and conflict outcomes.
+8. Restart the service, continue in private chat, confirm conversation continuity, Lark readiness, and another knowledge read, then remove the disposable document manually in Feishu because Minori has no delete tool.
 
 Record only message IDs, document URLs, commit SHA, image tag, timestamps, readiness categories, and pass/fail outcomes in the gitignored `acceptance.local.jsonl`. Do not record tokens, message bodies, or document contents.
 

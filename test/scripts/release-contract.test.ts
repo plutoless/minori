@@ -16,6 +16,16 @@ describe('Team Agent release packaging contract', () => {
     expect(compose).not.toContain('AGENT_TIMEOUT_MS:');
   });
 
+  it('keeps the obsolete chat allowlist out of release configuration and guidance', async () => {
+    const localEnvironment = await text('.env.example');
+    const productionEnvironment = await text('deploy/vultr/env.example');
+    const readme = await text('README.md');
+
+    expect(localEnvironment).not.toContain('ALLOWED_CHAT_IDS');
+    expect(productionEnvironment).not.toContain('ALLOWED_CHAT_IDS');
+    expect(readme).not.toContain('ALLOWED_CHAT_IDS');
+  });
+
   it('passes the fixed production env file through deploy and rollback Compose calls', async () => {
     const deploy = await text('scripts/deploy-vultr.sh');
     const rollback = await text('scripts/rollback-vultr.sh');

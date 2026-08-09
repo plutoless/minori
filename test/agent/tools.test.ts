@@ -31,7 +31,7 @@ function service(): KnowledgeService {
 }
 
 describe('createKnowledgeTools', () => {
-  it('exposes exactly the approved reversible knowledge authority', () => {
+  it('exposes exactly the approved typed knowledge authority', () => {
     const tools = createKnowledgeTools(
       service(),
       { search: vi.fn().mockResolvedValue([]) },

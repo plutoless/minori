@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { SourceRegistry } from '../../src/agent/sources.js';
 import { createKnowledgeTools } from '../../src/agent/tools.js';
 import { runKnowledgeAgent, type AgentReply } from '../../src/agent/run.js';
+import { budgetExhaustedText } from '../../src/agent/run-outcome.js';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import type { FeishuMessenger } from '../../src/feishu/client.js';
 import { FeishuGateway } from '../../src/feishu/gateway.js';
@@ -580,14 +581,9 @@ describe('open team Agent release contract', () => {
     expect(await conversations.search('oc_retention', 'expired secret', 5)).toEqual([]);
   });
 
-  it('claims four independent Agent Threads while preserving same-thread order', async () => {
+  it('leaves the fifth independent Feishu-delivered conversation durably queued', async () => {
     const root = normalizeMessageEvent(rawEvent(), { botOpenId: BOT_OPEN_ID })!;
-    const followUp: NormalizedMessage = {
-      ...root,
-      eventId: 'evt_group_2',
-      messageId: 'om_group_2',
-    };
-    const privateMessages = ['a', 'b', 'c'].map((suffix): NormalizedMessage => ({
+    const privateMessages = ['a', 'b', 'c', 'd', 'e'].map((suffix): NormalizedMessage => ({
       ...root,
       eventId: `evt_private_${suffix}`,
       messageId: `om_private_${suffix}`,
@@ -595,14 +591,13 @@ describe('open team Agent release contract', () => {
       chatType: 'p2p',
       conversationKey: `oc_private_${suffix}`,
     }));
-    for (const event of [root, followUp, ...privateMessages]) await events.enqueue(event);
+    for (const event of privateMessages) await events.enqueue(event);
 
     const firstBatch = await events.claimReady(4, new Date(Date.now() + 60_000));
 
-    expect(firstBatch.map((event) => event.eventId)).toEqual(expect.arrayContaining([
-      'evt_group_1', 'evt_private_a', 'evt_private_b', 'evt_private_c',
-    ]));
-    expect(firstBatch.map((event) => event.eventId)).not.toContain('evt_group_2');
+    expect(firstBatch).toHaveLength(4);
+    const firstIds = new Set(firstBatch.map((event) => event.eventId));
+    const queuedId = privateMessages.find((event) => !firstIds.has(event.eventId))!.eventId;
 
     let active = 0;
     let peak = 0;
@@ -632,7 +627,57 @@ describe('open team Agent release contract', () => {
     expect(peak).toBe(4);
 
     const secondBatch = await events.claimReady(1, new Date(Date.now() + 60_000));
-    expect(secondBatch[0]?.eventId).toBe('evt_group_2');
+    expect(secondBatch[0]?.eventId).toBe(queuedId);
+  });
+
+  it('sends one explicit continuation reply for each execution budget without retry', async () => {
+    const root = normalizeMessageEvent(rawEvent(), { botOpenId: BOT_OPEN_ID })!;
+    const budgetEvents: NormalizedMessage[] = [
+      {
+        ...root,
+        eventId: 'evt_step_limit', messageId: 'om_step_limit',
+        chatId: 'oc_step_limit', chatType: 'p2p', conversationKey: 'oc_step_limit',
+      },
+      {
+        ...root,
+        eventId: 'evt_timeout', messageId: 'om_timeout',
+        chatId: 'oc_timeout', chatType: 'p2p', conversationKey: 'oc_timeout',
+      },
+    ];
+    for (const event of budgetEvents) await events.enqueue(event);
+    const messenger = new FakeMessenger();
+    const runAgent = vi.fn(async (message: NormalizedMessage): Promise<AgentReply> => {
+      const outcome = message.eventId === 'evt_step_limit'
+        ? 'step_limit_reached' as const
+        : 'timeout_reached' as const;
+      return {
+        text: budgetExhaustedText(outcome, []),
+        sources: [], usage: {}, outcome, writeAttempts: [],
+      };
+    });
+    const worker = new MessageWorker({
+      eventStore: events, conversations, messenger, runAgent,
+      loadWriteAttempts: noWriteAttempts,
+      logger: { warn: vi.fn(), info: vi.fn() },
+    });
+
+    const claimed = await events.claimReady(2, new Date(Date.now() + 60_000));
+    await Promise.all(claimed.map((event) => worker.process(event)));
+
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    expect(messenger.replies).toHaveLength(2);
+    expect(messenger.replies).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        messageId: 'om_step_limit',
+        text: expect.stringContaining('执行步数上限'),
+      }),
+      expect.objectContaining({
+        messageId: 'om_timeout',
+        text: expect.stringContaining('执行时间上限'),
+      }),
+    ]));
+    expect(messenger.replies.every((reply) => reply.text.includes('请回复“继续”'))).toBe(true);
+    expect(await events.claimReady(2, new Date(Date.now() + 60_000))).toEqual([]);
   });
 
   it('does not resend after the one-hour Feishu deduplication window', async () => {

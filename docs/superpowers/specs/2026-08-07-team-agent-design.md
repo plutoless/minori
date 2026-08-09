@@ -6,11 +6,12 @@
 
 **Active implementation plan:** `docs/superpowers/plans/2026-08-07-team-agent.md`
 
-**Release state:** The code and local release contract cover existing-app OAuth,
-revision-safe create/append/patch tools, authentic sources, PostgreSQL write audits,
-and configurable Agent limits. Dedicated Knowledge User OAuth is verified on the
-exact Vultr candidate. Production readiness still requires the open-admission change,
-deployment, and real group/private Feishu acceptance.
+**Release state:** The code and local release contract cover open Feishu-delivered
+admission, durable Processing Reactions and queueing, explicit execution-budget
+outcomes, the Write Replay Boundary, existing-app OAuth, revision-safe
+create/append/patch tools, authentic sources, and PostgreSQL audits. Production
+readiness still requires exact-commit Vultr deployment and real private/group Feishu
+acceptance against that same image.
 
 ## Summary
 
