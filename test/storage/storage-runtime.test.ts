@@ -31,7 +31,7 @@ describe('createStorageRuntime', () => {
 
     expect(runtime.eventStore).toBeDefined();
     expect(runtime.conversationStore).toBeDefined();
-    expect(runtime.allowedChatStore).toBeDefined();
+    expect(runtime).not.toHaveProperty('allowedChatStore');
     expect(runtime.agentRunStore).toBeDefined();
     expect(runtime.retentionStatus()).toBe('degraded');
 

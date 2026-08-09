@@ -3,7 +3,6 @@ import { EventDispatcher, LoggerLevel, WSClient } from '@larksuiteoapi/node-sdk'
 import { z } from 'zod';
 import type { NormalizedMessage } from '../contracts/messages.js';
 import { isValidUserMessageEvent, normalizeMessageEvent } from './normalize-event.js';
-import type { AuthorizationResult } from './membership.js';
 import type { FeishuBotIdentity } from './client.js';
 
 export interface GatewayEventStore {
@@ -22,7 +21,6 @@ export type FeishuGatewayDependencies = {
   botOpenId: string;
   botAppId: string;
   eventStore: GatewayEventStore;
-  membership: { authorize(message: NormalizedMessage): Promise<AuthorizationResult> };
   messageContext: MessageContextSource;
   threads: AgentThreadSource;
   signalWorker(): void | Promise<void>;
@@ -82,8 +80,6 @@ export class FeishuGateway {
     }
     if (!normalized) return;
 
-    const authorization = await this.dependencies.membership.authorize(normalized);
-    if (!authorization.allowed) return;
     const status = await this.dependencies.eventStore.enqueue(normalized);
     if (status === 'duplicate') return;
 

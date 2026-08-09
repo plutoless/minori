@@ -63,7 +63,6 @@ function dependencies(overrides: Record<string, unknown> = {}) {
     messenger,
     options: {
       eventStore,
-      membership: { authorize: vi.fn(async () => ({ allowed: true as const })) },
       conversations: {
         getOrCreateConversation: vi.fn(async () => 'conversation_1'),
         append: vi.fn(async (entry) => { appended.push(entry); }),
@@ -96,9 +95,13 @@ describe('MessageWorker.process', () => {
     expect(claimReady.mock.calls.length).toBeGreaterThanOrEqual(4);
   });
 
-  it('stops a hung event before its lease and durably retries it', async () => {
+  it('stops a hung Agent run before its lease and durably retries it', async () => {
+    const runAgent = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { text: 'too late', sources: [], usage: {} };
+    });
     const setup = dependencies({
-      membership: { authorize: vi.fn(() => new Promise(() => undefined)) },
+      runAgent,
     });
     const worker = new MessageWorker({
       ...setup.options,
@@ -108,10 +111,8 @@ describe('MessageWorker.process', () => {
 
     await worker.process({ eventId: 'evt_1', payload: message(), attempts: 1 });
 
-    expect(setup.eventStore.retried?.errorCode).toMatch(
-      /^(membership_check_failed|processing_deadline_exceeded)$/u,
-    );
-    expect(setup.runAgent).not.toHaveBeenCalled();
+    expect(setup.eventStore.retried?.errorCode).toBe('processing_deadline_exceeded');
+    expect(runAgent).toHaveBeenCalledOnce();
   });
 
   it('persists, answers with sources, cleans Typing, and completes in durable order', async () => {
@@ -139,39 +140,19 @@ describe('MessageWorker.process', () => {
       .toBeLessThan(setup.eventStore.calls.indexOf('complete'));
   });
 
-  it('completes ineligible events without invoking the Agent or messenger', async () => {
-    const setup = dependencies({
-      membership: { authorize: vi.fn(async () => ({
-        allowed: false as const, reason: 'not_team_member' as const,
-      })) },
-    });
+  it('runs a claimed private event without an authorization dependency', async () => {
+    const setup = dependencies();
+    const privateMessage = { ...message(), chatType: 'p2p' as const, conversationKey: 'oc_1' };
+
     await new MessageWorker(setup.options).process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
+      eventId: 'evt_private', payload: privateMessage, attempts: 1,
     });
-    expect(setup.runAgent).not.toHaveBeenCalled();
-    expect(setup.messenger.replyText).not.toHaveBeenCalled();
-    expect(setup.eventStore.completed).toEqual({ errorCode: 'not_team_member' });
+
+    expect(setup.runAgent).toHaveBeenCalledWith(privateMessage, expect.any(AbortSignal));
+    expect(setup.messenger.replyText).toHaveBeenCalledOnce();
   });
 
-  it('durably bounds membership and conversation-store failures', async () => {
-    const membership = dependencies({
-      membership: { authorize: vi.fn(async () => { throw new Error('membership secret'); }) },
-    });
-    await new MessageWorker(membership.options).process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
-    });
-    expect(membership.eventStore.retried?.errorCode).toBe('membership_check_failed');
-
-    const unavailable = dependencies({
-      membership: { authorize: vi.fn(async () => ({
-        allowed: false as const, reason: 'membership_unavailable' as const,
-      })) },
-    });
-    await new MessageWorker(unavailable.options).process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
-    });
-    expect(unavailable.eventStore.retried?.errorCode).toBe('membership_check_failed');
-
+  it('durably bounds conversation-store failures', async () => {
     const conversation = dependencies({
       conversations: {
         getOrCreateConversation: vi.fn(async () => { throw new Error('database secret'); }),

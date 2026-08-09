@@ -2,7 +2,6 @@ import type { Logger } from 'pino';
 import type { AppConfig } from '../runtime/config.js';
 import type { ComponentStatus } from '../runtime/health.js';
 import { PostgresAgentRunStore } from './agent-run-store.js';
-import { PostgresAllowedChatStore } from './allowed-chat-store.js';
 import { PostgresConversationStore } from './conversation-store.js';
 import { createDatabase, type DatabaseHandle } from './database.js';
 import { PostgresEventStore } from './event-store.js';
@@ -11,7 +10,6 @@ import { createRetentionService, type RetentionService } from './retention.js';
 export type StorageRuntime = {
   eventStore?: PostgresEventStore;
   conversationStore?: PostgresConversationStore;
-  allowedChatStore?: PostgresAllowedChatStore;
   agentRunStore?: PostgresAgentRunStore;
   databaseStatus(): Promise<ComponentStatus>;
   retentionStatus(): ComponentStatus;
@@ -50,7 +48,6 @@ export function createStorageRuntime(config: AppConfig, logger: Logger): Storage
   return {
     eventStore: new PostgresEventStore(database.db),
     conversationStore,
-    allowedChatStore: new PostgresAllowedChatStore(database.db),
     agentRunStore: new PostgresAgentRunStore(database.db),
     async databaseStatus() {
       if (stopped) return 'degraded';

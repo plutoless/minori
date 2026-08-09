@@ -1,6 +1,5 @@
 import type { Logger } from 'pino';
 import { Client, defaultHttpInstance } from '@larksuiteoapi/node-sdk';
-import type { ChatMemberSource } from './membership.js';
 
 type ApiResponse<T> = { code?: number | undefined; data?: T | undefined };
 
@@ -14,18 +13,6 @@ export type FeishuBotIdentity = { openId: string; appId: string };
 
 export type FeishuSdk = {
   im: { v1: {
-    chatMembers: {
-      get(payload: {
-        path: { chat_id: string };
-        params: {
-          member_id_type: 'open_id'; page_size: 100; page_token?: string;
-        };
-      }): Promise<ApiResponse<{
-        items?: Array<{ member_id?: string | undefined }> | undefined;
-        has_more?: boolean | undefined;
-        page_token?: string | undefined;
-      }>>;
-    };
     message: {
       reply(payload: {
         path: { message_id: string };
@@ -63,33 +50,8 @@ function assertApiSuccess(response: ApiResponse<unknown>, errorCode: string) {
   if (response.code !== undefined && response.code !== 0) throw new Error(errorCode);
 }
 
-export class FeishuClientAdapter implements ChatMemberSource, FeishuMessenger {
+export class FeishuClientAdapter implements FeishuMessenger {
   constructor(private readonly client: FeishuSdk, private readonly logger: Logger) {}
-
-  async listOpenIds(chatId: string): Promise<Set<string>> {
-    const openIds = new Set<string>();
-    let pageToken: string | undefined;
-    do {
-      const response = await this.client.im.v1.chatMembers.get({
-        path: { chat_id: chatId },
-        params: {
-          member_id_type: 'open_id', page_size: 100,
-          ...(pageToken ? { page_token: pageToken } : {}),
-        },
-      });
-      assertApiSuccess(response, 'member_list_failed');
-      for (const item of response.data?.items ?? []) {
-        if (item.member_id) openIds.add(item.member_id);
-      }
-      if (response.data?.has_more) {
-        pageToken = response.data.page_token;
-        if (!pageToken) throw new Error('member_list_invalid_cursor');
-      } else {
-        pageToken = undefined;
-      }
-    } while (pageToken);
-    return openIds;
-  }
 
   async replyText(messageId: string, text: string, idempotencyKey: string): Promise<string> {
     if (idempotencyKey.length === 0 || idempotencyKey.length > 50) {

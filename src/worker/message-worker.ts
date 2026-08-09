@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import type { AgentReply } from '../agent/run.js';
 import type { NormalizedMessage } from '../contracts/messages.js';
 import type { FeishuMessenger } from '../feishu/client.js';
-import type { AuthorizationResult } from '../feishu/membership.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
 import type { EventStore, StoredEvent } from '../storage/event-store.js';
 import { formatAgentReply } from './source-format.js';
@@ -18,7 +17,6 @@ type WorkerLogger = {
 
 export type MessageWorkerOptions = {
   eventStore: EventStore;
-  membership: { authorize(message: NormalizedMessage): Promise<AuthorizationResult> };
   conversations: Pick<ConversationStore, 'getOrCreateConversation' | 'append'>;
   runAgent(message: NormalizedMessage, signal?: AbortSignal): Promise<AgentReply>;
   messenger: FeishuMessenger;
@@ -147,31 +145,6 @@ export class MessageWorker {
           'reply outcome is uncertain',
         );
         await this.options.eventStore.markReplyUncertain(event.eventId, event.attempts);
-        return;
-      }
-    } else {
-      let authorization: AuthorizationResult;
-      try {
-        authorization = await this.withAbort(
-          this.options.membership.authorize(event.payload),
-          signal,
-        );
-      } catch {
-        await this.failBeforeReply(
-          event,
-          signal.aborted ? 'processing_deadline_exceeded' : 'membership_check_failed',
-          signal.aborted ? DEADLINE_DRAIN_MS : 0,
-        );
-        return;
-      }
-      if (!authorization.allowed) {
-        if (authorization.reason === 'membership_unavailable') {
-          await this.failBeforeReply(event, 'membership_check_failed');
-          return;
-        }
-        await this.options.eventStore.complete(event.eventId, event.attempts, {
-          errorCode: authorization.reason,
-        });
         return;
       }
     }

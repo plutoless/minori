@@ -4,7 +4,6 @@ import { createAgentModel } from './agent/model.js';
 import { runKnowledgeAgent } from './agent/run.js';
 import { createOfficialFeishuClient } from './feishu/client.js';
 import { createOfficialLongConnection, FeishuGateway } from './feishu/gateway.js';
-import { MembershipPolicy } from './feishu/membership.js';
 import { LarkKnowledgeService } from './lark/knowledge-service.js';
 import { LarkRunner } from './lark/runner.js';
 import type { AppConfig } from './runtime/config.js';
@@ -87,13 +86,9 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
     if (worker || shuttingDown) return;
     await probeLarkAuth();
 
-    if (storage.allowedChatStore) {
-      await storage.allowedChatStore.configure(config.allowedChatIds);
-    }
     if (!feishuConfigured
       || !storage.eventStore
       || !storage.conversationStore
-      || !storage.allowedChatStore
       || !storage.agentRunStore
       || modelPreflight.status() !== 'ok'
       || larkStatus !== 'ok') {
@@ -111,13 +106,8 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       appId: config.feishuAppId!,
       appSecret: config.feishuAppSecret!,
     }, logger);
-    const membership = new MembershipPolicy({
-      allowedChats: storage.allowedChatStore,
-      members: messenger,
-    });
     const nextWorker = new MessageWorker({
       eventStore: storage.eventStore,
-      membership,
       conversations: storage.conversationStore,
       messenger,
       logger,
@@ -150,7 +140,6 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       botOpenId: config.feishuBotOpenId!,
       botAppId: config.feishuAppId!,
       eventStore: storage.eventStore,
-      membership,
       messageContext: messenger,
       threads: storage.conversationStore,
       signalWorker: () => nextWorker.wake(),

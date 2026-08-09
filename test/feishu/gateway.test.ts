@@ -9,13 +9,14 @@ function rawMessage(input: {
   text?: string;
   mention?: boolean;
   chatType?: 'group' | 'p2p';
+  senderOpenId?: string;
   rootId?: string;
   parentId?: string;
 } = {}) {
   const messageId = input.messageId ?? 'om_1';
   return {
     event_id: `evt_${messageId}`,
-    sender: { sender_type: 'user', sender_id: { open_id: 'ou_member' } },
+    sender: { sender_type: 'user', sender_id: { open_id: input.senderOpenId ?? 'ou_member' } },
     message: {
       message_id: messageId,
       chat_id: input.chatType === 'p2p' ? 'oc_dm' : 'oc_team',
@@ -39,7 +40,6 @@ function gateway(overrides: Partial<ConstructorParameters<typeof FeishuGateway>[
     botOpenId: BOT_OPEN_ID,
     botAppId: 'cli_minori',
     eventStore: { enqueue },
-    membership: { authorize: vi.fn().mockResolvedValue({ allowed: true }) },
     messageContext: { isBotMessage: vi.fn().mockResolvedValue(false) },
     threads: { exists: vi.fn().mockResolvedValue(false) },
     signalWorker,
@@ -93,17 +93,28 @@ describe('FeishuGateway', () => {
     ]);
   });
 
-  it('accepts every authorized private message and rejects unauthorized senders', async () => {
-    const membership = { authorize: vi.fn()
-      .mockResolvedValueOnce({ allowed: true })
-      .mockResolvedValueOnce({ allowed: false, reason: 'not_team_member' }) };
-    const { gateway: instance, enqueue } = gateway({ membership });
+  it('accepts every delivered private message without a membership lookup', async () => {
+    const { gateway: instance, enqueue } = gateway();
 
-    await instance.handle(rawMessage({ messageId: 'om_dm_1', chatType: 'p2p' }));
-    await instance.handle(rawMessage({ messageId: 'om_dm_2', chatType: 'p2p' }));
+    await instance.handle(rawMessage({ messageId: 'om_dm_external', chatType: 'p2p' }));
 
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ conversationKey: 'oc_dm' }));
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'om_dm_external',
+      conversationKey: 'oc_dm',
+      senderOpenId: 'ou_member',
+    }));
+  });
+
+  it('accepts a directly mentioned group message from an external collaborator', async () => {
+    const { gateway: instance, enqueue } = gateway();
+
+    await instance.handle(rawMessage({
+      messageId: 'om_group_external', mention: true, senderOpenId: 'ou_external',
+    }));
+
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'om_group_external', senderOpenId: 'ou_external', conversationKey: 'oc_team:om_group_external',
+    }));
   });
 
   it('does not perform trusted activation lookups for bot or malformed events', async () => {

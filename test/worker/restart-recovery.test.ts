@@ -43,10 +43,8 @@ function setup(now: Date) {
   };
   const runAgent = vi.fn();
   const logger = { warn: vi.fn(), info: vi.fn() };
-  const membership = { authorize: vi.fn(async () => ({ allowed: true as const })) };
   const worker = new MessageWorker({
     eventStore,
-    membership,
     conversations: {
       getOrCreateConversation: vi.fn(async () => 'conversation_1'),
       append: vi.fn(async () => undefined),
@@ -55,7 +53,7 @@ function setup(now: Date) {
     logger,
     now: () => now,
   });
-  return { worker, eventStore, messenger, runAgent, membership, logger, calls, accepted };
+  return { worker, eventStore, messenger, runAgent, logger, calls, accepted };
 }
 
 describe('MessageWorker restart recovery', () => {
@@ -86,7 +84,6 @@ describe('MessageWorker restart recovery', () => {
     const runAgent = vi.fn(async () => ({ text: 'prepared answer', sources: [], usage: {} }));
     const worker = new MessageWorker({
       eventStore,
-      membership: { authorize: vi.fn(async () => ({ allowed: true as const })) },
       conversations: {
         getOrCreateConversation: vi.fn(async () => 'conversation_1'),
         append: vi.fn(async () => undefined),
@@ -135,7 +132,6 @@ describe('MessageWorker restart recovery', () => {
     await state.worker.process(event);
 
     expect(state.messenger.removeReaction).toHaveBeenCalledWith('om_1', 'stale_reaction');
-    expect(state.membership.authorize).not.toHaveBeenCalled();
     expect(state.runAgent).not.toHaveBeenCalled();
     expect(state.messenger.replyText).toHaveBeenCalledWith(
       'om_1', 'durably prepared answer', event.replyIdempotencyKey,

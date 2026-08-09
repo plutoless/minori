@@ -5,7 +5,6 @@ import { FeishuClientAdapter } from '../../src/feishu/client.js';
 function sdk() {
   return {
     im: { v1: {
-      chatMembers: { get: vi.fn() },
       message: { reply: vi.fn(), get: vi.fn() },
       messageReaction: { create: vi.fn(), delete: vi.fn() },
     } },
@@ -13,28 +12,6 @@ function sdk() {
 }
 
 describe('FeishuClientAdapter', () => {
-  it('lists every member page as open IDs', async () => {
-    const client = sdk();
-    client.im.v1.chatMembers.get
-      .mockResolvedValueOnce({ data: {
-        items: [{ member_id: 'ou_1' }], has_more: true, page_token: 'next',
-      } })
-      .mockResolvedValueOnce({ data: {
-        items: [{ member_id: 'ou_2' }, { name: 'missing id' }], has_more: false,
-      } });
-    const adapter = new FeishuClientAdapter(client, pino({ level: 'silent' }));
-
-    await expect(adapter.listOpenIds('oc_team')).resolves.toEqual(new Set(['ou_1', 'ou_2']));
-    expect(client.im.v1.chatMembers.get.mock.calls).toEqual([
-      [{ path: { chat_id: 'oc_team' }, params: {
-        member_id_type: 'open_id', page_size: 100,
-      } }],
-      [{ path: { chat_id: 'oc_team' }, params: {
-        member_id_type: 'open_id', page_size: 100, page_token: 'next',
-      } }],
-    ]);
-  });
-
   it('replies with a deterministic bounded UUID', async () => {
     const client = sdk();
     client.im.v1.message.reply.mockResolvedValue({ data: { message_id: 'om_reply' } });

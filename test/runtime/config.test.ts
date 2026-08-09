@@ -6,7 +6,6 @@ describe('loadConfig', () => {
     expect(loadConfig({ NODE_ENV: 'test' })).toMatchObject({
       nodeEnv: 'test',
       port: 3000,
-      allowedChatIds: [],
       larkCliBin: 'lark-cli',
       larkConfigDir: '/var/lib/minori/lark',
       aiModel: 'gpt-5.6-terra',
@@ -26,9 +25,12 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ AGENT_TIMEOUT_MS: '900001' })).toThrow();
   });
 
-  it('splits and deduplicates allowed chat ids', () => {
-    expect(loadConfig({ ALLOWED_CHAT_IDS: 'oc_a, oc_b,oc_a' }).allowedChatIds)
-      .toEqual(['oc_a', 'oc_b']);
+  it('ignores obsolete allowed-chat configuration', () => {
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      ALLOWED_CHAT_IDS: 'obsolete-value-must-be-ignored',
+    });
+    expect(config).not.toHaveProperty('allowedChatIds');
   });
 
   it('accepts an optional OpenAI-compatible base URL', () => {

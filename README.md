@@ -1,6 +1,6 @@
 # Minori
 
-Minori is an open-ended Team Agent for approved Feishu conversations. It uses a Dedicated Knowledge User through `lark-cli`, keeps 30 days of Agent Thread history in Neon, and replies with clickable Feishu sources. The Agent can answer directly, read authorized knowledge, and autonomously create, append, or make one exact targeted replacement in a document. It has no delete, move, overwrite, permission, sharing, raw API, shell, arbitrary HTTP, or filesystem tool.
+Minori is an open-ended Team Agent for Feishu conversations where the Minori Feishu App is available. It uses a Dedicated Knowledge User through `lark-cli`, keeps 30 days of Agent Thread history in Neon, and replies with clickable Feishu sources. The Agent can answer directly, read authorized knowledge, and autonomously create, append, or make one exact targeted replacement in a document. It has no delete, move, overwrite, permission, sharing, raw API, shell, arbitrary HTTP, or filesystem tool.
 
 ## Required services
 
@@ -11,15 +11,15 @@ Minori is an open-ended Team Agent for approved Feishu conversations. It uses a 
 
 ## Feishu app
 
-1. Enable the bot and make it available to the intended team.
+1. Enable the bot and configure its Feishu App availability for the people and conversations that should be able to invoke Minori.
 2. Enable long connection event delivery and subscribe to `im.message.receive_v1`.
 3. Grant the message-read/reply permissions required by the app and `im:message.reactions:write_only` for the Processing Reaction.
-4. Add the bot only to intended groups. Record those group IDs as `ALLOWED_CHAT_IDS`.
+4. Add the bot to the intended groups. Feishu App availability and the events Feishu delivers to Minori are the sole admission boundary; Minori has no second chat or membership allowlist.
 5. Record the app ID, app secret, and bot open ID. The bot open ID is required for mention and reply-thread activation checks.
 
-An Eligible Member is a current member of any Allowed Chat. They can use Minori in that group or in a private chat with the bot.
+Every Feishu-delivered private message can invoke Minori. In groups, a direct mention, a reply to Minori, or a continuation in a known Agent Thread can invoke it; unrelated group-timeline messages remain ignored. External collaborators may invoke Minori when Feishu delivers their messages under the app's availability settings.
 
-The same existing app is also bound to Lark CLI; Minori never creates a second app. Its user OAuth capabilities must cover the Docs, Drive, and Wiki domains. The Dedicated Knowledge User's native Feishu content permissions are the content boundary: share only the intended spaces, folders, and documents with that account. Minori does not add a second content allowlist or elevate that user's access.
+The same existing app is also bound to Lark CLI; Minori never creates a second app. Its user OAuth capabilities must cover the Docs, Drive, and Wiki domains. The Dedicated Knowledge User's native Feishu content permissions are the content boundary: share only the intended spaces, folders, and documents with that account. Every delivered member, including an external collaborator, receives answers and operations from this same Dedicated Knowledge User's Knowledge Boundary—not permissions scoped to the requesting member. Minori does not add a second content allowlist or elevate that user's access.
 
 ## Local configuration
 
@@ -40,7 +40,6 @@ Required environment values:
 
 - `DATABASE_URL`
 - `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_BOT_OPEN_ID`
-- `ALLOWED_CHAT_IDS`, comma-separated
 - `OPENAI_API_KEY`
 - `AI_MODEL` (the release example uses `5.6-terra`)
 - optional `OPENAI_BASE_URL`; it must support the OpenAI Responses API and structured tool calls
@@ -105,9 +104,9 @@ Rollback requires an already-built exact image. If the target is unhealthy, the 
 
 After deployment:
 
-1. Ask a general question in one Allowed Chat by mentioning Minori; confirm it can answer without forcing a knowledge workflow.
+1. Ask a general question in a group where the app is available by mentioning Minori; confirm it can answer without forcing a knowledge workflow.
 2. Continue in the same Agent Thread without mentioning it again, then ask a knowledge question and open the returned source link.
-3. Ask a question in a private chat as an Eligible Member.
+3. Ask a question in a private chat, including from an external collaborator allowed by the Feishu App availability policy.
 4. Create a disposable document under an authorized fixture parent, append a clearly marked section, and patch one unique phrase.
 5. Make a concurrent edit before another patch; confirm Minori re-reads or reports a conflict rather than overwriting.
 6. Confirm the final reply includes the document URL and concise write receipt, and the audit table records sanitized create, append, patch, and conflict outcomes.

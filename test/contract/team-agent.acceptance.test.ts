@@ -11,10 +11,8 @@ import { createKnowledgeTools } from '../../src/agent/tools.js';
 import { runKnowledgeAgent, type AgentReply } from '../../src/agent/run.js';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import type { FeishuMessenger } from '../../src/feishu/client.js';
-import { MembershipPolicy } from '../../src/feishu/membership.js';
 import { normalizeMessageEvent } from '../../src/feishu/normalize-event.js';
 import { LarkKnowledgeService, type KnowledgeService } from '../../src/lark/knowledge-service.js';
-import { PostgresAllowedChatStore } from '../../src/storage/allowed-chat-store.js';
 import { PostgresAgentRunStore } from '../../src/storage/agent-run-store.js';
 import { PostgresConversationStore } from '../../src/storage/conversation-store.js';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
@@ -76,7 +74,6 @@ class FakeMessenger implements FeishuMessenger {
 describe('open team Agent release contract', () => {
   let container: StartedPostgreSqlContainer;
   let database: DatabaseHandle;
-  let allowedChats: PostgresAllowedChatStore;
   let conversations: PostgresConversationStore;
   let events: PostgresEventStore;
 
@@ -84,16 +81,14 @@ describe('open team Agent release contract', () => {
     container = await new PostgreSqlContainer('postgres:17-alpine').start();
     database = createDatabase(container.getConnectionUri());
     await migrate(database.db, { migrationsFolder: resolve('drizzle') });
-    allowedChats = new PostgresAllowedChatStore(database.db);
     conversations = new PostgresConversationStore(database.db);
     events = new PostgresEventStore(database.db, { minRetryDelayMs: 0, maxRetryDelayMs: 0 });
   });
 
   beforeEach(async () => {
     await database.pool.query(
-      'truncate table tool_runs, agent_runs, processed_events, messages, conversations, allowed_chats cascade',
+      'truncate table tool_runs, agent_runs, processed_events, messages, conversations cascade',
     );
-    await allowedChats.configure(['oc_team']);
   });
 
   afterAll(async () => {
@@ -101,7 +96,7 @@ describe('open team Agent release contract', () => {
     await container?.stop();
   });
 
-  it('answers eligible group and private messages with fixture-backed sources', async () => {
+  it('answers delivered external group and private messages with fixture-backed sources', async () => {
     const searchFixture = JSON.parse(await readFile(
       resolve('test/fixtures/lark/drive-search.json'), 'utf8',
     )) as { data: unknown };
@@ -125,18 +120,16 @@ describe('open team Agent release contract', () => {
       };
     });
     const messenger = new FakeMessenger();
-    const membership = new MembershipPolicy({
-      allowedChats,
-      members: { listOpenIds: vi.fn(async () => new Set(['ou_member'])) },
-    });
     const worker = new MessageWorker({
-      eventStore: events, membership, conversations, messenger,
+      eventStore: events, conversations, messenger,
       runAgent: fakeModel,
       logger: { warn: vi.fn(), info: vi.fn() },
       concurrency: 4,
     });
 
-    const group = normalizeMessageEvent(rawEvent(), { botOpenId: BOT_OPEN_ID })!;
+    const group = normalizeMessageEvent(rawEvent({
+      sender: { sender_type: 'user', sender_id: { open_id: 'ou_external' } },
+    }), { botOpenId: BOT_OPEN_ID })!;
     const rich = normalizeMessageEvent(rawEvent({
       event_id: 'evt_group_2',
       message: {
@@ -157,16 +150,6 @@ describe('open team Agent release contract', () => {
       eventId: 'evt_file', messageId: 'om_file', conversationKey: 'oc_team:om_file',
       rootId: 'om_file', content: { kind: 'unsupported', sourceMessageType: 'file' },
     };
-    const disallowed: NormalizedMessage = {
-      ...group,
-      eventId: 'evt_bad', messageId: 'om_bad', chatId: 'oc_bad',
-      conversationKey: 'oc_bad:om_bad', rootId: 'om_bad',
-    };
-    const outsider: NormalizedMessage = {
-      ...privateMessage,
-      eventId: 'evt_outsider', messageId: 'om_outsider', senderOpenId: 'ou_outsider',
-    };
-
     expect(group.content).toEqual({
       kind: 'text', text: 'show the roadmap', feishuLinks: [],
     });
@@ -177,7 +160,7 @@ describe('open team Agent release contract', () => {
 
     expect(await events.enqueue(group)).toBe('queued');
     expect(await events.enqueue(group)).toBe('duplicate');
-    for (const event of [rich, privateMessage, unsupported, disallowed, outsider]) {
+    for (const event of [rich, privateMessage, unsupported]) {
       await events.enqueue(event);
     }
 
@@ -198,8 +181,8 @@ describe('open team Agent release contract', () => {
       (reply) => reply.text.includes('https://acme.feishu.cn/docx/doxcnRoadmap'),
     )).toBe(true);
     expect(messenger.replies.some((reply) => reply.text.includes('暂不支持'))).toBe(true);
-    expect(messenger.replies.some((reply) => reply.messageId === 'om_bad')).toBe(false);
-    expect(messenger.replies.some((reply) => reply.messageId === 'om_outsider')).toBe(false);
+    expect(messenger.replies.some((reply) => reply.messageId === 'om_group_1')).toBe(true);
+    expect(messenger.replies.some((reply) => reply.messageId === 'om_private')).toBe(true);
     expect(messenger.reactions.size).toBe(0);
     expect(claimBatches[0]).toEqual(expect.arrayContaining(['evt_group_1', 'evt_private']));
     expect(claimBatches[0]).not.toContain('evt_group_2');
@@ -220,7 +203,7 @@ describe('open team Agent release contract', () => {
     );
   });
 
-  it('accepts an eligible group request and completes an audited create-append-patch flow', async () => {
+  it('accepts a delivered group request and completes an audited create-append-patch flow', async () => {
     const canonicalUrl = 'https://acme.feishu.cn/docx/doxcnRelease';
     let document = {
       token: 'doxcnRelease', title: 'Release candidate', url: canonicalUrl,
@@ -310,13 +293,8 @@ describe('open team Agent release contract', () => {
       ],
     });
     const messenger = new FakeMessenger();
-    const membership = new MembershipPolicy({
-      allowedChats,
-      members: { listOpenIds: vi.fn(async () => new Set(['ou_member'])) },
-    });
     const worker = new MessageWorker({
       eventStore: events,
-      membership,
       conversations,
       messenger,
       logger: { warn: vi.fn(), info: vi.fn() },
@@ -405,12 +383,8 @@ describe('open team Agent release contract', () => {
       }
       return replyId;
     });
-    const membership = new MembershipPolicy({
-      allowedChats,
-      members: { listOpenIds: vi.fn(async () => new Set(['ou_member'])) },
-    });
     const worker = new MessageWorker({
-      eventStore: events, membership, conversations, messenger,
+      eventStore: events, conversations, messenger,
       runAgent: vi.fn(async () => ({ text: 'safe answer', sources: [], usage: {} })),
       logger: { warn: vi.fn(), info: vi.fn() },
     });
@@ -423,7 +397,6 @@ describe('open team Agent release contract', () => {
     );
     const restartedWorker = new MessageWorker({
       eventStore: restartedEvents,
-      membership,
       conversations: new PostgresConversationStore(database.db),
       messenger,
       runAgent: vi.fn(async () => ({ text: 'safe answer', sources: [], usage: {} })),
@@ -485,7 +458,6 @@ describe('open team Agent release contract', () => {
     });
     const worker = new MessageWorker({
       eventStore: events,
-      membership: { authorize: vi.fn(async () => ({ allowed: true as const })) },
       conversations,
       messenger: new FakeMessenger(),
       runAgent,
@@ -507,7 +479,6 @@ describe('open team Agent release contract', () => {
     );
     const worker = new MessageWorker({
       eventStore: restartedEvents,
-      membership: { authorize: vi.fn(async () => ({ allowed: true as const })) },
       conversations,
       messenger,
       runAgent: vi.fn(),
