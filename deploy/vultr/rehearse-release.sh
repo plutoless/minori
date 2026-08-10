@@ -5,6 +5,35 @@ LC_ALL=C
 LANG=C
 export LC_ALL LANG
 
+installed_rehearsal='/opt/minori/bin/rehearse-release'
+sanitized_path='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+if [[ "${BASH_SOURCE[0]}" == "$installed_rehearsal" ]]; then
+  installed_environment_is_clean=1
+  while IFS= read -r variable_name; do
+    case "$variable_name" in
+      LANG|LC_ALL|MINORI_REHEARSAL_SANITIZED|PATH|PWD|SHLVL|_) ;;
+      *) installed_environment_is_clean=0 ;;
+    esac
+  done < <(compgen -e)
+  if [[ "${MINORI_REHEARSAL_SANITIZED:-}" != 1 || "$installed_environment_is_clean" -ne 1 \
+    || "$PATH" != "$sanitized_path" || "$LANG" != C || "$LC_ALL" != C ]]; then
+    exec /usr/bin/env -i "PATH=${sanitized_path}" MINORI_REHEARSAL_SANITIZED=1 "$installed_rehearsal" "$@"
+  fi
+elif [[ "${MINORI_REHEARSAL_SANITIZED:-}" != 1 ]]; then
+  if [[ -n "${MINORI_TEST_ROOT:-}" && -d "$MINORI_TEST_ROOT" && ! -L "$MINORI_TEST_ROOT" && -O "$MINORI_TEST_ROOT" ]]; then
+    test_environment=(/usr/bin/env -i "PATH=${PATH}" MINORI_REHEARSAL_SANITIZED=1 MINORI_TEST_ROOT="$MINORI_TEST_ROOT")
+    while IFS= read -r variable_name; do
+      case "$variable_name" in
+        FAKE_*|MINORI_DEPLOY_LOCK_FILE|MINORI_READY_ATTEMPTS|MINORI_READY_DELAY_SECONDS|MINORI_TEST_*)
+          [[ "$variable_name" == MINORI_TEST_ROOT ]] \
+            || test_environment+=("${variable_name}=${!variable_name}")
+          ;;
+      esac
+    done < <(compgen -e)
+    exec "${test_environment[@]}" "${BASH_SOURCE[0]}" "$@"
+  fi
+fi
+
 sha_pattern='^[0123456789abcdef]{40}$'
 digest_pattern='^ghcr\.io/plutoless/minori@sha256:[0123456789abcdef]{64}$'
 legacy_pattern='^minori:[0123456789abcdef]{40}$'
@@ -21,7 +50,6 @@ if [[ $# -ne 2 || ! "$1" =~ $sha_pattern || ! "$2" =~ $digest_pattern ]]; then
 fi
 expected_sha="$1"
 expected_image="$2"
-installed_rehearsal='/opt/minori/bin/rehearse-release'
 test_mode=0
 if [[ "${BASH_SOURCE[0]}" == "$installed_rehearsal" ]]; then
   if [[ $EUID -ne 0 ]]; then
@@ -45,9 +73,10 @@ records_dir="${release_dir}/records"
 rehearsal_records_dir="${release_dir}/rehearsal-records"
 state_file="${release_dir}/state.tsv"
 pending_file="${release_dir}/pending.tsv"
+consumed_file="${release_dir}/rehearsal-v0.1.1.accepted"
 env_file="${minori_root}/minori.env"
 lark_dir="${minori_root}/lark"
-health_port="${MINORI_HEALTH_PORT:-3000}"
+health_port=3000
 lock_file='/run/lock/minori-ci-deploy.lock'
 ready_attempts=24
 ready_delay=5
@@ -55,7 +84,17 @@ if [[ $test_mode -eq 1 ]]; then
   lock_file="${MINORI_DEPLOY_LOCK_FILE:-${minori_root}/ci-deploy.lock}"
   ready_attempts="${MINORI_READY_ATTEMPTS:-1}"
   ready_delay="${MINORI_READY_DELAY_SECONDS:-0}"
+  transition_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  transition_image='ghcr.io/plutoless/minori@sha256:1111111111111111111111111111111111111111111111111111111111111111'
+  predecessor_sha='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+  predecessor_image='ghcr.io/plutoless/minori@sha256:2222222222222222222222222222222222222222222222222222222222222222'
+else
+  transition_sha='88cfe2bd0cde870e1c77ea71b035f7c1c2b1b599'
+  transition_image='ghcr.io/plutoless/minori@sha256:b9fbe52a854c18578bbfeb989ed39b2955aafe46dcb230e7567f8228b9754bbb'
+  predecessor_sha='cea9107ab9bc2f85635a2f999dc834fafb8e5a82'
+  predecessor_image='minori:cea9107ab9bc2f85635a2f999dc834fafb8e5a82'
 fi
+consumed_content=$'v1\t'"${transition_sha}"$'\t'"${transition_image}"$'\t'"${predecessor_sha}"$'\t'"${predecessor_image}"
 
 open_lock_file() { exec 9>"$lock_file"; }
 open_lock_file 2>/dev/null || finish failed_before_switch 1
@@ -101,6 +140,25 @@ cleanup() {
   if [[ -n "$temporary_dir" && -d "$temporary_dir" ]]; then rm -rf -- "$temporary_dir"; fi
 }
 
+consumed_file_is_valid() {
+  root_only_file_is_valid "$consumed_file" && [[ "$(<"$consumed_file")" == "$consumed_content" ]]
+}
+
+ensure_consumed_file() {
+  local temporary_consumed
+  if [[ -e "$consumed_file" || -L "$consumed_file" ]]; then
+    consumed_file_is_valid
+    return
+  fi
+  temporary_consumed="$(mktemp "${release_dir}/.rehearsal-v0.1.1.accepted.XXXXXX")" || return 1
+  if ! printf '%s\n' "$consumed_content" > "$temporary_consumed" \
+    || ! chmod 0600 "$temporary_consumed" || ! mv -f -- "$temporary_consumed" "$consumed_file"; then
+    rm -f -- "$temporary_consumed"
+    return 1
+  fi
+  consumed_file_is_valid
+}
+
 file_mode() {
   local path="$1" mode
   if mode="$(stat -c '%a' -- "$path" 2>/dev/null)"; then printf '%s\n' "$mode"; return 0; fi
@@ -124,6 +182,17 @@ trusted_directory_is_valid() {
   ids="$(path_ids "$path")" || return 1
   [[ "$ids" == "$(expected_root_ids)" && "$mode" =~ ^[01234567]{3,4}$ ]] || return 1
   (( (8#$mode & 8#022) == 0 ))
+}
+
+prepare_trusted_directory() {
+  local path="$1"
+  if [[ -L "$path" ]] || { [[ -e "$path" ]] && ! trusted_directory_is_valid "$path"; }; then
+    return 1
+  fi
+  if [[ ! -e "$path" ]]; then
+    mkdir -- "$path" || return 1
+  fi
+  trusted_directory_is_valid "$path"
 }
 
 root_only_file_is_valid() {
@@ -335,7 +404,7 @@ ensure_pending_rehearsal_failure() {
 
 pending_phase_is_valid() {
   case "$1:$2" in
-    deploy:prepared|deploy:replaced|deploy:healthy|deploy:state_written|rehearsal:prepared|rehearsal:predecessor_proven|rehearsal:restoring_current|rehearsal:fallback) return 0 ;;
+    deploy:prepared|deploy:replaced|deploy:healthy|deploy:state_written|rehearsal:prepared|rehearsal:predecessor_proven|rehearsal:restoring_current|rehearsal:current_restored|rehearsal:fallback) return 0 ;;
   esac
   return 1
 }
@@ -416,6 +485,8 @@ load_pending() {
       && "${pending_state_images[1]}" == "$pending_alternate_image" \
       && "${pending_state_shas[1]}" == "$pending_alternate_sha" \
       && "${pending_state_contracts[1]}" == "$pending_alternate_contract" ]] || return 1
+    [[ "$pending_original_sha" == "$transition_sha" && "$pending_original_image" == "$transition_image" \
+      && "$pending_alternate_sha" == "$predecessor_sha" && "$pending_alternate_image" == "$predecessor_image" ]] || return 1
   fi
 }
 
@@ -473,6 +544,8 @@ recover_pending() {
       else
         ensure_pending_deploy_record rolled_back saved_digest || return 1
       fi
+    elif [[ "$pending_phase" == current_restored ]]; then
+      ensure_consumed_file || return 1
     fi
   fi
   clear_pending || return 1
@@ -521,8 +594,7 @@ if ! trusted_directory_is_valid "$minori_root" || ! trusted_directory_is_valid "
   || ! trusted_directory_is_valid "$contracts_dir" || ! root_only_file_is_valid "$env_file" || ! lark_directory_is_valid; then
   finish rejected 2
 fi
-mkdir -p "$records_dir" "$rehearsal_records_dir" || finish rejected 2
-trusted_directory_is_valid "$records_dir" && trusted_directory_is_valid "$rehearsal_records_dir" || finish rejected 2
+prepare_trusted_directory "$records_dir" && prepare_trusted_directory "$rehearsal_records_dir" || finish rejected 2
 temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/minori-rehearsal.XXXXXX")" || finish rejected 2
 reset_state
 load_state || finish rejected 2
@@ -532,6 +604,12 @@ load_state || finish rejected 2
 [[ $state_count -ge 2 ]] || finish rejected 2
 [[ "${state_shas[0]}" == "$expected_sha" && "${state_images[0]}" == "$expected_image" ]] || finish rejected 2
 [[ "${state_images[0]}" =~ $digest_pattern ]] || finish rejected 2
+[[ "$expected_sha" == "$transition_sha" && "$expected_image" == "$transition_image" \
+  && "${state_shas[1]}" == "$predecessor_sha" && "${state_images[1]}" == "$predecessor_image" ]] || finish rejected 2
+if [[ -e "$consumed_file" || -L "$consumed_file" ]]; then
+  consumed_file_is_valid || finish rejected 2
+  finish rejected 2
+fi
 running_image_equals "$expected_image" || finish rejected 2
 
 original_sha="${state_shas[0]}"
@@ -571,6 +649,9 @@ update_pending_phase restoring_current || journal_failure
 if replace_service "$original_image" "$original_contract" && service_is_healthy "$original_image"; then
   test_boundary after_current_switch
   restore_original_state || journal_failure
+  update_pending_phase current_restored || journal_failure
+  ensure_consumed_file || journal_failure
+  test_boundary after_consumed
   clear_pending || journal_failure
   transaction_active=0
   finish success 0

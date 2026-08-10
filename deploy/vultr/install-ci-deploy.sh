@@ -77,6 +77,8 @@ forced_prefix='restrict,command="/opt/minori/bin/ci-deploy"'
 authorized_entry="${forced_prefix} ${public_key}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bin_dir="${install_root}/bin"
+release_dir="${install_root}/releases"
+rehearsal_consumed="${release_dir}/rehearsal-v0.1.1.accepted"
 authorized_keys="${ssh_dir}/authorized_keys"
 
 path_metadata() {
@@ -134,7 +136,7 @@ if [[ $test_mode -eq 1 ]]; then
 else
   trusted_components=(/opt /root)
 fi
-trusted_components+=("$install_root" "$bin_dir" "$ssh_dir" "$authorized_keys" \
+trusted_components+=("$install_root" "$bin_dir" "$release_dir" "$rehearsal_consumed" "$ssh_dir" "$authorized_keys" \
   "${bin_dir}/ci-deploy" "${bin_dir}/minori-release" "${bin_dir}/rehearse-release")
 for secure_path in "${trusted_components[@]}"; do
   if [[ -L "$secure_path" ]] || { [[ -e "$secure_path" ]] && ! verify_secure_path "$secure_path"; }; then
@@ -173,10 +175,12 @@ fi
 
 install_directory 0755 "$install_root"
 install_directory 0755 "$bin_dir"
+install_directory 0755 "$release_dir"
 install_file 0755 "${script_dir}/ci-deploy" "${bin_dir}/ci-deploy"
 install_file 0755 "${script_dir}/minori-release" "${bin_dir}/minori-release"
 install_file 0755 "${script_dir}/rehearse-release.sh" "${bin_dir}/rehearse-release"
-post_install_paths=("$install_root" "$bin_dir" "${bin_dir}/ci-deploy" \
+install_file 0600 "${script_dir}/rehearsal-v0.1.1.accepted" "$rehearsal_consumed"
+post_install_paths=("$install_root" "$bin_dir" "$release_dir" "$rehearsal_consumed" "${bin_dir}/ci-deploy" \
   "${bin_dir}/minori-release" "${bin_dir}/rehearse-release")
 if [[ $test_mode -eq 1 ]]; then
   post_install_paths=("$opt_parent" "$root_parent" "${post_install_paths[@]}")

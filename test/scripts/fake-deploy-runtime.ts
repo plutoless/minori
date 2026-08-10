@@ -14,6 +14,7 @@ export const digestD = `ghcr.io/plutoless/minori@sha256:${'4'.repeat(64)}`;
 const fakeDocker = String.raw`#!/usr/bin/env bash
 set -euo pipefail
 printf 'image=%s :: %s\n' "\${MINORI_IMAGE-}" "$*" >> "$FAKE_RUNTIME_LOG/docker.log"
+printf 'DOCKER_HOST=%s\n' "\${DOCKER_HOST-}" >> "$FAKE_RUNTIME_LOG/docker-env.log"
 
 next_sequence_value() {
   local name="$1"

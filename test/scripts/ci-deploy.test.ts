@@ -39,12 +39,19 @@ describe('restricted forced-command parser', { timeout: 15_000 }, () => {
   it('passes one completely validated Deployment Protocol v1 request to the release engine', async () => {
     const runtime = await createFakeDeployRuntime();
     await runtime.installFakeReleaseEngine(
-      '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$FAKE_RUNTIME_LOG/release.log"\nprintf \'minori_release result=success\\n\'\n',
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$FAKE_RUNTIME_LOG/release.log"
+printf 'minori_release result=success active_sha=${shaA} active_image=${digestA}\\n'
+`,
     );
 
     const result = await run(runtime, `deploy v1 ${shaA} ${digestA}`);
 
-    expect(result).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_deploy result=success\n', stderr: '' }));
+    expect(result).toEqual(expect.objectContaining({
+      code: 0,
+      stdout: `minori_deploy result=success active_sha=${shaA} active_image=${digestA}\n`,
+      stderr: '',
+    }));
     expect(await runtime.logText('release.log')).toBe(`v1 ${shaA} ${digestA}\n`);
   });
 
@@ -112,7 +119,6 @@ describe('restricted forced-command parser', { timeout: 15_000 }, () => {
 
   it.each([
     ['failed_before_replace', 'failed_before_replace'],
-    ['rolled_back', 'rolled_back'],
     ['rollback_failed', 'rollback_failed'],
     ['recovery_failed', 'recovery_failed'],
   ])('propagates only the stable %s engine category', async (engineCategory, deployCategory) => {
@@ -130,6 +136,24 @@ describe('restricted forced-command parser', { timeout: 15_000 }, () => {
     }));
   });
 
+  it('propagates a rolled-back result only with the resulting active healthy artifact', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await runtime.installFakeReleaseEngine(
+      `#!/usr/bin/env bash
+printf 'minori_release result=rolled_back active_sha=${shaA} active_image=${digestA}\\n'
+exit 1
+`,
+    );
+
+    const result = await run(runtime, `deploy v1 ${shaA} ${digestA}`);
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 1,
+      stdout: `minori_deploy result=rolled_back active_sha=${shaA} active_image=${digestA}\n`,
+      stderr: '',
+    }));
+  });
+
   it('does not expose unrecognized engine output or stderr', async () => {
     const runtime = await createFakeDeployRuntime();
     await runtime.installFakeReleaseEngine(
@@ -143,6 +167,21 @@ describe('restricted forced-command parser', { timeout: 15_000 }, () => {
       stdout: 'minori_deploy result=failed\n',
       stderr: '',
     }));
+  });
+
+  it.each([
+    ['success without active artifact', 'minori_release result=success'],
+    ['success for a different artifact', `minori_release result=success active_sha=${shaA} active_image=ghcr.io/plutoless/minori@sha256:${'9'.repeat(64)}`],
+    ['rollback with extra output', `minori_release result=rolled_back active_sha=${shaA} active_image=${digestA}\\nextra`],
+  ])('fails closed on %s', async (_name, engineOutput) => {
+    const runtime = await createFakeDeployRuntime();
+    await runtime.installFakeReleaseEngine(
+      `#!/usr/bin/env bash\nprintf '%b\\n' '${engineOutput}'\nexit 1\n`,
+    );
+
+    const result = await run(runtime, `deploy v1 ${shaA} ${digestA}`);
+
+    expect(result).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_deploy result=failed\n', stderr: '' }));
   });
 });
 
@@ -182,6 +221,9 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
     expect(authorized).toContain('restrict,command="/opt/minori/bin/ci-deploy" ssh-ed25519 ');
     expect(authorized.match(/restrict,command="\/opt\/minori\/bin\/ci-deploy"/g)).toHaveLength(1);
     await expect(readFile(join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy'), 'utf8')).resolves.toContain('SSH_ORIGINAL_COMMAND');
+    await expect(readFile(join(fixture.root, 'opt', 'minori', 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toBe(
+      await readFile('deploy/vultr/rehearsal-v0.1.1.accepted', 'utf8'),
+    );
   });
 
   it.each(['intermediate opt', 'intermediate root', 'install root', 'bin directory', 'installed leaf'])(

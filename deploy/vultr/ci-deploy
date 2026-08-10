@@ -12,6 +12,11 @@ emit_and_exit() {
   exit "$2"
 }
 
+emit_active_and_exit() {
+  printf 'minori_deploy result=%s active_sha=%s active_image=%s\n' "$1" "$2" "$3"
+  exit "$4"
+}
+
 if [[ $# -ne 0 ]]; then
   emit_and_exit rejected 2
 fi
@@ -58,14 +63,24 @@ else
 fi
 if release_output="$(MINORI_FORCED_ENTRYPOINT=1 "${release_command[@]}" \
     "$protocol" "$commit_sha" "$image" 2>/dev/null)"; then
-  if [[ "$release_output" == 'minori_release result=success' ]]; then
-    emit_and_exit success 0
+  success_pattern='^minori_release result=success active_sha=([0123456789abcdef]{40}) active_image=(ghcr\.io/plutoless/minori@sha256:[0123456789abcdef]{64})$'
+  if [[ "$release_output" =~ $success_pattern \
+    && "${BASH_REMATCH[1]}" == "$commit_sha" && "${BASH_REMATCH[2]}" == "$image" ]]; then
+    emit_active_and_exit success "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" 0
+  fi
+  emit_and_exit failed 1
+fi
+rollback_pattern='^minori_release result=rolled_back active_sha=([0123456789abcdef]{40}) active_image=(ghcr\.io/plutoless/minori@sha256:[0123456789abcdef]{64}|minori:[0123456789abcdef]{40})$'
+if [[ "$release_output" =~ $rollback_pattern ]]; then
+  active_sha="${BASH_REMATCH[1]}"
+  active_image="${BASH_REMATCH[2]}"
+  if [[ "$active_image" != minori:* || "${active_image#minori:}" == "$active_sha" ]]; then
+    emit_active_and_exit rolled_back "$active_sha" "$active_image" 1
   fi
   emit_and_exit failed 1
 fi
 case "$release_output" in
   'minori_release result=failed_before_replace') emit_and_exit failed_before_replace 1 ;;
-  'minori_release result=rolled_back') emit_and_exit rolled_back 1 ;;
   'minori_release result=rollback_failed') emit_and_exit rollback_failed 1 ;;
   'minori_release result=recovery_failed') emit_and_exit recovery_failed 1 ;;
   *) emit_and_exit failed 1 ;;

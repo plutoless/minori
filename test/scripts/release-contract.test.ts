@@ -113,6 +113,16 @@ describe('Team Agent release packaging contract', () => {
     }
     expect(deploy).toContain('approved GitHub production release');
     expect(rollback).toContain('no second operational deployment protocol');
+    const dockerignore = await text('.dockerignore');
+    expect(dockerignore).toContain('scripts/deploy-vultr.sh');
+    expect(dockerignore).toContain('scripts/rollback-vultr.sh');
+  });
+
+  it('binds the consumed rehearsal receipt to the exact accepted transition', async () => {
+    const receipt = await text('deploy/vultr/rehearsal-v0.1.1.accepted');
+    expect(receipt).toBe(
+      'v1\t88cfe2bd0cde870e1c77ea71b035f7c1c2b1b599\tghcr.io/plutoless/minori@sha256:b9fbe52a854c18578bbfeb989ed39b2955aafe46dcb230e7567f8228b9754bbb\tcea9107ab9bc2f85635a2f999dc834fafb8e5a82\tminori:cea9107ab9bc2f85635a2f999dc834fafb8e5a82\n',
+    );
   });
 
   it('installs one restricted forced command without replacing unrelated authorized keys', async () => {
@@ -167,6 +177,8 @@ describe('Team Agent release packaging contract', () => {
     expect(readme).toContain('current healthy release stays running');
     expect(readme).toContain('diagnosis, not a manual or emergency deploy path');
     expect(readme).toContain('`v0.1.1` -> `v0.1.0` -> the same `v0.1.1` digest');
+    expect(readme).toContain('root-only durable receipt disables any repeat');
+    expect(readme).toContain('do not run the rehearsal again');
     expect(readme).not.toContain('./scripts/deploy-vultr.sh');
     expect(readme).not.toContain('./scripts/rollback-vultr.sh');
   });
@@ -235,6 +247,8 @@ describe('Team Agent release packaging contract', () => {
         'if (printf invalid > /opt/minori/release/deployment-protocol) 2>/dev/null; then exit 1; fi',
         'if rm /opt/minori/release/compose.production.yaml 2>/dev/null; then exit 1; fi',
         'if rm /opt/minori/release/deployment-protocol 2>/dev/null; then exit 1; fi',
+        'test ! -e /app/scripts/deploy-vultr.sh',
+        'test ! -e /app/scripts/rollback-vultr.sh',
       ].join(' && '),
     ]);
   }, 60_000);

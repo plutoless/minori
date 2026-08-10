@@ -8,3 +8,5 @@ coverage
 acceptance.local.jsonl
 prototypes
 _impl_task*
+scripts/deploy-vultr.sh
+scripts/rollback-vultr.sh

@@ -105,6 +105,8 @@ Use GitHub deployment status, Actions result/email, the concise job summary, and
 
 After the first automated release is healthy, perform the single bounded rehearsal: `v0.1.1` -> `v0.1.0` -> the same `v0.1.1` digest. It reuses the saved `v0.1.0` contract and already approved `v0.1.1` digest without rebuilding either image, verifies readiness after each transition, and stops if either exact target or readiness check is unhealthy. This is a one-time acceptance action, not a normal rollback or alternate deploy path.
 
+That transition acceptance is complete. The installed command is now bound to the exact accepted `v0.1.1` SHA/digest and its exact `v0.1.0` predecessor, and a root-only durable receipt disables any repeat. Reinstalling the host entrypoints preserves this consumed state; do not run the rehearsal again for a later release or a different saved-state position.
+
 ## Real acceptance
 
 After both Live Group History permissions are granted and published, verify through sanitized probes that history loading and group-member name resolution succeed in an ordinary-message test group containing Minori. If either grant is pending approval or publication, keep the current production image healthy and stop before Group Context acceptance.
