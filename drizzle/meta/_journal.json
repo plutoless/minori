@@ -43,6 +43,13 @@
       "when": 1786260813939,
       "tag": "0005_live_group_context_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786391936978,
+      "tag": "0006_warm_iron_lad",
+      "breakpoints": true
     }
   ]
 }

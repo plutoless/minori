@@ -6,11 +6,13 @@ import { PostgresConversationStore } from './conversation-store.js';
 import { createDatabase, type DatabaseHandle } from './database.js';
 import { PostgresEventStore } from './event-store.js';
 import { createRetentionService, type RetentionService } from './retention.js';
+import { PostgresTeamContextStore } from './team-context-store.js';
 
 export type StorageRuntime = {
   eventStore?: PostgresEventStore;
   conversationStore?: PostgresConversationStore;
   agentRunStore?: PostgresAgentRunStore;
+  teamContextStore?: PostgresTeamContextStore;
   databaseStatus(): Promise<ComponentStatus>;
   retentionStatus(): ComponentStatus;
   start(): Promise<void>;
@@ -49,6 +51,7 @@ export function createStorageRuntime(config: AppConfig, logger: Logger): Storage
     eventStore: new PostgresEventStore(database.db),
     conversationStore,
     agentRunStore: new PostgresAgentRunStore(database.db),
+    teamContextStore: new PostgresTeamContextStore(database.db),
     async databaseStatus() {
       if (stopped) return 'degraded';
       try {

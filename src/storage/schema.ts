@@ -85,6 +85,18 @@ export const messages = pgTable('messages', {
   index('messages_conversation_sequence_idx').on(table.conversationId, table.sequence),
 ]);
 
+export const teamContextSnapshots = pgTable('team_context_snapshots', {
+  documentToken: text('document_token').primaryKey(),
+  sourceRevision: integer('source_revision'),
+  normalizedContent: text('normalized_content'),
+  estimatedTokens: integer('estimated_tokens'),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }),
+  invalidatedAt: timestamp('invalidated_at', { withTimezone: true }),
+  invalidationCategory: text('invalidation_category')
+    .$type<'team_context_missing' | 'team_context_forbidden'>(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const agentRuns = pgTable('agent_runs', {
   id: uuid('id').defaultRandom().primaryKey(),
   conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'set null' }),
