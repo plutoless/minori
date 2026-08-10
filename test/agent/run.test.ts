@@ -172,6 +172,34 @@ function dependencies(
 }
 
 describe('runKnowledgeAgent', () => {
+  it('loads Team Context independently and places it before retained private context', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: generated([{ type: 'text', text: 'Private answer.' }], 'stop'),
+    });
+    const load = vi.fn().mockResolvedValue({
+      status: 'loaded' as const,
+      content: '- Weekly Review means PMO.\n',
+      sourceRevision: 9,
+      estimatedTokens: 8,
+      fetchedAt: new Date('2026-08-10T09:00:00Z'),
+    });
+
+    await runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      teamContextSource: { load, update: vi.fn() },
+    }));
+
+    expect(load).toHaveBeenCalledWith(expect.any(AbortSignal));
+    const serialized = JSON.stringify(model.doGenerateCalls[0]?.prompt);
+    expect(serialized).toContain('[Team Context][Revision 9]');
+    expect(serialized).toContain('Earlier context');
+    expect(serialized).toContain('[Current Invocation][成员] When is the beta launch?');
+    expect(serialized.indexOf('[Team Context]')).toBeLessThan(serialized.indexOf('Earlier context'));
+    expect(serialized.lastIndexOf('[Current Invocation]')).toBeGreaterThan(
+      serialized.lastIndexOf('Earlier Minori reply'),
+    );
+    expect(serialized.match(/When is the beta launch\?/gu)).toHaveLength(1);
+  });
+
   it('supplies transient named group history before one distinct Current Invocation', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: generated([{ type: 'text', text: 'Friday, with risks noted.' }], 'stop'),

@@ -12,7 +12,9 @@ import type {
 } from '../feishu/group-context.js';
 import type { AgentRunStore } from '../storage/agent-run-store.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
-import { selectRecentHistory, type AgentHistoryMessage } from './context-window.js';
+import type { TeamContextSource } from '../team-context/source.js';
+import { DefaultContextAssembler } from './context-assembler.js';
+import type { AgentHistoryMessage } from './context-window.js';
 import { TEAM_AGENT_INSTRUCTIONS } from './instructions.js';
 import {
   budgetExhaustedText,
@@ -112,6 +114,7 @@ export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' 
   triggerMessageId: string;
   conversationStore: Pick<ConversationStore, 'search' | 'recentWithinBudget'>;
   groupContextSource?: GroupContextSource;
+  teamContextSource?: TeamContextSource;
   contextTokenTarget?: number;
 };
 
@@ -381,6 +384,10 @@ export async function runKnowledgeAgent(
       throw new Error('conversation_history_mismatch');
     }
 
+    const teamContext = dependencies.teamContextSource
+      ? await withAbort(() => dependencies.teamContextSource!.load(runSignal), runSignal)
+      : undefined;
+
     let groupReader: ScopedGroupContextReader | undefined;
     let initialGroupContext: InitialGroupContext | undefined;
     if (input.trigger.chatType === 'group') {
@@ -454,18 +461,24 @@ export async function runKnowledgeAgent(
         groupHistory: { reader: groupReader, recordAudit: recordGroupHistory },
       } : {}),
     }, stepBudget);
-    const history = input.trigger.chatType === 'group'
-      ? selectRecentHistory([
-        ...(initialGroupContext!.audit.status === 'unavailable'
-          ? retainedHistoryBeforeInvocation
-          : []),
-        ...groupModelMessages(initialGroupContext!),
-        {
-          role: 'user',
-          content: `[Current Invocation][${initialGroupContext!.currentSenderName}] ${input.prompt}`,
-        },
-      ], contextTokenTarget)
-      : selectRecentHistory(authoritativeHistory, contextTokenTarget);
+    const history = new DefaultContextAssembler().assemble({
+      ...(teamContext ? { teamContext } : {}),
+      conversation: input.trigger.chatType === 'group'
+        ? [
+          ...(initialGroupContext!.audit.status === 'unavailable'
+            ? retainedHistoryBeforeInvocation
+            : []),
+          ...groupModelMessages(initialGroupContext!),
+        ]
+        : retainedHistoryBeforeInvocation,
+      currentInvocation: {
+        speakerName: input.trigger.chatType === 'group'
+          ? initialGroupContext!.currentSenderName
+          : '成员',
+        text: input.prompt,
+      },
+      conversationTokenTarget: contextTokenTarget,
+    });
     const result = await agent.generate({
       messages: history,
       abortSignal: runSignal,
