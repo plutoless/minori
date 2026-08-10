@@ -211,6 +211,30 @@ describe('PostgresAgentRunStore', () => {
     });
   });
 
+  it('uses the same replay fence and sanitized receipt for a Team Context mutation', async () => {
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
+    const write = await store.beginWrite(run.id, {
+      toolName: 'updateTeamContext',
+      targetIdentifiers: { documentToken: 'dox_team' },
+      sanitizedSummary: 'updated Team Context',
+    });
+    await store.finishWrite(write.id, {
+      outcome: 'succeeded',
+      resultIdentifiers: { documentToken: 'dox_team', revisionId: '8' },
+    });
+
+    await expect(store.listWriteAttempts('evt_1')).resolves.toEqual([{
+      toolName: 'updateTeamContext',
+      outcome: 'succeeded',
+      targetIdentifiers: { documentToken: 'dox_team' },
+      sanitizedSummary: 'updated Team Context',
+      resultIdentifiers: { documentToken: 'dox_team', revisionId: '8' },
+    }]);
+    const [event] = await database.db.select().from(processedEvents)
+      .where(eq(processedEvents.eventId, 'evt_1'));
+    expect(event?.writeStartedAt).toBeInstanceOf(Date);
+  });
+
   it('returns an unfinished write as an unknown sanitized receipt', async () => {
     const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     await store.beginWrite(run.id, {

@@ -127,12 +127,7 @@ export const toolRuns = pgTable('tool_runs', {
   success: boolean('success'),
   errorCategory: text('error_category'),
   sanitizedSummary: text('sanitized_summary'),
-  resultIdentifiers: jsonb('result_identifiers').$type<{
-    token: string;
-    title: string;
-    url: string;
-    revisionId: string;
-  }>(),
+  resultIdentifiers: jsonb('result_identifiers').$type<Record<string, string>>(),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (table) => [

@@ -1,5 +1,6 @@
 import { asc, eq, sql } from 'drizzle-orm';
 import type { AgentRunOutcome, WriteAttemptReceipt } from '../agent/run-outcome.js';
+import type { PersistentWriteName } from '../agent/tools.js';
 import type { GroupHistoryAudit } from '../feishu/group-context.js';
 import type { Database } from './database.js';
 import { agentRuns, toolRuns } from './schema.js';
@@ -9,19 +10,14 @@ const WRITE_RESULT_UNKNOWN = 'write_result_unknown';
 export interface AgentRunStore {
   start(input: { eventId: string; claimAttempt: number; model: string }): Promise<{ id: string }>;
   beginWrite(agentRunId: string, input: {
-    toolName: 'createDocument' | 'appendDocument' | 'patchDocument';
+    toolName: PersistentWriteName;
     targetIdentifiers: Record<string, string>;
     sanitizedSummary: string;
   }): Promise<{ id: string }>;
   finishWrite(toolRunId: string, input: {
     outcome: 'succeeded' | 'failed' | 'unknown';
     errorCategory?: string;
-    resultIdentifiers?: {
-      token: string;
-      title: string;
-      url: string;
-      revisionId: string;
-    };
+    resultIdentifiers?: Record<string, string>;
   }): Promise<void>;
   listWriteAttempts(eventId: string): Promise<WriteAttemptReceipt[]>;
   recordGroupHistory(agentRunId: string, audit: GroupHistoryAudit): Promise<void>;
@@ -54,7 +50,7 @@ export class PostgresAgentRunStore implements AgentRunStore {
   async beginWrite(
     agentRunId: string,
     input: {
-      toolName: 'createDocument' | 'appendDocument' | 'patchDocument';
+      toolName: PersistentWriteName;
       targetIdentifiers: Record<string, string>;
       sanitizedSummary: string;
     },
@@ -117,11 +113,12 @@ export class PostgresAgentRunStore implements AgentRunStore {
       .where(eq(agentRuns.eventId, eventId))
       .orderBy(asc(toolRuns.startedAt));
 
-    const typedToolNames = new Set([
-      'createDocument', 'appendDocument', 'patchDocument',
+    const typedToolNames = new Set<PersistentWriteName>([
+      'createDocument', 'appendDocument', 'patchDocument', 'updateTeamContext',
+      'createSchedule', 'updateSchedule', 'pauseSchedule', 'resumeSchedule', 'deleteSchedule',
     ]);
     return rows.flatMap((row): WriteAttemptReceipt[] => {
-      if (!typedToolNames.has(row.toolName) || !row.sanitizedSummary) return [];
+      if (!typedToolNames.has(row.toolName as PersistentWriteName) || !row.sanitizedSummary) return [];
       return [{
         toolName: row.toolName as WriteAttemptReceipt['toolName'],
         outcome: row.success === true ? 'succeeded' : row.success === false ? 'failed' : 'unknown',

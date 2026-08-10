@@ -14,16 +14,14 @@ export type AgentRunOutcome =
   | 'interrupted_after_write';
 
 export type WriteAttemptReceipt = {
-  toolName: 'createDocument' | 'appendDocument' | 'patchDocument';
+  toolName:
+    | 'createDocument' | 'appendDocument' | 'patchDocument'
+    | 'updateTeamContext'
+    | 'createSchedule' | 'updateSchedule' | 'pauseSchedule' | 'resumeSchedule' | 'deleteSchedule';
   outcome: 'succeeded' | 'failed' | 'unknown';
   sanitizedSummary: string;
   targetIdentifiers: Record<string, string>;
-  resultIdentifiers?: {
-    token: string;
-    title: string;
-    url: string;
-    revisionId: string;
-  };
+  resultIdentifiers?: Record<string, string>;
   errorCategory?: string;
 };
 

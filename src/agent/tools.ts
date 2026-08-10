@@ -7,6 +7,8 @@ import type {
   GroupHistoryAudit,
   ScopedGroupContextReader,
 } from '../feishu/group-context.js';
+import type { TeamContextSource } from '../team-context/source.js';
+import type { TeamContextLoad } from '../team-context/types.js';
 import { SourceRegistry } from './sources.js';
 
 export type ScopedHistoryReader = {
@@ -33,22 +35,34 @@ const TOKEN_SCHEMA = z.string().min(1).max(200).regex(/^[A-Za-z0-9_-]+$/u);
 
 type FetchedDocument = Awaited<ReturnType<KnowledgeService['fetchDocument']>>;
 
-export type KnowledgeWriteAuditInput = {
-  toolName: 'createDocument' | 'appendDocument' | 'patchDocument';
+export type PersistentWriteName =
+  | 'createDocument' | 'appendDocument' | 'patchDocument'
+  | 'updateTeamContext'
+  | 'createSchedule' | 'updateSchedule' | 'pauseSchedule' | 'resumeSchedule' | 'deleteSchedule';
+
+export type PersistentWriteAuditInput = {
+  toolName: PersistentWriteName;
   targetIdentifiers: Record<string, string>;
   sanitizedSummary: string;
 };
 
-export interface KnowledgeWriteAudit {
-  run(
-    input: KnowledgeWriteAuditInput,
-    operation: () => Promise<KnowledgeWriteResult>,
-  ): Promise<KnowledgeWriteResult>;
+export interface PersistentWriteAudit {
+  run<T>(
+    input: PersistentWriteAuditInput,
+    operation: () => Promise<T>,
+    resultIdentifiers?: (result: T) => Record<string, string> | undefined,
+  ): Promise<T>;
 }
 
 export type GroupHistoryToolContext = {
   reader: ScopedGroupContextReader;
   recordAudit(audit: GroupHistoryAudit): Promise<void>;
+};
+
+export type TeamContextToolContext = {
+  source: TeamContextSource;
+  current: TeamContextLoad;
+  allowMutation: boolean;
 };
 
 function splitSections(markdown: string) {
@@ -114,8 +128,9 @@ export function createKnowledgeTools(
   service: KnowledgeService,
   history: ScopedHistoryReader,
   sources = new SourceRegistry(),
-  writeAudit: KnowledgeWriteAudit,
+  writeAudit: PersistentWriteAudit,
   groupHistory?: GroupHistoryToolContext,
+  teamContext?: TeamContextToolContext,
 ) {
   const documents = new Map<string, Promise<FetchedDocument>>();
   const pageSets = new Map<string, string[]>();
@@ -280,6 +295,41 @@ export function createKnowledgeTools(
         }
       },
     }),
+    ...(teamContext?.allowMutation ? {
+      updateTeamContext: tool({
+        description: 'Apply one exact, conflict-aware update to the configured Team Context document.',
+        inputSchema: z.object({
+          expectedRevision: z.number().int().nonnegative(),
+          pattern: z.string().min(1).max(12_000),
+          replacement: z.string().max(12_000),
+          reason: z.enum([
+            'durable_assertion', 'explicit_retention', 'correction', 'forgetting',
+            'approved_consolidation', 'mechanical_cleanup',
+          ]),
+          semanticChangeApproved: z.boolean(),
+        }).strict(),
+        execute: async ({
+          expectedRevision, pattern, replacement, semanticChangeApproved,
+        }, { abortSignal }) => {
+          const result = await writeAudit.run({
+            toolName: 'updateTeamContext',
+            targetIdentifiers: { documentToken: teamContext.source.documentToken },
+            sanitizedSummary: 'updated Team Context',
+          }, () => teamContext.source.update({
+            expectedRevision,
+            pattern,
+            replacement,
+            semanticChangeApproved,
+          }, abortSignal));
+          return {
+            status: 'updated' as const,
+            documentToken: result.token,
+            revisionId: String(result.revisionId),
+            summary: 'Updated Team Context',
+          };
+        },
+      }),
+    } : {}),
     searchConversationHistory: tool({
       description: 'Search older retained messages in this conversation only.',
       inputSchema: z.object({

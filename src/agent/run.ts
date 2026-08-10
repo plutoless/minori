@@ -27,8 +27,9 @@ import { SourceRegistry, type AgentSource } from './sources.js';
 import {
   createKnowledgeTools,
   type GroupHistoryToolContext,
-  type KnowledgeWriteAudit,
+  type PersistentWriteAudit,
   type ScopedHistoryReader,
+  type TeamContextToolContext,
 } from './tools.js';
 
 export type AgentReply = {
@@ -60,8 +61,9 @@ export type TeamAgentDependencies = {
   service: KnowledgeService;
   history: ScopedHistoryReader;
   sources: SourceRegistry;
-  writeAudit: KnowledgeWriteAudit;
+  writeAudit: PersistentWriteAudit;
   groupHistory?: GroupHistoryToolContext;
+  teamContext?: TeamContextToolContext;
 };
 
 function createStepBudget(maxSteps: number) {
@@ -91,6 +93,7 @@ function createTeamAgentWithBudget(
       dependencies.sources,
       dependencies.writeAudit,
       dependencies.groupHistory,
+      dependencies.teamContext,
     ),
     stopWhen: budget.stopWhen,
     providerOptions: { openai: { store: false } },
@@ -143,9 +146,13 @@ function createWriteAudit(
   signal: AbortSignal,
   writeAttempts: WriteAttemptReceipt[],
   replayBoundary: { crossed: boolean },
-): KnowledgeWriteAudit {
+): PersistentWriteAudit {
   return {
-    async run(input, operation) {
+    async run<T>(
+      input: Parameters<PersistentWriteAudit['run']>[0],
+      operation: () => Promise<T>,
+      identifiersForResult?: (result: T) => Record<string, string> | undefined,
+    ) {
       let write: { id: string };
       try {
         write = await withAbort(
@@ -170,7 +177,7 @@ function createWriteAudit(
       try {
         signal.throwIfAborted();
         const result = await operation();
-        const identifiers = resultIdentifiers(result);
+        const identifiers = identifiersForResult?.(result) ?? resultIdentifiers(result);
         try {
           await withAuditFinalization(
             () => store.finishWrite(write.id, {
@@ -459,6 +466,13 @@ export async function runKnowledgeAgent(
       },
       ...(groupReader ? {
         groupHistory: { reader: groupReader, recordAudit: recordGroupHistory },
+      } : {}),
+      ...(dependencies.teamContextSource && teamContext ? {
+        teamContext: {
+          source: dependencies.teamContextSource,
+          current: teamContext,
+          allowMutation: true,
+        },
       } : {}),
     }, stepBudget);
     const history = new DefaultContextAssembler().assemble({

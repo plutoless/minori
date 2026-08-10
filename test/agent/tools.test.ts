@@ -49,6 +49,79 @@ function service(): KnowledgeService {
 }
 
 describe('createKnowledgeTools', () => {
+  it('adds only the configured Team Context mutation tool for member-triggered runs', async () => {
+    const update = vi.fn().mockResolvedValue({
+      operation: 'patch' as const,
+      token: 'dox_team', title: 'Team Context',
+      url: 'https://acme.feishu.cn/docx/dox_team', revisionId: 8,
+    });
+    const audited: unknown[] = [];
+    const tools = createKnowledgeTools(
+      service(),
+      { search: vi.fn().mockResolvedValue([]) },
+      new SourceRegistry(),
+      {
+        run: async (input, operation) => {
+          audited.push(input);
+          return operation();
+        },
+      },
+      undefined,
+      {
+        source: { documentToken: 'dox_team', load: vi.fn(), update },
+        current: {
+          status: 'loaded', content: '# Team Context\n', sourceRevision: 7,
+          estimatedTokens: 4, fetchedAt: new Date('2026-08-10T09:00:00Z'),
+        },
+        allowMutation: true,
+      },
+    );
+
+    expect(tools).toHaveProperty('updateTeamContext');
+    const schema = tools.updateTeamContext!.inputSchema as {
+      safeParse(value: unknown): { success: boolean };
+    };
+    const input = {
+      expectedRevision: 7,
+      pattern: 'Old rule',
+      replacement: 'New rule',
+      reason: 'correction' as const,
+      semanticChangeApproved: true,
+    };
+    expect(schema.safeParse(input).success).toBe(true);
+    expect(schema.safeParse({ ...input, documentToken: 'dox_other' }).success).toBe(false);
+
+    await expect(tools.updateTeamContext!.execute?.(
+      input,
+      { toolCallId: 'call_context', messages: [] },
+    )).resolves.toEqual({
+      status: 'updated', documentToken: 'dox_team', revisionId: '8',
+      summary: 'Updated Team Context',
+    });
+    expect(update).toHaveBeenCalledWith({
+      expectedRevision: 7,
+      pattern: 'Old rule',
+      replacement: 'New rule',
+      semanticChangeApproved: true,
+    }, undefined);
+    expect(audited).toEqual([{
+      toolName: 'updateTeamContext',
+      targetIdentifiers: { documentToken: 'dox_team' },
+      sanitizedSummary: 'updated Team Context',
+    }]);
+
+    const scheduledTools = createKnowledgeTools(
+      service(), { search: vi.fn().mockResolvedValue([]) }, new SourceRegistry(),
+      { run: (_input, operation) => operation() }, undefined,
+      {
+        source: { documentToken: 'dox_team', load: vi.fn(), update },
+        current: { status: 'unavailable', errorCategory: 'team_context_unavailable' },
+        allowMutation: false,
+      },
+    );
+    expect(scheduledTools).not.toHaveProperty('updateTeamContext');
+  });
+
   it('exposes the Initial Typed Write Set, knowledge reads, and retained history in p2p', () => {
     const tools = createKnowledgeTools(
       service(),

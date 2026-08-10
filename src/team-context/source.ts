@@ -9,6 +9,7 @@ import type {
 } from './types.js';
 
 export interface TeamContextSource {
+  readonly documentToken: string;
   load(signal?: AbortSignal): Promise<TeamContextLoad>;
   update(input: {
     expectedRevision: number;
@@ -87,6 +88,10 @@ export class DefaultTeamContextSource implements TeamContextSource {
   constructor(private readonly options: TeamContextSourceOptions) {
     this.now = options.now ?? (() => new Date());
     this.estimateTokens = options.estimateTokens ?? estimateConversationTokens;
+  }
+
+  get documentToken(): string {
+    return this.options.documentToken;
   }
 
   private async fallback(

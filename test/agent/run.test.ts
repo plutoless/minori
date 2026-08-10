@@ -185,7 +185,7 @@ describe('runKnowledgeAgent', () => {
     });
 
     await runKnowledgeAgent(input, dependencies(input.prompt, model, {
-      teamContextSource: { load, update: vi.fn() },
+      teamContextSource: { documentToken: 'dox_team', load, update: vi.fn() },
     }));
 
     expect(load).toHaveBeenCalledWith(expect.any(AbortSignal));
@@ -198,6 +198,71 @@ describe('runKnowledgeAgent', () => {
       serialized.lastIndexOf('Earlier Minori reply'),
     );
     expect(serialized.match(/When is the beta launch\?/gu)).toHaveLength(1);
+  });
+
+  it('can retain a naturally stated durable team assertion through one fenced update', async () => {
+    const durableInput: AgentRunInput = {
+      ...input,
+      prompt: '以后周报都先给结论，再列来源。',
+    };
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_context', toolName: 'updateTeamContext',
+          input: JSON.stringify({
+            expectedRevision: 7,
+            pattern: '- 周报格式：未约定',
+            replacement: '- 周报格式：先给结论，再列来源',
+            reason: 'durable_assertion',
+            semanticChangeApproved: true,
+          }),
+        }], 'tool-calls'),
+        generated([{
+          type: 'text', text: '已记入团队上下文：周报先给结论，再列来源。',
+        }], 'stop'),
+      ],
+    });
+    const update = vi.fn().mockResolvedValue({
+      operation: 'patch' as const,
+      token: 'dox_team', title: 'Team Context',
+      url: 'https://acme.feishu.cn/docx/dox_team', revisionId: 8,
+    });
+    const audit = agentRunStore();
+
+    const reply = await runKnowledgeAgent(durableInput, dependencies(durableInput.prompt, model, {
+      agentRunStore: audit,
+      teamContextSource: {
+        documentToken: 'dox_team',
+        load: vi.fn().mockResolvedValue({
+          status: 'loaded', content: '- 周报格式：未约定\n', sourceRevision: 7,
+          estimatedTokens: 8, fetchedAt: new Date('2026-08-10T09:00:00Z'),
+        }),
+        update,
+      },
+    }));
+
+    expect(update).toHaveBeenCalledWith({
+      expectedRevision: 7,
+      pattern: '- 周报格式：未约定',
+      replacement: '- 周报格式：先给结论，再列来源',
+      semanticChangeApproved: true,
+    }, expect.any(AbortSignal));
+    expect(audit.beginWrite).toHaveBeenCalledWith('run_1', {
+      toolName: 'updateTeamContext',
+      targetIdentifiers: { documentToken: 'dox_team' },
+      sanitizedSummary: 'updated Team Context',
+    });
+    expect(audit.finishWrite).toHaveBeenCalledWith('write_1', {
+      outcome: 'succeeded',
+      resultIdentifiers: {
+        token: 'dox_team', title: 'Team Context',
+        url: 'https://acme.feishu.cn/docx/dox_team', revisionId: '8',
+      },
+    });
+    expect(reply.text).toContain('已记入团队上下文');
+    expect(reply.writeAttempts).toMatchObject([{
+      toolName: 'updateTeamContext', outcome: 'succeeded',
+    }]);
   });
 
   it('supplies transient named group history before one distinct Current Invocation', async () => {
