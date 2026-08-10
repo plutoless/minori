@@ -99,7 +99,7 @@ describe('PostgresEventStore', () => {
 
     await boundedStore.retry('evt_1', 1, 'model_unavailable', new Date(Date.now() - 1));
     expect(await boundedStore.claimReady(1, new Date(Date.now() + 60_000))).toEqual([]);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise((resolve) => setTimeout(resolve, 80));
 
     const second = await boundedStore.claimReady(1, new Date(Date.now() + 60_000));
     expect(second[0]?.attempts).toBe(2);
