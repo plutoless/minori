@@ -1,6 +1,6 @@
 # GitHub Actions CI/CD Design
 
-**Status:** Approved for implementation  
+**Status:** Approved for implementation
 **Date:** 2026-08-09
 
 ## Goal
@@ -249,6 +249,8 @@ The currently deployed release remains healthy throughout bootstrap. CI/CD does 
 The controlled rollback rehearsal is a one-time setup acceptance action, not part of every normal release. It may cause two brief container replacements. It must reuse the saved `v0.1.0` contract and the already-approved `v0.1.1` digest, must not rebuild either image, and must stop if the rollback target or either readiness check is not exact and healthy.
 
 The rehearsal is not a second CI deployment verb and not an emergency operator release path. An interactive root operator runs a dedicated acceptance script that accepts only the just-recorded `v0.1.1` release and its saved immediate predecessor, verifies both contracts before mutation, switches to the predecessor and checks readiness, then restores the same already-approved `v0.1.1` digest and checks readiness. It cannot introduce a new SHA or image reference.
+
+After the accepted transition succeeds, the script records a root-only exact-release receipt before clearing its recovery journal. That receipt, and subsequent host-entrypoint installation after the completed acceptance, permanently disable the `v0.1.1` rehearsal so later releases or reordered saved-state positions cannot reuse it.
 
 ## Acceptance criteria
 

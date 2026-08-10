@@ -196,7 +196,7 @@ describe('GitHub Actions quality gate contract', () => {
     });
     expect(oneStep(steps, (step) => step.run?.startsWith('git ls-files'))).toEqual({
       if: "inputs.gate == 'verify'",
-      run: "git ls-files -z -- '*.sh' | xargs -0 -r -n 1 bash -n",
+      run: "git ls-files -z -- '*.sh' 'deploy/vultr/ci-deploy' 'deploy/vultr/minori-release' | xargs -0 -r -n 1 bash -n\npython3 -I -c 'compile(open(\"deploy/vultr/clean-entrypoint.py\", encoding=\"utf-8\").read(), \"deploy/vultr/clean-entrypoint.py\", \"exec\")'\n",
     });
     expect(oneStep(steps, (step) => step.run?.startsWith('go run '))).toEqual({
       if: "inputs.gate == 'verify'",
@@ -400,14 +400,10 @@ describe('GitHub Actions release contract', () => {
     expect(handoff.run).toContain("[[ \"$COMMIT_SHA\" =~ ^[0-9a-f]{40}$ ]]");
     expect(handoff.run).toContain("[[ \"$DEPLOY_USER\" == 'root' ]]");
     expect(handoff.run).toContain('deploy_target="root@${DEPLOY_HOST}"');
-    expect(handoff.run).toContain("'minori_deploy result=success'");
     for (const category of [
-      'success',
       'rejected',
       'failed',
       'locked',
-      'failed_before_replace',
-      'rolled_back',
       'rollback_failed',
       'recovery_failed',
     ]) {
@@ -415,6 +411,18 @@ describe('GitHub Actions release contract', () => {
         `'minori_deploy result=${category}') result_category='${category}' ;;`,
       );
     }
+    expect(handoff.run).toContain("failed_before_pattern='^minori_deploy result=failed_before_replace active_sha=");
+    expect(handoff.run).toContain("success_pattern='^minori_deploy result=success active_sha=");
+    expect(handoff.run).toContain("rollback_pattern='^minori_deploy result=rolled_back active_sha=");
+    expect(handoff.run).toContain('Attempted SHA:');
+    expect(handoff.run).toContain('Attempted digest:');
+    expect(handoff.run).toContain('Active SHA:');
+    expect(handoff.run).toContain('Active image:');
+    expect(handoff.run).toContain("result_category='deployment_transport_failed'");
+    expect(handoff.run).toContain('255:*) result_category=\'deployment_transport_failed\'');
+    expect(handoff.run).toContain('0:success|1:rolled_back|1:failed|1:failed_before_replace|1:rollback_failed|1:recovery_failed|2:rejected|75:locked');
+    expect(handoff.run?.match(/active_sha='none'/gmu)?.length).toBeGreaterThanOrEqual(3);
+    expect(handoff.run?.match(/active_image='none'/gmu)?.length).toBeGreaterThanOrEqual(3);
     expect(handoff.run).toContain("*) result_category='deployment_protocol_error' ;;");
     expect(handoff.run).not.toMatch(/sed .*minori_deploy|grep .*minori_deploy/u);
     expect(handoff.run).toContain(

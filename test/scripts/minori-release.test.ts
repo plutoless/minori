@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, lstat, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
@@ -18,6 +18,10 @@ import {
 const execFileAsync = promisify(execFile);
 const releaseEngine = 'deploy/vultr/minori-release';
 const rehearsal = 'deploy/vultr/rehearse-release.sh';
+const releaseSuccess = `minori_release result=success active_sha=${shaA} active_image=${digestA}\n`;
+const releaseRolledBack = `minori_release result=rolled_back active_sha=${shaB} active_image=${digestB}\n`;
+const legacyFailedBefore = `minori_release result=failed_before_replace active_sha=${shaB} active_image=minori:${shaB}\n`;
+const digestFailedBefore = `minori_release result=failed_before_replace active_sha=${shaA} active_image=${digestA}\n`;
 
 type Runtime = Awaited<ReturnType<typeof createFakeDeployRuntime>>;
 
@@ -111,12 +115,17 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
 
     const result = await run(runtime, scenario);
 
-    expect(result).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=failed_before_replace\n', stderr: '' }));
+    expect(result).toEqual(expect.objectContaining({ code: 1, stdout: legacyFailedBefore, stderr: '' }));
     const docker = await runtime.logText('docker.log');
     expect(docker).not.toContain('db:migrate');
     expect(docker).not.toContain('up -d --no-build');
     expect(await records(runtime)).toEqual([
-      expect.objectContaining({ result: 'failed_before_replace', rollbackTargetCategory: 'none' }),
+      expect.objectContaining({
+        commitSha: shaA,
+        image: digestA,
+        result: 'failed_before_replace',
+        rollbackTargetCategory: 'none',
+      }),
     ]);
   });
 
@@ -130,6 +139,10 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
     expect(docker).not.toContain('db:migrate');
     expect(docker).not.toContain('up -d --no-build');
     expect(`${result.stdout}${result.stderr}${JSON.stringify(await records(runtime))}`).not.toContain('must-not-leak');
+    expect(result.stdout).toBe(legacyFailedBefore);
+    expect(await records(runtime)).toEqual([
+      expect.objectContaining({ commitSha: shaA, image: digestA, result: 'failed_before_replace' }),
+    ]);
   });
 
   it('stops before service replacement when migration fails', async () => {
@@ -141,7 +154,10 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
     const docker = await runtime.logText('docker.log');
     expect(docker.indexOf('runtime:verify')).toBeLessThan(docker.indexOf('db:migrate'));
     expect(docker).not.toContain('up -d --no-build');
-    expect((await records(runtime))[0]).toEqual(expect.objectContaining({ result: 'failed_before_replace' }));
+    expect(result.stdout).toBe(legacyFailedBefore);
+    expect(await records(runtime)).toEqual([
+      expect.objectContaining({ commitSha: shaA, image: digestA, result: 'failed_before_replace' }),
+    ]);
   });
 
   it('deploys an exact digest, verifies readiness, installs its contract, and atomically records state', async () => {
@@ -149,7 +165,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
 
     const result = await run(runtime);
 
-    expect(result).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_release result=success\n', stderr: '' }));
+    expect(result).toEqual(expect.objectContaining({ code: 0, stdout: releaseSuccess, stderr: '' }));
     const docker = await runtime.logText('docker.log');
     expect(docker).toContain(`image= :: pull ${digestA}`);
     expect(docker).toContain(`image=${digestA} :: compose --project-name minori`);
@@ -202,7 +218,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
       FAKE_READY_SEQUENCE: '0,1',
     });
 
-    expect(result).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=rolled_back\n', stderr: '' }));
+    expect(result).toEqual(expect.objectContaining({ code: 1, stdout: releaseRolledBack, stderr: '' }));
     const docker = await runtime.logText('docker.log');
     expect(docker).toContain(`image=${digestA} :: compose --project-name minori`);
     expect(docker).toContain(`image=${digestB} :: compose --project-name minori`);
@@ -290,7 +306,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
 
     expect(result).toEqual(expect.objectContaining({
       code: 1,
-      stdout: 'minori_release result=rolled_back\n',
+      stdout: releaseRolledBack,
     }));
     const docker = await runtime.logText('docker.log');
     expect(docker.lastIndexOf(`image=${digestB} :: compose --project-name minori`)).toBeGreaterThan(
@@ -307,7 +323,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
 
     expect(result.code).toBe(1);
     expect(await runtime.logText('docker.log')).not.toContain('pull');
-    expect((await records(runtime))[0]).toEqual(expect.objectContaining({ result: 'failed_before_replace' }));
+    expect(await records(runtime)).toEqual([]);
   });
 
   it('rejects a saved digest whose OCI revision does not equal its saved SHA', async () => {
@@ -375,6 +391,47 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
     expect(await records(runtime)).toEqual([]);
   });
 
+  it('fails closed without writing through an untrusted records path', async () => {
+    const runtime = await createFakeDeployRuntime();
+    const recordsPath = join(runtime.root, 'releases', 'records');
+    const contractsPath = join(runtime.root, 'releases', 'contracts');
+    const outside = join(runtime.directory, 'outside-records');
+    await rm(recordsPath, { recursive: true });
+    await rm(contractsPath, { recursive: true });
+    await mkdir(outside);
+    await symlink(outside, recordsPath);
+
+    const result = await run(runtime);
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 1,
+      stdout: 'minori_release result=failed_before_replace\n',
+      stderr: '',
+    }));
+    expect(await readdir(outside)).toEqual([]);
+    await expect(readdir(contractsPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await runtime.logText('docker.log')).toBe('');
+  });
+
+  it('does not create audit directories before the remaining admission checks pass', async () => {
+    const runtime = await createFakeDeployRuntime();
+    const contractsPath = join(runtime.root, 'releases', 'contracts');
+    const recordsPath = join(runtime.root, 'releases', 'records');
+    const rehearsalRecordsPath = join(runtime.root, 'releases', 'rehearsal-records');
+    await rm(contractsPath, { recursive: true, force: true });
+    await rm(recordsPath, { recursive: true, force: true });
+    await rm(rehearsalRecordsPath, { recursive: true, force: true });
+    await chmod(join(runtime.root, 'minori.env'), 0o640);
+
+    const result = await run(runtime);
+
+    expect(result).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=failed_before_replace\n' }));
+    for (const path of [contractsPath, recordsPath, rehearsalRecordsPath]) {
+      await expect(readdir(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    expect(await runtime.logText('docker.log')).toBe('');
+  });
+
   it.each(['after_journal', 'after_candidate_switch', 'after_candidate_ready', 'after_state_write'])(
     'restores exact service and durable state on an interrupt at %s',
     async (point) => {
@@ -385,7 +442,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
 
       const result = await run(runtime, { MINORI_TEST_INTERRUPT_AT: point });
 
-      expect(result.stdout).toBe('minori_release result=rolled_back\n');
+      expect(result.stdout).toBe(releaseRolledBack);
       expect(await runtime.currentImage()).toBe(digestB);
       expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(originalState);
       expect(await pendingExists(runtime)).toBe(false);
@@ -404,7 +461,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
 
       const restarted = await run(runtime);
 
-      expect(restarted).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_release result=success\n' }));
+      expect(restarted).toEqual(expect.objectContaining({ code: 0, stdout: releaseSuccess }));
       expect(await runtime.currentImage()).toBe(digestA);
       expect((await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).split('\n')[0]).toContain(`\t${digestA}\t`);
       expect(await pendingExists(runtime)).toBe(false);
@@ -472,7 +529,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
 
       const result = await run(runtime, { MINORI_TEST_FAIL_PENDING_PHASE: phase });
 
-      expect(result).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=rolled_back\n' }));
+      expect(result).toEqual(expect.objectContaining({ code: 1, stdout: releaseRolledBack }));
       expect(await runtime.currentImage()).toBe(digestB);
       expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(`${rows[0].join('\t')}\n`);
       expect(await pendingExists(runtime)).toBe(false);
@@ -499,7 +556,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
         FAKE_FAIL: 'pull',
       }, ['v1', shaC, digestC]);
 
-      expect(restarted).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=failed_before_replace\n' }));
+      expect(restarted).toEqual(expect.objectContaining({ code: 1, stdout: digestFailedBefore }));
       expect(await runtime.currentImage()).toBe(digestA);
       expect(await pendingExists(runtime)).toBe(false);
       const successRecords = (await records(runtime)).filter((record) => record.result === 'success');
@@ -535,7 +592,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
       FAKE_FAIL: 'pull',
     }, ['v1', shaC, digestC]);
 
-    expect(retry).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=failed_before_replace\n' }));
+    expect(retry).toEqual(expect.objectContaining({ code: 1, stdout: digestFailedBefore }));
     expect(await pendingExists(runtime)).toBe(false);
     expect((await records(runtime)).filter((record) => record.result === 'success')).toEqual([
       expect.objectContaining({ commitSha: shaA, image: digestA }),
@@ -592,7 +649,49 @@ describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
     expect(await records(runtime)).toEqual([]);
   });
 
-  it('supports the saved legacy release only as position 1', async () => {
+  it('uses a sanitized environment and ignores inherited production-affecting variables', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB]]);
+    await runtime.setCurrentImage(digestA);
+
+    const result = await runRehearsal(runtime, {
+      DOCKER_HOST: 'tcp://attacker.invalid:2375',
+      MINORI_HEALTH_PORT: '65535',
+      TMPDIR: join(runtime.directory, 'attacker-tmp'),
+    });
+
+    expect(result).toEqual(expect.objectContaining({ code: 0 }));
+    expect(await runtime.logText('curl.log')).toContain('http://127.0.0.1:3000/health/ready');
+    expect(await runtime.logText('docker-env.log')).not.toContain('tcp://attacker.invalid:2375');
+  });
+
+  it('durably consumes the exact transition rehearsal and rejects a second run', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB]]);
+    await runtime.setCurrentImage(digestA);
+
+    const accepted = await runRehearsal(runtime);
+    const repeated = await runRehearsal(runtime);
+
+    expect(accepted).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_rehearsal result=success\n' }));
+    expect(repeated).toEqual(expect.objectContaining({ code: 2, stdout: 'minori_rehearsal result=rejected\n' }));
+    expect(await readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).toContain(digestA);
+  });
+
+  it('recovers a crash after durable consumption and cannot rehearse again', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB]]);
+    await runtime.setCurrentImage(digestA);
+
+    await runRehearsal(runtime, { MINORI_TEST_CRASH_AT: 'after_consumed' });
+    const restarted = await runRehearsal(runtime);
+
+    expect(restarted).toEqual(expect.objectContaining({ code: 2, stdout: 'minori_rehearsal result=rejected\n' }));
+    expect(await pendingExists(runtime)).toBe(false);
+    expect(await runtime.currentImage()).toBe(digestA);
+  });
+
+  it('rejects a legacy predecessor that is not the exact bound transition predecessor', async () => {
     const runtime = await createFakeDeployRuntime();
     const currentContract = await runtime.writeDigestContract(digestA);
     const legacyImage = `minori:${shaB}`;
@@ -604,12 +703,9 @@ describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
 
     const result = await runRehearsal(runtime, { FAKE_CURRENT_IMAGE: digestA });
 
-    expect(result.code).toBe(0);
+    expect(result.code).toBe(2);
     const docker = await runtime.logText('docker.log');
-    expect(docker).toContain(`image=${legacyImage} :: compose --project-name minori`);
-    expect(docker.lastIndexOf(`image=${digestA} :: compose --project-name minori`)).toBeGreaterThan(
-      docker.indexOf(`image=${legacyImage} :: compose --project-name minori`),
-    );
+    expect(docker).not.toContain('up -d --no-build');
   });
 
   it.each([
@@ -727,6 +823,8 @@ describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
       expect(await runtime.currentImage()).toBe(digestA);
       expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(originalState);
       expect(await pendingExists(runtime)).toBe(false);
+      const receipt = await readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8').catch(() => 'absent');
+      expect(receipt === 'absent').toBe(point === 'after_rehearsal_journal');
     },
   );
 
@@ -741,9 +839,47 @@ describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
 
     const restarted = await runRehearsal(runtime);
 
-    expect(restarted).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_rehearsal result=success\n' }));
+    expect(restarted).toEqual(expect.objectContaining({ code: 2, stdout: 'minori_rehearsal result=rejected\n' }));
     expect(await runtime.currentImage()).toBe(digestA);
     expect(await pendingExists(runtime)).toBe(false);
+    await expect(readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toContain(digestA);
+  }, 15_000);
+
+  it('blocks a later deploy from mutating an interrupted rehearsal before receipt recovery', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB]]);
+    await runtime.setCurrentImage(digestA);
+    await runRehearsal(runtime, { MINORI_TEST_CRASH_AT: 'after_predecessor_switch' });
+
+    const deploy = await run(runtime, { FAKE_REQUEST_SHA: shaC, FAKE_REQUEST_IMAGE: digestC }, ['v1', shaC, digestC]);
+
+    expect(deploy).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_release result=recovery_failed\n' }));
+    expect(await runtime.currentImage()).toBe(digestB);
+    expect(await pendingExists(runtime)).toBe(true);
+    await expect(readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const recovered = await runRehearsal(runtime);
+    expect(recovered).toEqual(expect.objectContaining({ code: 2, stdout: 'minori_rehearsal result=rejected\n' }));
+    expect(await runtime.currentImage()).toBe(digestA);
+    expect(await pendingExists(runtime)).toBe(false);
+  }, 15_000);
+
+  it('never clears a completed switch pair when the consumed receipt cannot be made durable', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await seedDigestState(runtime, [[shaA, digestA], [shaB, digestB]]);
+    await runtime.setCurrentImage(digestA);
+
+    const failed = await runRehearsal(runtime, { MINORI_TEST_FAIL_CONSUMED: '1' });
+
+    expect(failed).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_rehearsal result=journal_failed_recovery_failed\n' }));
+    expect(await runtime.currentImage()).toBe(digestA);
+    expect(await pendingExists(runtime)).toBe(true);
+    await expect(readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const recovered = await runRehearsal(runtime);
+    expect(recovered).toEqual(expect.objectContaining({ code: 2, stdout: 'minori_rehearsal result=rejected\n' }));
+    expect(await pendingExists(runtime)).toBe(false);
+    await expect(readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toContain(digestA);
   }, 15_000);
 
   it('falls back to the proven predecessor and durably promotes it when forward restore fails', async () => {
@@ -771,6 +907,7 @@ describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
         recoveredImage: digestB,
       },
     ]);
+    await expect(readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toContain(digestA);
   });
 
   it.each(['after_fallback_switch', 'after_fallback_state'])(
@@ -817,5 +954,6 @@ describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
     expect(await runtime.currentImage()).toBe(digestA);
     expect(await readFile(join(runtime.root, 'releases', 'state.tsv'), 'utf8')).toBe(`${rows.map((row) => row.join('\t')).join('\n')}\n`);
     expect(await pendingExists(runtime)).toBe(false);
+    await expect(readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toContain(digestA);
   });
 });
