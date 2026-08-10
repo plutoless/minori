@@ -75,7 +75,6 @@ if ! ssh-keygen -l -f "$public_key_file" >/dev/null 2>&1; then
 fi
 
 read -r key_type key_blob _ <<< "$public_key"
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bin_dir="${install_root}/bin"
 libexec_dir="${install_root}/libexec"
 release_dir="${install_root}/releases"
@@ -85,17 +84,6 @@ sshd_policy="${sshd_config_dir}/00-minori-ci-deploy.conf"
 forced_command="${bin_dir}/ci-deploy"
 forced_prefix="restrict,command=\"${forced_command}\""
 authorized_entry="${forced_prefix} ${public_key}"
-
-if [[ $test_mode -eq 0 ]]; then
-  if [[ ! -x /usr/sbin/sshd ]]; then
-    result_error unsafe_sshd_environment 1
-  fi
-  effective_before="$(/usr/sbin/sshd -T -C user=root,host=minori-ci-deploy.invalid,addr=127.0.0.1 2>/dev/null)" \
-    || result_error unsafe_sshd_environment 1
-  if [[ "$(awk '$1 == "permituserenvironment" { print $2 }' <<< "$effective_before")" != no ]]; then
-    result_error unsafe_sshd_environment 1
-  fi
-fi
 
 path_metadata() {
   local path="$1"
@@ -143,8 +131,8 @@ install_file() {
   fi
 }
 
-# Resolve every trusted component and installed leaf before any directory,
-# authorized_keys, or executable is changed. stat alone would follow symlinks.
+# Test-fixture validation is a harness guard, not an installation preflight.
+# Production has no equivalent escape hatch or alternate root.
 if [[ $test_mode -eq 1 ]]; then
   sentinel_mode="$(path_metadata "$fixture_sentinel")" || result_error unsafe_test_root 1
   read -r sentinel_lines _ <<< "$(wc -l < "$fixture_sentinel" 2>/dev/null)" || result_error unsafe_test_root 1
@@ -152,46 +140,36 @@ if [[ $test_mode -eq 1 ]]; then
     || "$sentinel_lines" != 1 || "$(<"$fixture_sentinel")" != minori-ci-installer-test-v1 ]]; then
     result_error unsafe_test_root 1
   fi
-  trusted_components=("$test_root" "$fixture_sentinel" "$opt_parent" "$root_parent" "${test_root}/etc" \
-    "${test_root}/etc/ssh" "$sshd_config_dir" "$sshd_policy")
-else
-  trusted_components=(/opt /root /etc /etc/ssh "$sshd_config_dir" "$sshd_policy")
-fi
-trusted_components+=("$install_root" "$bin_dir" "$libexec_dir" "$release_dir" "$rehearsal_consumed" "$ssh_dir" "$authorized_keys" \
-  "${bin_dir}/ci-deploy" "${bin_dir}/minori-release" "${bin_dir}/rehearse-release" \
-  "${libexec_dir}/ci-deploy" "${libexec_dir}/minori-release" "${libexec_dir}/rehearse-release")
-for secure_path in "${trusted_components[@]}"; do
-  if [[ -L "$secure_path" ]] || { [[ -e "$secure_path" ]] && ! verify_secure_path "$secure_path"; }; then
-    result_error unsafe_installation 1
-  fi
-done
-
-if [[ -e "$sshd_policy" ]] && ! cmp -s -- "${script_dir}/sshd-minori-ci-deploy.conf" "$sshd_policy"; then
-  result_error unsafe_sshd_environment 1
 fi
 
-install_directory 0700 "$ssh_dir"
-if [[ ! -e "$authorized_keys" ]]; then
-  install_file 0600 /dev/null "$authorized_keys"
+# Phase A: inspect only the SSH authorization boundary needed for a safe,
+# atomic edit. On upgrade, revoke the exact deployment key immediately after
+# resolving ambiguity; all other fallible checks belong to Phase B below.
+if [[ -L "$ssh_dir" ]] || { [[ -e "$ssh_dir" ]] \
+  && { [[ ! -d "$ssh_dir" ]] || ! verify_secure_path "$ssh_dir"; }; }; then
+  result_error unsafe_authorized_keys 1
 fi
-if [[ ! -f "$authorized_keys" || -L "$authorized_keys" || ! -r "$authorized_keys" ]]; then
+if [[ -L "$authorized_keys" ]] || { [[ -e "$authorized_keys" ]] \
+  && { [[ ! -f "$authorized_keys" || ! -r "$authorized_keys" ]] || ! verify_secure_path "$authorized_keys"; }; }; then
   result_error invalid_authorized_keys 1
 fi
 
 forced_count=0
 same_key_count=0
 exact_count=0
-while IFS= read -r existing_line || [[ -n "$existing_line" ]]; do
-  if [[ "$existing_line" == *"command=\"${forced_command}\""* ]]; then
-    forced_count=$((forced_count + 1))
-  fi
-  if [[ "$existing_line" == *"${key_type} ${key_blob}"* ]]; then
-    same_key_count=$((same_key_count + 1))
-  fi
-  if [[ "$existing_line" == "$authorized_entry" ]]; then
-    exact_count=$((exact_count + 1))
-  fi
-done < "$authorized_keys"
+if [[ -e "$authorized_keys" ]]; then
+  while IFS= read -r existing_line || [[ -n "$existing_line" ]]; do
+    if [[ "$existing_line" == *"command=\"${forced_command}\""* ]]; then
+      forced_count=$((forced_count + 1))
+    fi
+    if [[ "$existing_line" == *"${key_type} ${key_blob}"* ]]; then
+      same_key_count=$((same_key_count + 1))
+    fi
+    if [[ "$existing_line" == "$authorized_entry" ]]; then
+      exact_count=$((exact_count + 1))
+    fi
+  done < "$authorized_keys"
+fi
 
 if [[ $forced_count -gt 1 || $same_key_count -gt 1 || $exact_count -gt 1 \
   || ( $forced_count -eq 1 && $exact_count -ne 1 ) \
@@ -209,14 +187,24 @@ replace_authorized_keys() {
   }
   trap cleanup_keys EXIT
   : > "$temporary_keys" || result_error authorized_keys_write_failed 1
-  while IFS= read -r existing_line || [[ -n "$existing_line" ]]; do
+  while IFS= read -r existing_line; do
     if [[ "$operation" == remove && "$existing_line" == "$authorized_entry" ]]; then
       continue
     fi
     printf '%s\n' "$existing_line" >> "$temporary_keys" \
       || result_error authorized_keys_write_failed 1
   done < "$authorized_keys"
+  # A final unterminated line is outside the successful-read loop. Preserve it
+  # byte-for-byte unless it is the exact entry being revoked.
+  if [[ -n "$existing_line" \
+    && ! ( "$operation" == remove && "$existing_line" == "$authorized_entry" ) ]]; then
+    printf '%s' "$existing_line" >> "$temporary_keys" \
+      || result_error authorized_keys_write_failed 1
+  fi
   if [[ "$operation" == add ]]; then
+    if [[ -s "$temporary_keys" && "$(tail -c 1 "$temporary_keys" 2>/dev/null)" != '' ]]; then
+      printf '\n' >> "$temporary_keys" || result_error authorized_keys_write_failed 1
+    fi
     printf '%s\n' "$authorized_entry" >> "$temporary_keys" \
       || result_error authorized_keys_write_failed 1
   fi
@@ -234,8 +222,54 @@ replace_authorized_keys() {
 if [[ $exact_count -eq 1 ]]; then
   replace_authorized_keys remove
 fi
-if ! verify_secure_path "$ssh_dir" || ! verify_secure_path "$authorized_keys"; then
+if [[ -e "$authorized_keys" ]] \
+  && { ! verify_secure_path "$ssh_dir" || ! verify_secure_path "$authorized_keys"; }; then
   result_error unsafe_authorized_keys 1
+fi
+
+# Phase B: every remaining environment, policy, path, and installation check
+# runs only after an existing deployment key has been revoked.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
+  || result_error unsafe_installation 1
+if [[ $test_mode -eq 1 ]]; then
+  if [[ "${MINORI_INSTALL_TEST_FAILURE:-}" == sshd-missing \
+    || "${MINORI_INSTALL_TEST_FAILURE:-}" == sshd-effective-before ]]; then
+    result_error unsafe_sshd_environment 1
+  fi
+  effective_before="${MINORI_INSTALL_TEST_EFFECTIVE_BEFORE_POLICY:-permituserenvironment no}"
+  if [[ "${MINORI_INSTALL_TEST_FAILURE:-}" == permit-user-environment ]]; then
+    effective_before='permituserenvironment yes'
+  fi
+else
+  if [[ ! -x /usr/sbin/sshd ]]; then
+    result_error unsafe_sshd_environment 1
+  fi
+  effective_before="$(/usr/sbin/sshd -T -C user=root,host=minori-ci-deploy.invalid,addr=127.0.0.1 2>/dev/null)" \
+    || result_error unsafe_sshd_environment 1
+fi
+if [[ "$(awk '$1 == "permituserenvironment" { print $2 }' <<< "$effective_before" | paste -sd ' ' -)" != no ]]; then
+  result_error unsafe_sshd_environment 1
+fi
+
+# Resolve every remaining trusted component and installed leaf before changing
+# policy or executables. stat alone would follow symlinks.
+if [[ $test_mode -eq 1 ]]; then
+  trusted_components=("$test_root" "$fixture_sentinel" "$opt_parent" "$root_parent" "${test_root}/etc" \
+    "${test_root}/etc/ssh" "$sshd_config_dir" "$sshd_policy")
+else
+  trusted_components=(/opt /root /etc /etc/ssh "$sshd_config_dir" "$sshd_policy")
+fi
+trusted_components+=("$install_root" "$bin_dir" "$libexec_dir" "$release_dir" "$rehearsal_consumed" \
+  "${bin_dir}/ci-deploy" "${bin_dir}/minori-release" "${bin_dir}/rehearse-release" \
+  "${libexec_dir}/ci-deploy" "${libexec_dir}/minori-release" "${libexec_dir}/rehearse-release")
+for secure_path in "${trusted_components[@]}"; do
+  if [[ -L "$secure_path" ]] || { [[ -e "$secure_path" ]] && ! verify_secure_path "$secure_path"; }; then
+    result_error unsafe_installation 1
+  fi
+done
+
+if [[ -e "$sshd_policy" ]] && ! cmp -s -- "${script_dir}/sshd-minori-ci-deploy.conf" "$sshd_policy"; then
+  result_error unsafe_sshd_environment 1
 fi
 
 install_directory 0755 "$install_root"
@@ -296,6 +330,9 @@ install_file 0700 "${script_dir}/ci-deploy" "${libexec_dir}/ci-deploy"
 install_file 0700 "${script_dir}/minori-release" "${libexec_dir}/minori-release"
 install_file 0700 "${script_dir}/rehearse-release.sh" "${libexec_dir}/rehearse-release"
 install_file 0600 "${script_dir}/rehearsal-v0.1.1.accepted" "$rehearsal_consumed"
+if [[ ! -e "$ssh_dir" ]]; then
+  install_directory 0700 "$ssh_dir" || result_error unsafe_authorized_keys 1
+fi
 post_install_paths=("$install_root" "$bin_dir" "$libexec_dir" "$release_dir" "$rehearsal_consumed" "${bin_dir}/ci-deploy" \
   "${bin_dir}/minori-release" "${bin_dir}/rehearse-release" "${libexec_dir}/ci-deploy" \
   "${libexec_dir}/minori-release" "${libexec_dir}/rehearse-release" "$sshd_config_dir" "$sshd_policy")
@@ -308,6 +345,9 @@ for secure_path in "${post_install_paths[@]}"; do
   fi
 done
 
+if [[ ! -e "$authorized_keys" ]]; then
+  install_file 0600 /dev/null "$authorized_keys" || result_error invalid_authorized_keys 1
+fi
 if ! verify_secure_path "$ssh_dir" || ! verify_secure_path "$authorized_keys"; then
   result_error unsafe_authorized_keys 1
 fi

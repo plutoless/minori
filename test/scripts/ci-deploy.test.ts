@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -235,6 +235,33 @@ async function runInstaller(root: string, publicKey: string, extraEnv: NodeJS.Pr
   }
 }
 
+const unrelatedAuthorizedKeys = [
+  '# operator access remains byte-for-byte',
+  'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBOGUS operator@example',
+  '',
+].join('\n');
+
+async function installedUpgradeFixture() {
+  const fixture = await installerFixture();
+  await mkdir(dirname(fixture.authorizedKeys), { recursive: true, mode: 0o700 });
+  await writeFile(fixture.authorizedKeys, unrelatedAuthorizedKeys, { mode: 0o600 });
+  await expect(runInstaller(fixture.root, fixture.publicKey)).resolves.toEqual(
+    expect.objectContaining({ code: 0 }),
+  );
+  const before = await readFile(fixture.authorizedKeys, 'utf8');
+  const deploymentEntry = before.split('\n').find((line) => line.startsWith('restrict,command='));
+  expect(deploymentEntry).toBeDefined();
+  return { ...fixture, deploymentEntry: deploymentEntry! };
+}
+
+async function expectUpgradeKeyRevoked(
+  fixture: Awaited<ReturnType<typeof installedUpgradeFixture>>,
+) {
+  const after = await readFile(fixture.authorizedKeys, 'utf8');
+  expect(after).toBe(unrelatedAuthorizedKeys);
+  expect(after).not.toContain(fixture.deploymentEntry);
+}
+
 describe('isolated forced-command installer', { timeout: 15_000 }, () => {
   it('runs the exact installed forced command without accepting Bash startup hooks', async () => {
     const fixture = await installerFixture();
@@ -313,6 +340,9 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
   });
 
   it.each([
+    ['missing sshd', 'sshd-missing', 'unsafe_sshd_environment'],
+    ['failing initial sshd effective-policy query', 'sshd-effective-before', 'unsafe_sshd_environment'],
+    ['unsafe PermitUserEnvironment', 'permit-user-environment', 'unsafe_sshd_environment'],
     ['sshd syntax validation', 'sshd-test', 'unsafe_sshd_environment'],
     ['effective-policy validation', 'effective-policy', 'unsafe_sshd_environment'],
     ['sshd reload', 'reload', 'sshd_reload_failed'],
@@ -320,20 +350,7 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
   ])(
     'keeps a preexisting deployment key revoked when %s fails during an upgrade',
     async (_boundary, failure, category) => {
-      const fixture = await installerFixture();
-      await mkdir(dirname(fixture.authorizedKeys), { recursive: true, mode: 0o700 });
-      const unrelated = [
-        '# operator access remains byte-for-byte',
-        'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBOGUS operator@example',
-        '',
-      ].join('\n');
-      await writeFile(fixture.authorizedKeys, unrelated, { mode: 0o600 });
-      await expect(runInstaller(fixture.root, fixture.publicKey)).resolves.toEqual(
-        expect.objectContaining({ code: 0 }),
-      );
-      const before = await readFile(fixture.authorizedKeys, 'utf8');
-      const deploymentEntry = before.split('\n').find((line) => line.startsWith('restrict,command='));
-      expect(deploymentEntry).toBeDefined();
+      const fixture = await installedUpgradeFixture();
 
       const result = await runInstaller(fixture.root, fixture.publicKey, {
         MINORI_INSTALL_TEST_FAILURE: failure,
@@ -343,9 +360,7 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
         code: 1,
         stderr: `minori_ci_install result=${category}\n`,
       }));
-      const after = await readFile(fixture.authorizedKeys, 'utf8');
-      expect(after).toBe(unrelated);
-      expect(after).not.toContain(deploymentEntry!);
+      await expectUpgradeKeyRevoked(fixture);
     },
   );
 
@@ -367,8 +382,7 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
       ].join('\n'),
     ],
   ])('rejects effective SetEnv containing %s', async (_case, effectivePolicy) => {
-    const fixture = await installerFixture();
-    await runInstaller(fixture.root, fixture.publicKey);
+    const fixture = await installedUpgradeFixture();
 
     const result = await runInstaller(fixture.root, fixture.publicKey, {
       MINORI_INSTALL_TEST_EFFECTIVE_POLICY: effectivePolicy,
@@ -378,11 +392,11 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
       code: 1,
       stderr: 'minori_ci_install result=unsafe_sshd_environment\n',
     }));
-    expect(await readFile(fixture.authorizedKeys, 'utf8')).not.toContain('restrict,command=');
+    await expectUpgradeKeyRevoked(fixture);
   });
 
   it('rejects a server-injected Bash function that the real login shell would import', async () => {
-    const fixture = await installerFixture();
+    const fixture = await installedUpgradeFixture();
     const marker = join(fixture.root, 'server-function-ran');
 
     await execFileAsync('/bin/bash', ['-c', 'hostile_server_function'], {
@@ -394,8 +408,6 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
 
     await expect(readFile(marker, 'utf8')).resolves.toBe('compromised');
     await rm(marker);
-    await runInstaller(fixture.root, fixture.publicKey);
-
     const result = await runInstaller(fixture.root, fixture.publicKey, {
       MINORI_INSTALL_TEST_EFFECTIVE_POLICY: [
         'permituserenvironment no',
@@ -408,9 +420,33 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
       code: 1,
       stderr: 'minori_ci_install result=unsafe_sshd_environment\n',
     }));
-    expect(await readFile(fixture.authorizedKeys, 'utf8')).not.toContain('restrict,command=');
+    await expectUpgradeKeyRevoked(fixture);
     await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it.each([
+    ['intermediate opt', (root: string) => join(root, 'opt')],
+    ['intermediate root', (root: string) => join(root, 'root')],
+    ['sshd policy directory', (root: string) => join(root, 'etc', 'ssh', 'sshd_config.d')],
+    ['sshd policy', (root: string) => join(root, 'etc', 'ssh', 'sshd_config.d', '00-minori-ci-deploy.conf')],
+    ['install root', (root: string) => join(root, 'opt', 'minori')],
+    ['bin directory', (root: string) => join(root, 'opt', 'minori', 'bin')],
+    ['installed leaf', (root: string) => join(root, 'opt', 'minori', 'bin', 'ci-deploy')],
+  ])(
+    'revokes the deployment key before rejecting an unsafe %s during upgrade',
+    async (_targetKind, targetPath) => {
+      const fixture = await installedUpgradeFixture();
+      await chmod(targetPath(fixture.root), 0o777);
+
+      const result = await runInstaller(fixture.root, fixture.publicKey);
+
+      expect(result).toEqual(expect.objectContaining({
+        code: 1,
+        stderr: 'minori_ci_install result=unsafe_installation\n',
+      }));
+      await expectUpgradeKeyRevoked(fixture);
+    },
+  );
 
   it('clears hostile Bash startup hooks before every installed entrypoint reaches Bash', async () => {
     const fixture = await installerFixture();
@@ -474,8 +510,7 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
   );
 
   it('refuses an unexpected existing SSH environment policy before changing installed leaves', async () => {
-    const fixture = await installerFixture();
-    await runInstaller(fixture.root, fixture.publicKey);
+    const fixture = await installedUpgradeFixture();
     const installed = join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy');
     const original = await readFile(installed, 'utf8');
     const policy = join(fixture.root, 'etc', 'ssh', 'sshd_config.d', '00-minori-ci-deploy.conf');
@@ -489,6 +524,7 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
       stderr: 'minori_ci_install result=unsafe_sshd_environment\n',
     }));
     await expect(readFile(installed, 'utf8')).resolves.toBe(`${original}\n# preserved sentinel\n`);
+    await expectUpgradeKeyRevoked(fixture);
   });
 
   it.each(['/', '/opt/minori', '/root'])(

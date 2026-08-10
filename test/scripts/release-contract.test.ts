@@ -131,7 +131,9 @@ describe('Team Agent release packaging contract', () => {
 
     expect(installer).toContain('forced_command="${bin_dir}/ci-deploy"');
     expect(installer).toContain('forced_prefix="restrict,command=\\\"${forced_command}\\\""');
-    expect(installer).toContain("permituserenvironment\" { print $2 }' <<< \"$effective_before\")\" != no");
+    expect(installer).toContain(
+      "permituserenvironment\" { print $2 }' <<< \"$effective_before\" | paste -sd ' ' -)\" != no",
+    );
     expect(installer).toContain("\"$accepted_environment\" != 'LANG LC_*'");
     expect(installer).toContain("\"$fixed_environment\" != 'BASH_ENV=/dev/null ENV=/dev/null'");
     expect(installer).toContain('/usr/bin/systemctl reload ssh.service');
