@@ -13,10 +13,10 @@ if [[ $# -ne 3 || "$1" != v1 || ! "$2" =~ $sha_pattern || ! "$3" =~ $digest_patt
   printf 'minori_release result=rejected\n'
   exit 2
 fi
-installed_engine='/opt/minori/bin/minori-release'
+installed_engine='/opt/minori/libexec/minori-release'
 test_mode=0
 if [[ "${BASH_SOURCE[0]}" == "$installed_engine" ]]; then
-  if [[ "${MINORI_FORCED_ENTRYPOINT:-}" != 1 ]]; then
+  if [[ "${MINORI_CLEAN_ENTRYPOINT:-}" != minori-release ]]; then
     printf 'minori_release result=rejected\n'
     exit 2
   fi
@@ -82,6 +82,7 @@ current_image=''
 current_sha=''
 current_contract=''
 rollback_category='none'
+audit_ready=0
 
 cleanup() {
   if [[ -n "$temporary_container" ]]; then
@@ -376,7 +377,7 @@ ensure_record_file() {
 ensure_pending_deploy_record() {
   local result="$1" rollback_target="$2" timestamp_name record_name expected_content
   case "$result:$rollback_target" in
-    success:none|rolled_back:legacy_local|rolled_back:saved_digest|rollback_failed:legacy_local|rollback_failed:saved_digest) ;;
+    success:none|failed_before_replace:none|rolled_back:legacy_local|rolled_back:saved_digest|rollback_failed:legacy_local|rollback_failed:saved_digest) ;;
     *) return 1 ;;
   esac
   timestamp_name="${pending_record_timestamp//:/-}"
@@ -396,7 +397,7 @@ ensure_pending_rehearsal_failure() {
 pending_phase_is_valid() {
   local operation="$1" phase="$2"
   case "${operation}:${phase}" in
-    deploy:prepared|deploy:replaced|deploy:healthy|deploy:state_written|rehearsal:prepared|rehearsal:predecessor_proven|rehearsal:restoring_current|rehearsal:fallback) return 0 ;;
+    deploy:prepared|deploy:replaced|deploy:healthy|deploy:state_written|rehearsal:prepared|rehearsal:switching_predecessor|rehearsal:predecessor_proven|rehearsal:restoring_current|rehearsal:current_restored|rehearsal:fallback) return 0 ;;
   esac
   return 1
 }
@@ -553,6 +554,9 @@ recover_pending() {
     [[ $load_result -eq 2 ]] && return 0
     return 1
   fi
+  # Only the one-time rehearsal entrypoint may reconcile its journal. A later
+  # deployment must not mutate or clear rehearsal state before its receipt gate.
+  [[ "$pending_operation" != rehearsal ]] || return 1
   recovery_active=1
   if [[ "$pending_operation" == deploy && $state_count -gt 0 \
     && "${state_images[0]}" == "$pending_alternate_image" ]]; then
@@ -616,6 +620,14 @@ finish() {
 }
 
 fail_before_replace() {
+  if [[ $audit_ready -eq 1 ]]; then
+    if ensure_pending_deploy_record failed_before_replace none; then
+      printf 'minori_release result=failed_before_replace active_sha=%s active_image=%s\n' "$current_sha" "$current_image"
+      terminal_emitted=1
+      exit 1
+    fi
+    finish recovery_failed 1
+  fi
   finish failed_before_replace 1
 }
 
@@ -628,6 +640,12 @@ prepare_trusted_directory() {
     mkdir -- "$path" || return 1
   fi
   trusted_directory_is_valid "$path"
+}
+
+trusted_directory_can_be_prepared() {
+  local path="$1"
+  [[ ! -L "$path" ]] || return 1
+  [[ ! -e "$path" ]] || trusted_directory_is_valid "$path"
 }
 
 restore_active_transaction() {
@@ -678,12 +696,16 @@ on_exit() {
 trap on_signal HUP INT TERM
 trap on_exit EXIT
 
-if ! trusted_directory_is_valid "$minori_root" || ! trusted_directory_is_valid "$release_dir"; then
+if ! trusted_directory_is_valid "$minori_root" || ! trusted_directory_is_valid "$release_dir" \
+  || ! root_only_file_is_valid "$env_file" || ! lark_directory_is_valid; then
+  fail_before_replace
+fi
+if ! trusted_directory_can_be_prepared "$contracts_dir" || ! trusted_directory_can_be_prepared "$records_dir" \
+  || ! trusted_directory_can_be_prepared "$rehearsal_records_dir"; then
   fail_before_replace
 fi
 if ! prepare_trusted_directory "$contracts_dir" || ! prepare_trusted_directory "$records_dir" \
-  || ! prepare_trusted_directory "$rehearsal_records_dir" || ! root_only_file_is_valid "$env_file" \
-  || ! lark_directory_is_valid; then
+  || ! prepare_trusted_directory "$rehearsal_records_dir"; then
   fail_before_replace
 fi
 temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/minori-release.XXXXXX")" || fail_before_replace
@@ -710,6 +732,17 @@ fi
 rendered_current_image="$(compose_image "$current_image" "$current_contract")" || fail_before_replace
 [[ "$rendered_current_image" == "$current_image" ]] || fail_before_replace
 if [[ "$current_image" =~ $legacy_pattern ]]; then rollback_category='legacy_local'; else rollback_category='saved_digest'; fi
+
+pending_operation='deploy'
+pending_original_protocol='v1'
+pending_original_sha="$current_sha"
+pending_original_image="$current_image"
+pending_original_contract="$current_contract"
+pending_alternate_protocol="$protocol"
+pending_alternate_sha="$commit_sha"
+pending_alternate_image="$candidate_image"
+initialize_pending_record_identity || fail_before_replace
+audit_ready=1
 
 mkdir -m 0700 "${temporary_dir}/docker-config" || fail_before_replace
 printf '{"auths":{}}\n' > "${temporary_dir}/docker-config/config.json" || fail_before_replace
@@ -739,17 +772,8 @@ install -m 0600 -- "$candidate_contract_source" "$candidate_contract" || fail_be
 rendered_image="$(compose_image "$candidate_image" "$candidate_contract")" || fail_before_replace
 [[ "$rendered_image" == "$candidate_image" ]] || fail_before_replace
 
-pending_operation='deploy'
 pending_phase='prepared'
-pending_original_protocol='v1'
-pending_original_sha="$current_sha"
-pending_original_image="$current_image"
-pending_original_contract="$current_contract"
-pending_alternate_protocol="$protocol"
-pending_alternate_sha="$commit_sha"
-pending_alternate_image="$candidate_image"
 pending_alternate_contract="$candidate_contract"
-initialize_pending_record_identity || fail_before_replace
 write_pending "$pending_operation" "$pending_phase" "$pending_original_protocol" "$pending_original_sha" \
   "$pending_original_image" "$pending_original_contract" "$pending_alternate_protocol" "$pending_alternate_sha" \
   "$pending_alternate_image" "$pending_alternate_contract" || fail_before_replace

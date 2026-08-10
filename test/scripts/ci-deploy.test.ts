@@ -118,7 +118,6 @@ printf 'minori_release result=success active_sha=${shaA} active_image=${digestA}
   });
 
   it.each([
-    ['failed_before_replace', 'failed_before_replace'],
     ['rollback_failed', 'rollback_failed'],
     ['recovery_failed', 'recovery_failed'],
   ])('propagates only the stable %s engine category', async (engineCategory, deployCategory) => {
@@ -134,6 +133,32 @@ printf 'minori_release result=success active_sha=${shaA} active_image=${digestA}
       stdout: `minori_deploy result=${deployCategory}\n`,
       stderr: '',
     }));
+  });
+
+  it('propagates failed_before_replace only with the strict active artifact', async () => {
+    const runtime = await createFakeDeployRuntime();
+    await runtime.installFakeReleaseEngine(
+      `#!/usr/bin/env bash\nprintf 'minori_release result=failed_before_replace active_sha=${shaA} active_image=${digestA}\\n'\nexit 1\n`,
+    );
+
+    const result = await run(runtime, `deploy v1 ${shaA} ${digestA}`);
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 1,
+      stdout: `minori_deploy result=failed_before_replace active_sha=${shaA} active_image=${digestA}\n`,
+      stderr: '',
+    }));
+  });
+
+  it.each([0, 2, 75, 255])('does not trust rollback output with exit status %s', async (status) => {
+    const runtime = await createFakeDeployRuntime();
+    await runtime.installFakeReleaseEngine(
+      `#!/usr/bin/env bash\nprintf 'minori_release result=rolled_back active_sha=${shaA} active_image=${digestA}\\n'\nexit ${status}\n`,
+    );
+
+    const result = await run(runtime, `deploy v1 ${shaA} ${digestA}`);
+
+    expect(result).toEqual(expect.objectContaining({ code: 1, stdout: 'minori_deploy result=failed\n', stderr: '' }));
   });
 
   it('propagates a rolled-back result only with the resulting active healthy artifact', async () => {
@@ -220,10 +245,37 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
     expect(authorized).toContain('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBOGUS unrelated@example\n');
     expect(authorized).toContain('restrict,command="/opt/minori/bin/ci-deploy" ssh-ed25519 ');
     expect(authorized.match(/restrict,command="\/opt\/minori\/bin\/ci-deploy"/g)).toHaveLength(1);
-    await expect(readFile(join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy'), 'utf8')).resolves.toContain('SSH_ORIGINAL_COMMAND');
+    await expect(readFile(join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy'), 'utf8')).resolves.toContain('os.execve');
+    await expect(readFile(join(fixture.root, 'opt', 'minori', 'libexec', 'ci-deploy'), 'utf8')).resolves.toContain('SSH_ORIGINAL_COMMAND');
     await expect(readFile(join(fixture.root, 'opt', 'minori', 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toBe(
       await readFile('deploy/vultr/rehearsal-v0.1.1.accepted', 'utf8'),
     );
+  });
+
+  it('clears hostile Bash startup hooks before every installed entrypoint reaches Bash', async () => {
+    const fixture = await installerFixture();
+    await runInstaller(fixture.root, fixture.publicKey);
+    const marker = join(fixture.root, 'bash-env-ran');
+    const bashEnv = join(fixture.root, 'hostile-bash-env');
+    await writeFile(bashEnv, `printf compromised > '${marker}'\n`);
+    for (const [name, stdout] of [
+      ['ci-deploy', 'minori_deploy result=rejected\n'],
+      ['minori-release', 'minori_release result=rejected\n'],
+      ['rehearse-release', 'minori_rehearsal result=rejected\n'],
+    ]) {
+      const installed = join(fixture.root, 'opt', 'minori', 'bin', name);
+      const result = await execFileAsync(installed, [], {
+        env: {
+          ...process.env,
+          SSH_ORIGINAL_COMMAND: 'invalid',
+          BASH_ENV: bashEnv,
+          'BASH_FUNC_emit_and_exit%%': `() { printf compromised > '${marker}'; }`,
+        },
+      }).catch((error: { code: number; stdout: string; stderr: string }) => error);
+
+      expect(result).toEqual(expect.objectContaining({ code: 2, stdout, stderr: '' }));
+    }
+    await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it.each(['intermediate opt', 'intermediate root', 'install root', 'bin directory', 'installed leaf'])(

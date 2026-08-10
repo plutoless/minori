@@ -134,10 +134,13 @@ describe('Team Agent release packaging contract', () => {
     expect(installer).toContain('cp -- "$authorized_keys" "$temporary_keys"');
     expect(installer).toContain('stat -c \'%u %g %a\'');
     expect(installer).toContain('(8#$mode & 8#022) == 0');
-    expect(entrypoint).toContain("installed_entrypoint='/opt/minori/bin/ci-deploy'");
+    expect(installer).toContain('clean-entrypoint.py');
+    expect(installer).toContain('libexec_dir="${install_root}/libexec"');
+    expect(installer).toContain('install_file 0700 "${script_dir}/ci-deploy" "${libexec_dir}/ci-deploy"');
+    expect(entrypoint).toContain("installed_entrypoint='/opt/minori/libexec/ci-deploy'");
     expect(entrypoint).toContain("minori_root='/opt/minori'");
     expect(entrypoint).toContain("lock_file='/run/lock/minori-ci-deploy.lock'");
-    expect(entrypoint).toContain('release_command=(env -i');
+    expect(entrypoint).toContain('release_command=(/opt/minori/bin/minori-release)');
   });
 
   it('declares the exact first CI release version in both package manifests', async () => {

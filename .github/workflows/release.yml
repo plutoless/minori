@@ -160,6 +160,7 @@ jobs:
           active_image='none'
           success_pattern='^minori_deploy result=success active_sha=([0-9a-f]{40}) active_image=(ghcr\.io/plutoless/minori@sha256:[0-9a-f]{64})$'
           rollback_pattern='^minori_deploy result=rolled_back active_sha=([0-9a-f]{40}) active_image=(ghcr\.io/plutoless/minori@sha256:[0-9a-f]{64}|minori:[0-9a-f]{40})$'
+          failed_before_pattern='^minori_deploy result=failed_before_replace active_sha=([0-9a-f]{40}) active_image=(ghcr\.io/plutoless/minori@sha256:[0-9a-f]{64}|minori:[0-9a-f]{40})$'
           if [[ "$deploy_output" =~ $success_pattern ]]; then
             result_category='success'
             active_sha="${BASH_REMATCH[1]}"
@@ -178,26 +179,30 @@ jobs:
               active_sha='none'
               active_image='none'
             fi
+          elif [[ "$deploy_output" =~ $failed_before_pattern ]]; then
+            result_category='failed_before_replace'
+            active_sha="${BASH_REMATCH[1]}"
+            active_image="${BASH_REMATCH[2]}"
+            if [[ "$active_image" == minori:* && "${active_image#minori:}" != "$active_sha" ]]; then
+              result_category='deployment_protocol_error'
+              active_sha='none'
+              active_image='none'
+            fi
           else
           case "$deploy_output" in
             'minori_deploy result=rejected') result_category='rejected' ;;
             'minori_deploy result=failed') result_category='failed' ;;
             'minori_deploy result=locked') result_category='locked' ;;
-            'minori_deploy result=failed_before_replace') result_category='failed_before_replace' ;;
             'minori_deploy result=rollback_failed') result_category='rollback_failed' ;;
             'minori_deploy result=recovery_failed') result_category='recovery_failed' ;;
             *) result_category='deployment_protocol_error' ;;
           esac
           fi
-          if [[ "$ssh_status" -ne 0 && "$result_category" == 'success' ]]; then
-            result_category='deployment_transport_failed'
-            active_sha='none'
-            active_image='none'
-          elif [[ "$ssh_status" -eq 0 && "$result_category" != 'success' ]]; then
-            result_category='deployment_protocol_error'
-            active_sha='none'
-            active_image='none'
-          fi
+          case "${ssh_status}:${result_category}" in
+            0:success|1:rolled_back|1:failed|1:failed_before_replace|1:rollback_failed|1:recovery_failed|2:rejected|75:locked) ;;
+            255:*) result_category='deployment_transport_failed'; active_sha='none'; active_image='none' ;;
+            *) result_category='deployment_protocol_error'; active_sha='none'; active_image='none' ;;
+          esac
           {
             printf '### Production deployment\n'
             printf -- "- Tag: \`%s\`\n" "$RELEASE_TAG"

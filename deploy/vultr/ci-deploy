@@ -30,9 +30,9 @@ fi
 protocol='v1'
 commit_sha="${BASH_REMATCH[1]}"
 image="${BASH_REMATCH[2]}"
-installed_entrypoint='/opt/minori/bin/ci-deploy'
+installed_entrypoint='/opt/minori/libexec/ci-deploy'
 test_mode=0
-if [[ "${BASH_SOURCE[0]}" == "$installed_entrypoint" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "$installed_entrypoint" && "${MINORI_CLEAN_ENTRYPOINT:-}" == ci-deploy ]]; then
   PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
   export PATH
   minori_root='/opt/minori'
@@ -56,13 +56,18 @@ if ! flock -n 9 2>/dev/null; then
 fi
 
 release_output=''
+release_status=0
 if [[ $test_mode -eq 1 ]]; then
   release_command=("${minori_root}/bin/minori-release")
 else
-  release_command=(env -i "PATH=${PATH}" MINORI_FORCED_ENTRYPOINT=1 /opt/minori/bin/minori-release)
+  release_command=(/opt/minori/bin/minori-release)
 fi
-if release_output="$(MINORI_FORCED_ENTRYPOINT=1 "${release_command[@]}" \
-    "$protocol" "$commit_sha" "$image" 2>/dev/null)"; then
+set +e
+release_output="$("${release_command[@]}" \
+  "$protocol" "$commit_sha" "$image" 2>/dev/null)"
+release_status=$?
+set -e
+if [[ $release_status -eq 0 ]]; then
   success_pattern='^minori_release result=success active_sha=([0123456789abcdef]{40}) active_image=(ghcr\.io/plutoless/minori@sha256:[0123456789abcdef]{64})$'
   if [[ "$release_output" =~ $success_pattern \
     && "${BASH_REMATCH[1]}" == "$commit_sha" && "${BASH_REMATCH[2]}" == "$image" ]]; then
@@ -71,7 +76,8 @@ if release_output="$(MINORI_FORCED_ENTRYPOINT=1 "${release_command[@]}" \
   emit_and_exit failed 1
 fi
 rollback_pattern='^minori_release result=rolled_back active_sha=([0123456789abcdef]{40}) active_image=(ghcr\.io/plutoless/minori@sha256:[0123456789abcdef]{64}|minori:[0123456789abcdef]{40})$'
-if [[ "$release_output" =~ $rollback_pattern ]]; then
+failed_before_pattern='^minori_release result=failed_before_replace active_sha=([0123456789abcdef]{40}) active_image=(ghcr\.io/plutoless/minori@sha256:[0123456789abcdef]{64}|minori:[0123456789abcdef]{40})$'
+if [[ $release_status -eq 1 && "$release_output" =~ $rollback_pattern ]]; then
   active_sha="${BASH_REMATCH[1]}"
   active_image="${BASH_REMATCH[2]}"
   if [[ "$active_image" != minori:* || "${active_image#minori:}" == "$active_sha" ]]; then
@@ -79,8 +85,16 @@ if [[ "$release_output" =~ $rollback_pattern ]]; then
   fi
   emit_and_exit failed 1
 fi
+if [[ $release_status -eq 1 && "$release_output" =~ $failed_before_pattern ]]; then
+  active_sha="${BASH_REMATCH[1]}"
+  active_image="${BASH_REMATCH[2]}"
+  if [[ "$active_image" != minori:* || "${active_image#minori:}" == "$active_sha" ]]; then
+    emit_active_and_exit failed_before_replace "$active_sha" "$active_image" 1
+  fi
+  emit_and_exit failed 1
+fi
+[[ $release_status -eq 1 ]] || emit_and_exit failed 1
 case "$release_output" in
-  'minori_release result=failed_before_replace') emit_and_exit failed_before_replace 1 ;;
   'minori_release result=rollback_failed') emit_and_exit rollback_failed 1 ;;
   'minori_release result=recovery_failed') emit_and_exit recovery_failed 1 ;;
   *) emit_and_exit failed 1 ;;

@@ -5,19 +5,20 @@ LC_ALL=C
 LANG=C
 export LC_ALL LANG
 
-installed_rehearsal='/opt/minori/bin/rehearse-release'
+installed_rehearsal='/opt/minori/libexec/rehearse-release'
 sanitized_path='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 if [[ "${BASH_SOURCE[0]}" == "$installed_rehearsal" ]]; then
   installed_environment_is_clean=1
   while IFS= read -r variable_name; do
     case "$variable_name" in
-      LANG|LC_ALL|MINORI_REHEARSAL_SANITIZED|PATH|PWD|SHLVL|_) ;;
+      LANG|LC_ALL|MINORI_CLEAN_ENTRYPOINT|PATH|PWD|SHLVL|_) ;;
       *) installed_environment_is_clean=0 ;;
     esac
   done < <(compgen -e)
-  if [[ "${MINORI_REHEARSAL_SANITIZED:-}" != 1 || "$installed_environment_is_clean" -ne 1 \
+  if [[ "${MINORI_CLEAN_ENTRYPOINT:-}" != rehearse-release || "$installed_environment_is_clean" -ne 1 \
     || "$PATH" != "$sanitized_path" || "$LANG" != C || "$LC_ALL" != C ]]; then
-    exec /usr/bin/env -i "PATH=${sanitized_path}" MINORI_REHEARSAL_SANITIZED=1 "$installed_rehearsal" "$@"
+    printf 'minori_rehearsal result=rejected\n'
+    exit 2
   fi
 elif [[ "${MINORI_REHEARSAL_SANITIZED:-}" != 1 ]]; then
   if [[ -n "${MINORI_TEST_ROOT:-}" && -d "$MINORI_TEST_ROOT" && ! -L "$MINORI_TEST_ROOT" && -O "$MINORI_TEST_ROOT" ]]; then
@@ -146,6 +147,9 @@ consumed_file_is_valid() {
 
 ensure_consumed_file() {
   local temporary_consumed
+  if [[ $test_mode -eq 1 && "${MINORI_TEST_FAIL_CONSUMED:-}" == 1 ]]; then
+    return 1
+  fi
   if [[ -e "$consumed_file" || -L "$consumed_file" ]]; then
     consumed_file_is_valid
     return
@@ -404,7 +408,7 @@ ensure_pending_rehearsal_failure() {
 
 pending_phase_is_valid() {
   case "$1:$2" in
-    deploy:prepared|deploy:replaced|deploy:healthy|deploy:state_written|rehearsal:prepared|rehearsal:predecessor_proven|rehearsal:restoring_current|rehearsal:current_restored|rehearsal:fallback) return 0 ;;
+    deploy:prepared|deploy:replaced|deploy:healthy|deploy:state_written|rehearsal:prepared|rehearsal:switching_predecessor|rehearsal:predecessor_proven|rehearsal:restoring_current|rehearsal:current_restored|rehearsal:fallback) return 0 ;;
   esac
   return 1
 }
@@ -518,6 +522,15 @@ promote_pending_alternate() {
 
 clear_pending() { rm -f -- "$pending_file"; }
 
+finalize_rehearsal_pending() {
+  case "$pending_phase" in
+    switching_predecessor|predecessor_proven|restoring_current|current_restored|fallback)
+      ensure_consumed_file || return 1
+      ;;
+  esac
+  clear_pending
+}
+
 recover_pending() {
   local load_result desired='original'
   if load_pending; then :; else load_result=$?; [[ $load_result -eq 2 ]] && return 0; return 1; fi
@@ -544,11 +557,13 @@ recover_pending() {
       else
         ensure_pending_deploy_record rolled_back saved_digest || return 1
       fi
-    elif [[ "$pending_phase" == current_restored ]]; then
-      ensure_consumed_file || return 1
     fi
   fi
-  clear_pending || return 1
+  if [[ "$pending_operation" == rehearsal ]]; then
+    finalize_rehearsal_pending || return 1
+  else
+    clear_pending || return 1
+  fi
   recovery_active=0
 }
 
@@ -561,11 +576,11 @@ test_boundary() {
 
 restore_active_transaction() {
   replace_service "$original_image" "$original_contract" && service_is_healthy "$original_image" \
-    && restore_original_state && clear_pending
+    && restore_original_state
 }
 
 journal_failure() {
-  if restore_active_transaction; then
+  if restore_active_transaction && finalize_rehearsal_pending; then
     transaction_active=0
     finish journal_failed_restored 1
   fi
@@ -579,7 +594,7 @@ on_exit() {
   set +e
   if [[ $terminal_emitted -eq 0 ]]; then
     if [[ $transaction_active -eq 1 ]]; then
-      if restore_active_transaction; then printf 'minori_rehearsal result=interrupted_restored\n'; else printf 'minori_rehearsal result=interrupted_recovery_failed\n'; fi
+      if restore_active_transaction && finalize_rehearsal_pending; then printf 'minori_rehearsal result=interrupted_restored\n'; else printf 'minori_rehearsal result=interrupted_recovery_failed\n'; fi
     elif [[ $recovery_active -eq 1 ]]; then
       printf 'minori_rehearsal result=recovery_failed\n'
     fi
@@ -598,7 +613,22 @@ prepare_trusted_directory "$records_dir" && prepare_trusted_directory "$rehearsa
 temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/minori-rehearsal.XXXXXX")" || finish rejected 2
 reset_state
 load_state || finish rejected 2
+if [[ -e "$consumed_file" || -L "$consumed_file" ]]; then
+  consumed_file_is_valid || finish rejected 2
+  if load_pending; then
+    [[ "$pending_operation" == rehearsal ]] || finish rejected 2
+    recover_pending || finish recovery_failed 1
+  else
+    pending_load_result=$?
+    [[ $pending_load_result -eq 2 ]] || finish rejected 2
+  fi
+  finish rejected 2
+fi
 if ! recover_pending; then finish recovery_failed 1; fi
+if [[ -e "$consumed_file" || -L "$consumed_file" ]]; then
+  consumed_file_is_valid || finish rejected 2
+  finish rejected 2
+fi
 reset_state
 load_state || finish rejected 2
 [[ $state_count -ge 2 ]] || finish rejected 2
@@ -606,10 +636,6 @@ load_state || finish rejected 2
 [[ "${state_images[0]}" =~ $digest_pattern ]] || finish rejected 2
 [[ "$expected_sha" == "$transition_sha" && "$expected_image" == "$transition_image" \
   && "${state_shas[1]}" == "$predecessor_sha" && "${state_images[1]}" == "$predecessor_image" ]] || finish rejected 2
-if [[ -e "$consumed_file" || -L "$consumed_file" ]]; then
-  consumed_file_is_valid || finish rejected 2
-  finish rejected 2
-fi
 running_image_equals "$expected_image" || finish rejected 2
 
 original_sha="${state_shas[0]}"
@@ -633,10 +659,11 @@ load_pending || finish failed_before_switch 1
 transaction_active=1
 test_boundary after_rehearsal_journal
 
+update_pending_phase switching_predecessor || journal_failure
 if ! replace_service "$pending_alternate_image" "$pending_alternate_contract" \
   || ! service_is_healthy "$pending_alternate_image"; then
   update_pending_phase restoring_current || journal_failure
-  if restore_active_transaction; then
+  if restore_active_transaction && finalize_rehearsal_pending; then
     transaction_active=0
     finish predecessor_unhealthy_restored 1
   fi
@@ -647,9 +674,9 @@ test_boundary after_predecessor_switch
 update_pending_phase restoring_current || journal_failure
 
 if replace_service "$original_image" "$original_contract" && service_is_healthy "$original_image"; then
-  test_boundary after_current_switch
   restore_original_state || journal_failure
   update_pending_phase current_restored || journal_failure
+  test_boundary after_current_switch
   ensure_consumed_file || journal_failure
   test_boundary after_consumed
   clear_pending || journal_failure
@@ -663,7 +690,7 @@ if replace_service "$pending_alternate_image" "$pending_alternate_contract" \
   test_boundary after_fallback_switch
   if promote_pending_alternate; then
     test_boundary after_fallback_state
-    if ensure_pending_rehearsal_failure && clear_pending; then
+    if ensure_pending_rehearsal_failure && ensure_consumed_file && clear_pending; then
       transaction_active=0
       finish restore_failed_recovered_predecessor 1
     fi
