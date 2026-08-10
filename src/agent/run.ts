@@ -50,6 +50,12 @@ export type AgentRunInput = {
     chatId: string;
     chatType: 'group' | 'p2p';
     occurredAt: Date;
+  } | {
+    kind: 'scheduled_task';
+    scheduledRunId: string;
+    chatId: string;
+    chatType: 'group' | 'p2p';
+    occurredAt: Date;
   };
 };
 
@@ -122,6 +128,9 @@ export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' 
   groupContextSource?: GroupContextSource;
   teamContextSource?: TeamContextSource;
   scheduleTools?: Omit<ScheduleToolContext, 'actorOpenId' | 'origin'>;
+  invocationSource?:
+    | { kind: 'message'; eventId: string; claimAttempt: number }
+    | { kind: 'scheduled'; scheduledRunId: string; claimAttempt: number };
   contextTokenTarget?: number;
 };
 
@@ -359,11 +368,19 @@ export async function runKnowledgeAgent(
   let run: { id: string };
   try {
     run = await withAbort(
-      () => dependencies.agentRunStore.start({
-        eventId: dependencies.eventId,
-        claimAttempt: dependencies.claimAttempt,
-        model: dependencies.modelName,
-      }),
+      () => dependencies.agentRunStore.start(
+        dependencies.invocationSource?.kind === 'scheduled'
+          ? {
+            scheduledRunId: dependencies.invocationSource.scheduledRunId,
+            claimAttempt: dependencies.invocationSource.claimAttempt,
+            model: dependencies.modelName,
+          }
+          : {
+            eventId: dependencies.invocationSource?.eventId ?? dependencies.eventId,
+            claimAttempt: dependencies.invocationSource?.claimAttempt ?? dependencies.claimAttempt,
+            model: dependencies.modelName,
+          },
+      ),
       runSignal,
       (lateRun) => withAuditFinalization(() => dependencies.agentRunStore.finish(lateRun.id, {
         toolCallCount: 0,
@@ -429,7 +446,9 @@ export async function runKnowledgeAgent(
             chatId: input.trigger.chatId,
             cutoff,
             triggerMessageId: dependencies.triggerMessageId,
-            currentSenderOpenId: input.trigger.senderOpenId,
+            currentSenderOpenId: input.trigger.kind === 'feishu_member'
+              ? input.trigger.senderOpenId
+              : dependencies.botOpenId,
             botOpenId: dependencies.botOpenId,
             botAppId: dependencies.botAppId,
           });
@@ -495,10 +514,10 @@ export async function runKnowledgeAgent(
         teamContext: {
           source: dependencies.teamContextSource,
           current: teamContext,
-          allowMutation: true,
+          allowMutation: input.trigger.kind === 'feishu_member',
         },
       } : {}),
-      ...(dependencies.scheduleTools ? {
+      ...(dependencies.scheduleTools && input.trigger.kind === 'feishu_member' ? {
         schedules: {
           ...dependencies.scheduleTools,
           actorOpenId: input.trigger.senderOpenId,
@@ -523,7 +542,9 @@ export async function runKnowledgeAgent(
         ]
         : retainedHistoryBeforeInvocation,
       currentInvocation: {
-        speakerName: input.trigger.chatType === 'group'
+        speakerName: input.trigger.kind === 'scheduled_task'
+          ? 'Scheduled Task'
+          : input.trigger.chatType === 'group'
           ? initialGroupContext!.currentSenderName
           : '成员',
         text: input.prompt,

@@ -194,6 +194,8 @@ export const agentRuns = pgTable('agent_runs', {
   id: uuid('id').defaultRandom().primaryKey(),
   conversationId: uuid('conversation_id').references(() => conversations.id, { onDelete: 'set null' }),
   eventId: text('event_id').references(() => processedEvents.eventId, { onDelete: 'set null' }),
+  scheduledRunId: uuid('scheduled_run_id')
+    .references(() => scheduledRuns.id, { onDelete: 'set null' }),
   claimAttempt: integer('claim_attempt'),
   model: text('model').notNull(),
   inputTokens: integer('input_tokens'),
