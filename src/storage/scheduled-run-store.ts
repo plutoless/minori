@@ -1,0 +1,199 @@
+import { sql } from 'drizzle-orm';
+
+import type { ScheduledRun, ScheduledRunStatus } from '../schedule/types.js';
+import type { Database } from './database.js';
+
+type RunRow = {
+  id: string;
+  schedule_id: string;
+  scheduled_for: Date | string;
+  task_version: number;
+  instruction: string;
+  result_chat_id: string;
+  result_display_name: string;
+  result_chat_type: 'group' | 'p2p';
+  context_chat_id: string | null;
+  context_display_name: string | null;
+  status: ScheduledRunStatus;
+  claim_attempt: number;
+  leased_until: Date | string | null;
+  write_started_at: Date | string | null;
+  outcome_category: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
+function mapRun(row: RunRow): ScheduledRun {
+  return {
+    id: row.id,
+    scheduleId: row.schedule_id,
+    scheduledFor: new Date(row.scheduled_for),
+    taskVersion: row.task_version,
+    instruction: row.instruction,
+    resultTarget: {
+      chatId: row.result_chat_id,
+      displayName: row.result_display_name,
+      chatType: row.result_chat_type,
+    },
+    ...(row.context_chat_id && row.context_display_name
+      ? { scheduledContext: { chatId: row.context_chat_id, displayName: row.context_display_name } }
+      : {}),
+    status: row.status,
+    claimAttempt: row.claim_attempt,
+    ...(row.leased_until ? { leasedUntil: new Date(row.leased_until) } : {}),
+    ...(row.write_started_at ? { writeStartedAt: new Date(row.write_started_at) } : {}),
+    ...(row.outcome_category ? { outcomeCategory: row.outcome_category } : {}),
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+}
+
+export type CreateDueInput = {
+  scheduleId: string;
+  expectedDueAt: Date;
+  scheduledFor: Date;
+  nextDueAt?: Date;
+};
+
+export type CreateDueResult =
+  | { status: 'created'; run: ScheduledRun }
+  | { status: 'not_found' | 'not_due' | 'inactive' | 'active_run' };
+
+export class PostgresScheduledRunStore {
+  constructor(private readonly db: Database) {}
+
+  async get(id: string): Promise<ScheduledRun | undefined> {
+    const result = await this.db.execute(sql`select * from scheduled_runs where id = ${id}`);
+    const row = result.rows[0] as RunRow | undefined;
+    return row ? mapRun(row) : undefined;
+  }
+
+  async createDue(input: CreateDueInput): Promise<CreateDueResult> {
+    return this.db.transaction(async (tx) => {
+      const taskResult = await tx.execute(sql`
+        select * from scheduled_tasks where id = ${input.scheduleId} for update
+      `);
+      const task = taskResult.rows[0] as {
+        id: string;
+        state: string;
+        current_version: number;
+        next_due_at: Date | string | null;
+        schedule_kind: 'once' | 'cron';
+        result_chat_id: string;
+        result_display_name: string;
+        result_chat_type: 'group' | 'p2p';
+        context_chat_id: string | null;
+        context_display_name: string | null;
+      } | undefined;
+      if (!task) return { status: 'not_found' as const };
+      if (task.state !== 'active') return { status: 'inactive' as const };
+      if (!task.next_due_at || new Date(task.next_due_at).getTime() !== input.expectedDueAt.getTime()) {
+        return { status: 'not_due' as const };
+      }
+      const active = await tx.execute(sql`
+        select id from scheduled_runs where schedule_id = ${input.scheduleId}
+          and status in ('queued', 'processing') limit 1
+      `);
+      if (active.rows.length > 0) {
+        await tx.execute(sql`
+          update scheduled_tasks set latest_missed_at = greatest(
+            coalesce(latest_missed_at, ${input.scheduledFor}), ${input.scheduledFor}
+          ), updated_at = now() where id = ${input.scheduleId}
+        `);
+        return { status: 'active_run' as const };
+      }
+      const revisionResult = await tx.execute(sql`
+        select instruction from scheduled_task_revisions
+        where schedule_id = ${input.scheduleId} and version = ${task.current_version}
+      `);
+      const instruction = (revisionResult.rows[0] as { instruction: string | null } | undefined)?.instruction;
+      if (!instruction) throw new Error('schedule_body_unavailable');
+      const created = await tx.execute(sql`
+        insert into scheduled_runs (
+          schedule_id, scheduled_for, task_version, instruction,
+          result_chat_id, result_display_name, result_chat_type,
+          context_chat_id, context_display_name, delivery_idempotency_key
+        ) values (
+          ${input.scheduleId}, ${input.scheduledFor}, ${task.current_version}, ${instruction},
+          ${task.result_chat_id}, ${task.result_display_name}, ${task.result_chat_type},
+          ${task.context_chat_id}, ${task.context_display_name}, gen_random_uuid()::text
+        ) returning *
+      `);
+      await tx.execute(sql`
+        update scheduled_tasks set
+          state = ${task.schedule_kind === 'once' ? 'in_flight' : 'active'},
+          next_due_at = ${task.schedule_kind === 'once' ? null : input.nextDueAt ?? null},
+          latest_run_status = 'queued', updated_at = now()
+        where id = ${input.scheduleId}
+      `);
+      return { status: 'created' as const, run: mapRun(created.rows[0] as RunRow) };
+    });
+  }
+
+  async claim(id: string, now: Date, leaseMs: number): Promise<ScheduledRun | undefined> {
+    return this.db.transaction(async (tx) => {
+      const result = await tx.execute(sql`
+        update scheduled_runs set status = 'processing', claim_attempt = claim_attempt + 1,
+          leased_until = ${new Date(now.getTime() + leaseMs)}, updated_at = now()
+        where id = ${id} and status = 'queued'
+        returning *
+      `);
+      const row = result.rows[0] as RunRow | undefined;
+      if (!row) return undefined;
+      await tx.execute(sql`
+        update scheduled_tasks set latest_run_status = 'processing', updated_at = now()
+        where id = ${row.schedule_id}
+      `);
+      return mapRun(row);
+    });
+  }
+
+  async cancelQueuedForTask(scheduleId: string): Promise<boolean> {
+    const result = await this.db.execute(sql`
+      update scheduled_runs set status = 'cancelled', updated_at = now()
+      where schedule_id = ${scheduleId} and status = 'queued' returning id
+    `);
+    return result.rows.length > 0;
+  }
+
+  async finish(
+    id: string,
+    claimAttempt: number,
+    outcome: Extract<ScheduledRunStatus, 'completed' | 'failed' | 'delivery_uncertain'>,
+    outcomeCategory?: string,
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const result = await tx.execute(sql`
+        update scheduled_runs set status = ${outcome}, outcome_category = ${outcomeCategory ?? null},
+          leased_until = null, updated_at = now()
+        where id = ${id} and status = 'processing' and claim_attempt = ${claimAttempt}
+        returning schedule_id
+      `);
+      const row = result.rows[0] as { schedule_id: string } | undefined;
+      if (!row) throw new Error('scheduled_run_claim_stale');
+      const taskResult = await tx.execute(sql`
+        select schedule_kind, state from scheduled_tasks where id = ${row.schedule_id} for update
+      `);
+      const task = taskResult.rows[0] as { schedule_kind: 'once' | 'cron'; state: string };
+      const terminalOneTime = task.schedule_kind === 'once' && task.state !== 'deleted';
+      await tx.execute(sql`
+        update scheduled_tasks set
+          state = ${terminalOneTime ? 'completed' : task.state},
+          name_reserved = ${task.state === 'deleted' || terminalOneTime ? false : true},
+          completed_at = ${terminalOneTime ? new Date() : null},
+          latest_run_status = ${outcome}, updated_at = now()
+        where id = ${row.schedule_id}
+      `);
+    });
+  }
+
+  async recoverExpired(now: Date): Promise<number> {
+    const result = await this.db.execute(sql`
+      update scheduled_runs set status = 'failed', leased_until = null,
+        outcome_category = 'scheduled_run_claim_expired', updated_at = now()
+      where status = 'processing' and leased_until < ${now}
+      returning id
+    `);
+    return result.rows.length;
+  }
+}

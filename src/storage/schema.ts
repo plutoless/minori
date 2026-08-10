@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import type { NormalizedMessage } from '../contracts/messages.js';
 
 export type EventStatus = 'queued' | 'processing' | 'completed' | 'failed';
@@ -96,6 +97,98 @@ export const teamContextSnapshots = pgTable('team_context_snapshots', {
     .$type<'team_context_missing' | 'team_context_forbidden'>(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+export type ScheduleState = 'active' | 'paused' | 'in_flight' | 'completed' | 'deleted';
+export type ScheduledRunStatus =
+  | 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'delivery_uncertain';
+
+export const scheduledTasks = pgTable('scheduled_tasks', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  name: text('name').notNull(),
+  creatorOpenId: text('creator_open_id').notNull(),
+  originChatId: text('origin_chat_id').notNull(),
+  originDisplayName: text('origin_display_name').notNull(),
+  originChatType: text('origin_chat_type').$type<'group' | 'p2p'>().notNull(),
+  currentVersion: integer('current_version').default(1).notNull(),
+  scheduleKind: text('schedule_kind').$type<'once' | 'cron'>().notNull(),
+  onceAt: timestamp('once_at', { withTimezone: true }),
+  cronExpression: text('cron_expression'),
+  timezone: text('timezone').notNull(),
+  resultChatId: text('result_chat_id').notNull(),
+  resultDisplayName: text('result_display_name').notNull(),
+  resultChatType: text('result_chat_type').$type<'group' | 'p2p'>().notNull(),
+  contextChatId: text('context_chat_id'),
+  contextDisplayName: text('context_display_name'),
+  state: text('state').$type<ScheduleState>().default('active').notNull(),
+  nameReserved: boolean('name_reserved').default(true).notNull(),
+  nextDueAt: timestamp('next_due_at', { withTimezone: true }),
+  latestMissedAt: timestamp('latest_missed_at', { withTimezone: true }),
+  latestRunStatus: text('latest_run_status').$type<ScheduledRunStatus>(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  bodyPurgedAt: timestamp('body_purged_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex('scheduled_tasks_reserved_name_unique')
+    .on(sql`lower(${table.name})`)
+    .where(sql`${table.nameReserved} = true`),
+  index('scheduled_tasks_due_idx').on(table.state, table.nextDueAt),
+]);
+
+export const scheduledTaskRevisions = pgTable('scheduled_task_revisions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  scheduleId: uuid('schedule_id').notNull()
+    .references(() => scheduledTasks.id, { onDelete: 'cascade' }),
+  version: integer('version').notNull(),
+  actorOpenId: text('actor_open_id').notNull(),
+  instruction: text('instruction'),
+  scheduleKind: text('schedule_kind').$type<'once' | 'cron'>().notNull(),
+  onceAt: timestamp('once_at', { withTimezone: true }),
+  cronExpression: text('cron_expression'),
+  timezone: text('timezone').notNull(),
+  resultChatId: text('result_chat_id').notNull(),
+  resultDisplayName: text('result_display_name').notNull(),
+  resultChatType: text('result_chat_type').$type<'group' | 'p2p'>().notNull(),
+  contextChatId: text('context_chat_id'),
+  contextDisplayName: text('context_display_name'),
+  bodyPurgedAt: timestamp('body_purged_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex('scheduled_task_revisions_schedule_version_unique')
+    .on(table.scheduleId, table.version),
+]);
+
+export const scheduledRuns = pgTable('scheduled_runs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  scheduleId: uuid('schedule_id').notNull()
+    .references(() => scheduledTasks.id, { onDelete: 'restrict' }),
+  scheduledFor: timestamp('scheduled_for', { withTimezone: true }).notNull(),
+  taskVersion: integer('task_version').notNull(),
+  instruction: text('instruction').notNull(),
+  resultChatId: text('result_chat_id').notNull(),
+  resultDisplayName: text('result_display_name').notNull(),
+  resultChatType: text('result_chat_type').$type<'group' | 'p2p'>().notNull(),
+  contextChatId: text('context_chat_id'),
+  contextDisplayName: text('context_display_name'),
+  status: text('status').$type<ScheduledRunStatus>().default('queued').notNull(),
+  claimAttempt: integer('claim_attempt').default(0).notNull(),
+  leasedUntil: timestamp('leased_until', { withTimezone: true }),
+  writeStartedAt: timestamp('write_started_at', { withTimezone: true }),
+  deliveryIdempotencyKey: text('delivery_idempotency_key'),
+  deliveryAttemptedAt: timestamp('delivery_attempted_at', { withTimezone: true }),
+  deliveryMessageId: text('delivery_message_id'),
+  outcomeCategory: text('outcome_category'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex('scheduled_runs_schedule_occurrence_unique')
+    .on(table.scheduleId, table.scheduledFor),
+  uniqueIndex('scheduled_runs_one_active_per_task')
+    .on(table.scheduleId)
+    .where(sql`${table.status} in ('queued', 'processing')`),
+  index('scheduled_runs_ready_idx').on(table.status, table.createdAt),
+]);
 
 export const agentRuns = pgTable('agent_runs', {
   id: uuid('id').defaultRandom().primaryKey(),

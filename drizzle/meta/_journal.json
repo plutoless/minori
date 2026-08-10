@@ -57,6 +57,13 @@
       "when": 1786392443782,
       "tag": "0007_massive_talos",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786394155476,
+      "tag": "0008_majestic_inhumans",
+      "breakpoints": true
     }
   ]
 }
