@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -211,7 +211,7 @@ exit 1
 });
 
 async function installerFixture() {
-  const root = await mkdtemp(join(tmpdir(), 'minori-installer-test-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'minori-installer-test-')));
   const key = join(root, 'deployment-key');
   await writeFile(join(root, '.minori-ci-installer-test'), 'minori-ci-installer-test-v1\n', { mode: 0o600 });
   await execFileAsync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);
@@ -231,6 +231,60 @@ async function runInstaller(root: string, publicKey: string) {
 }
 
 describe('isolated forced-command installer', { timeout: 15_000 }, () => {
+  it('runs the exact installed forced command without accepting Bash startup hooks', async () => {
+    const fixture = await installerFixture();
+    await expect(runInstaller(fixture.root, fixture.publicKey)).resolves.toEqual(expect.objectContaining({ code: 0 }));
+    const marker = join(fixture.root, 'outer-shell-hook-ran');
+    const bashEnv = join(fixture.root, 'hostile-bash-env');
+    await writeFile(bashEnv, `printf compromised > '${marker}'\n`);
+
+    const policy = await readFile(
+      join(fixture.root, 'etc', 'ssh', 'sshd_config.d', '00-minori-ci-deploy.conf'),
+      'utf8',
+    );
+    expect(policy).toBe([
+      '# Managed by Minori. Keep hostile startup variables out of root SSH sessions.',
+      'Match User root',
+      '    AcceptEnv LANG LC_*',
+      '    SetEnv BASH_ENV=/dev/null ENV=/dev/null',
+      'Match all',
+      '',
+    ].join('\n'));
+
+    const authorized = await readFile(fixture.authorizedKeys, 'utf8');
+    const forcedCommand = authorized.match(/command="([^"]+)"/)?.[1];
+    expect(forcedCommand).toBe(join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy'));
+
+    const hostileClientEnvironment = {
+      BASH_ENV: bashEnv,
+      'BASH_FUNC_ci-deploy%%': `() { printf compromised > '${marker}'; }`,
+    };
+    const acceptedEnvironment = Object.fromEntries(
+      Object.entries(hostileClientEnvironment).filter(([name]) => name === 'LANG' || name.startsWith('LC_')),
+    );
+    expect(acceptedEnvironment).toEqual({});
+
+    const result = await execFileAsync('/bin/bash', ['-c', forcedCommand!], {
+      env: {
+        HOME: fixture.root,
+        PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        LANG: 'C',
+        LC_ALL: 'C',
+        BASH_ENV: '/dev/null',
+        ENV: '/dev/null',
+        SSH_ORIGINAL_COMMAND: 'invalid',
+        ...acceptedEnvironment,
+      },
+    }).catch((error: { code: number; stdout: string; stderr: string }) => error);
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 2,
+      stdout: 'minori_deploy result=rejected\n',
+      stderr: '',
+    }));
+    await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('installs exact forced-command leaves and preserves unrelated authorized keys lines', async () => {
     const fixture = await installerFixture();
     await mkdir(dirname(fixture.authorizedKeys), { recursive: true, mode: 0o700 });
@@ -243,8 +297,9 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
     expect(repeated).toEqual(expect.objectContaining({ code: 0, stdout: 'minori_ci_install result=success\n', stderr: '' }));
     const authorized = await readFile(fixture.authorizedKeys, 'utf8');
     expect(authorized).toContain('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBOGUS unrelated@example\n');
-    expect(authorized).toContain('restrict,command="/opt/minori/bin/ci-deploy" ssh-ed25519 ');
-    expect(authorized.match(/restrict,command="\/opt\/minori\/bin\/ci-deploy"/g)).toHaveLength(1);
+    const installedCommand = join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy');
+    expect(authorized).toContain(`restrict,command="${installedCommand}" ssh-ed25519 `);
+    expect(authorized.match(new RegExp(`restrict,command="${installedCommand}"`, 'g'))).toHaveLength(1);
     await expect(readFile(join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy'), 'utf8')).resolves.toContain('os.execve');
     await expect(readFile(join(fixture.root, 'opt', 'minori', 'libexec', 'ci-deploy'), 'utf8')).resolves.toContain('SSH_ORIGINAL_COMMAND');
     await expect(readFile(join(fixture.root, 'opt', 'minori', 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toBe(
@@ -278,7 +333,7 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
     await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it.each(['intermediate opt', 'intermediate root', 'install root', 'bin directory', 'installed leaf'])(
+  it.each(['intermediate opt', 'intermediate root', 'sshd policy directory', 'sshd policy', 'install root', 'bin directory', 'installed leaf'])(
     'rejects a symlinked %s before authorized_keys or a target is changed',
     async (targetKind) => {
       const fixture = await installerFixture();
@@ -287,10 +342,16 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
       const installRoot = join(fixture.root, 'opt', 'minori');
       const bin = join(installRoot, 'bin');
       const leaf = join(bin, 'ci-deploy');
+      const policyDirectory = join(fixture.root, 'etc', 'ssh', 'sshd_config.d');
+      const policy = join(policyDirectory, '00-minori-ci-deploy.conf');
       const targetPath = targetKind === 'intermediate opt'
         ? join(fixture.root, 'opt')
         : targetKind === 'intermediate root'
           ? join(fixture.root, 'root')
+          : targetKind === 'sshd policy directory'
+            ? policyDirectory
+            : targetKind === 'sshd policy'
+              ? policy
           : targetKind === 'install root'
             ? installRoot
             : targetKind === 'bin directory'
@@ -306,6 +367,24 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
       expect(await readFile(join(target, 'sentinel'), 'utf8').catch(() => 'absent')).toBe('absent');
     },
   );
+
+  it('refuses an unexpected existing SSH environment policy before changing installed leaves', async () => {
+    const fixture = await installerFixture();
+    await runInstaller(fixture.root, fixture.publicKey);
+    const installed = join(fixture.root, 'opt', 'minori', 'bin', 'ci-deploy');
+    const original = await readFile(installed, 'utf8');
+    const policy = join(fixture.root, 'etc', 'ssh', 'sshd_config.d', '00-minori-ci-deploy.conf');
+    await writeFile(policy, 'Match User root\n    AcceptEnv *\n');
+    await writeFile(installed, `${original}\n# preserved sentinel\n`);
+
+    const result = await runInstaller(fixture.root, fixture.publicKey);
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 1,
+      stderr: 'minori_ci_install result=unsafe_sshd_environment\n',
+    }));
+    await expect(readFile(installed, 'utf8')).resolves.toBe(`${original}\n# preserved sentinel\n`);
+  });
 
   it.each(['/', '/opt/minori', '/root'])(
     'rejects broad or production test root %s before installation',

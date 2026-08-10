@@ -129,7 +129,11 @@ describe('Team Agent release packaging contract', () => {
     const installer = await text('deploy/vultr/install-ci-deploy.sh');
     const entrypoint = await text('deploy/vultr/ci-deploy');
 
-    expect(installer).toContain('restrict,command=\"/opt/minori/bin/ci-deploy\"');
+    expect(installer).toContain('forced_command="${bin_dir}/ci-deploy"');
+    expect(installer).toContain('forced_prefix="restrict,command=\\\"${forced_command}\\\""');
+    expect(installer).toContain("permituserenvironment\" { print $2 }' <<< \"$effective_before\")\" != no");
+    expect(installer).toContain("\"${accepted_environment[*]}\" != 'LANG LC_*'");
+    expect(installer).toContain('/usr/bin/systemctl reload ssh.service');
     expect(installer).toContain('ambiguous_deployment_key');
     expect(installer).toContain('cp -- "$authorized_keys" "$temporary_keys"');
     expect(installer).toContain('stat -c \'%u %g %a\'');
