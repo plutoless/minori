@@ -230,7 +230,7 @@ export class PostgresScheduleStore {
             : changes.scheduledContext ?? current.scheduledContext,
           nextDueAt: changes.nextDueAt ?? current.nextDueAt,
         };
-        if (!next.instruction || !next.nextDueAt) throw new Error('schedule_body_purged');
+        if (!next.instruction) throw new Error('schedule_body_purged');
         const version = current.version + 1;
         const onceAt = next.schedule.kind === 'once' ? next.schedule.at : null;
         const cronExpression = next.schedule.kind === 'cron' ? next.schedule.expression : null;
@@ -244,7 +244,7 @@ export class PostgresScheduleStore {
             result_chat_type = ${next.resultTarget.chatType},
             context_chat_id = ${next.scheduledContext?.chatId ?? null},
             context_display_name = ${next.scheduledContext?.displayName ?? null},
-            next_due_at = ${next.nextDueAt}, updated_at = now()
+            next_due_at = ${next.nextDueAt ?? null}, updated_at = now()
           where id = ${id}
         `);
         await tx.execute(sql`
@@ -316,10 +316,25 @@ export class PostgresScheduleStore {
       `);
       const processing = active.rows.some((row) => (row as { status?: string }).status === 'processing');
       const nameReserved = target !== 'deleted' || processing;
+      const resumingQueuedOnce = target === 'active'
+        && current.state === 'paused'
+        && current.schedule.kind === 'once';
+      let cancelledOnceRunId: string | undefined;
+      if (resumingQueuedOnce) {
+        const cancelled = await tx.execute(sql`
+          select id from scheduled_runs where schedule_id = ${id} and status = 'cancelled'
+          order by scheduled_for desc limit 1 for update
+        `);
+        cancelledOnceRunId = (cancelled.rows[0] as { id: string } | undefined)?.id;
+        if (!cancelledOnceRunId) return { status: 'invalid_state' as const, task: current };
+      }
       await tx.execute(sql`
-        update scheduled_tasks set state = ${target}, current_version = ${version},
+        update scheduled_tasks set state = ${resumingQueuedOnce ? 'in_flight' : target},
+          current_version = ${version},
           name_reserved = ${nameReserved},
-          next_due_at = ${target === 'active' ? nextDueAt ?? current.nextDueAt ?? null : null},
+          next_due_at = ${target === 'active' && !resumingQueuedOnce
+            ? nextDueAt ?? current.nextDueAt ?? null
+            : null},
           deleted_at = ${target === 'deleted' ? new Date() : null}, updated_at = now()
         where id = ${id}
       `);
@@ -346,6 +361,19 @@ export class PostgresScheduleStore {
           ${current.scheduledContext?.displayName ?? null}
         )
       `);
+      if (cancelledOnceRunId) {
+        await tx.execute(sql`
+          update scheduled_runs set status = 'queued', task_version = ${version},
+            instruction = ${current.instruction},
+            result_chat_id = ${current.resultTarget.chatId},
+            result_display_name = ${current.resultTarget.displayName},
+            result_chat_type = ${current.resultTarget.chatType},
+            context_chat_id = ${current.scheduledContext?.chatId ?? null},
+            context_display_name = ${current.scheduledContext?.displayName ?? null},
+            claim_attempt = 0, leased_until = null, updated_at = now()
+          where id = ${cancelledOnceRunId}
+        `);
+      }
       const task = await readTask(tx, id);
       if (!task) throw new Error('schedule_not_updated');
       return { status: 'updated' as const, task };

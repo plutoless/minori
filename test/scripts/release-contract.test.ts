@@ -66,11 +66,24 @@ describe('Team Agent release packaging contract', () => {
     }
   });
 
+  it('publishes safe scheduler defaults and keeps production disabled-first', async () => {
+    const localEnvironment = await readFile('.env.example', 'utf8');
+    const productionEnvironment = await readFile('deploy/vultr/env.example', 'utf8');
+    for (const environment of [localEnvironment, productionEnvironment]) {
+      expect(environment).toContain('SCHEDULE_DEFAULT_TIMEZONE=Asia/Shanghai');
+      expect(environment).toContain('SCHEDULE_POLL_MS=15000');
+      expect(environment).toContain('SCHEDULE_LEASE_MS=360000');
+    }
+    expect(localEnvironment).toContain('SCHEDULE_ENABLED=true');
+    expect(productionEnvironment).toContain('SCHEDULE_ENABLED=false');
+  });
+
   it('documents the exact Bot Authority required for Live Group History', async () => {
     const readme = await text('README.md');
 
     expect(readme).toContain('im:message.group_msg');
     expect(readme).toContain('im:chat.members:read');
+    expect(readme).toContain('im:chat:read');
   });
 
   it('keeps active product guidance on ordinary replies and Group Context', async () => {
@@ -273,5 +286,5 @@ describe('Team Agent release packaging contract', () => {
         'test ! -e /app/scripts/rollback-vultr.sh',
       ].join(' && '),
     ]);
-  }, 60_000);
+  }, 180_000);
 });

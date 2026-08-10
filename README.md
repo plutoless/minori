@@ -13,13 +13,15 @@ Minori is an open-ended Team Agent for Feishu conversations where the Minori Fei
 
 1. Enable the bot and configure its Feishu App availability for the people and conversations that should be able to invoke Minori.
 2. Enable long connection event delivery and subscribe to `im.message.receive_v1`.
-3. Grant the existing message-read/reply permissions and `im:message.reactions:write_only` for the Processing Reaction. For Live Group History and real member names, also grant exactly `im:message.group_msg` and `im:chat.members:read`, then publish an app version containing both grants. Do not add contact, media, chat-management, or user-impersonation authority.
+3. Grant the existing message-read/reply permissions and `im:message.reactions:write_only` for the Processing Reaction. For Live Group History and real member names, also grant exactly `im:message.group_msg` and `im:chat.members:read`. Scheduled Task group-target resolution additionally requires `im:chat:read`. Publish an app version containing these grants. Do not add contact, media, chat-management, or user-impersonation authority.
 4. Add the bot to the intended groups. Feishu App availability and the events Feishu delivers to Minori are the sole admission boundary; Minori has no second chat or membership allowlist.
 5. Record the app ID, app secret, and bot open ID. The bot open ID is required for mention and direct-reply activation checks.
 
 Minori sends ordinary private and group replies; Feishu topic-mode groups are unsupported. Every Feishu-delivered private message can invoke Minori. In an ordinary-message group, only a direct mention or a direct reply to Minori invokes it. Other group messages are context and never trigger. All invocations in one group share the group `chat_id` as their Group Context and serialize, while different groups and private chats retain the global four-conversation concurrency. External collaborators may invoke Minori when Feishu delivers their messages under the app's availability settings.
 
 Minori can also load one configured Feishu document as Team Context for every run. Team Context contains durable team terminology, decisions, preferences, and working defaults; an explicit Current Invocation may override those defaults for its run. Configure it with `TEAM_CONTEXT_DOCUMENT_TOKEN`, `TEAM_CONTEXT_TOKEN_BUDGET=8000`, and `TEAM_CONTEXT_STALE_MAX_MS=86400000`. A temporary read failure may use the last successfully loaded complete revision for at most 24 hours. Missing permission, a missing document, an expired snapshot, or an over-budget revision degrades Team Context without stopping ordinary message processing. Member-triggered runs may make one exact, audited, conflict-aware update to this configured document; scheduled runs treat it as read-only.
+
+Any delivered member, including an external collaborator, may naturally create and manage the team-global Scheduled Task registry. v1 accepts one future timestamp or one basic five-field cron expression in an IANA timezone (default `Asia/Shanghai`); it does not infer holidays, business days, relative events, conditions, or workflow graphs. Result Target controls only where the ordinary top-level result is sent. Group history is read only when the member explicitly binds a Scheduled Context, and its cutoff is the planned occurrence time. Runs do not add Typing, do not reply in a thread, never overlap per task, fold missed occurrences to the latest one, and are never automatically retried after claim. Configure `SCHEDULE_DEFAULT_TIMEZONE`, `SCHEDULE_ENABLED`, `SCHEDULE_POLL_MS`, and `SCHEDULE_LEASE_MS`; production is released disabled first.
 
 When a group invocation begins, Minori transiently reads an initial Live Group History window of at most 20 ordinary messages at or before that invocation's cutoff. It labels supported text and rich-text messages with real display names resolved from the current group's member list, represents unsupported content with typed omission markers such as `[未读取：image 消息]`, and may page older messages through the run-scoped `readEarlierGroupHistory` tool. That tool cannot select another group or a later cutoff.
 
@@ -50,6 +52,7 @@ Required environment values:
 - `AI_MODEL` (the release example uses `5.6-terra`)
 - optional `OPENAI_BASE_URL`; it must support the OpenAI Responses API and structured tool calls
 - `AGENT_MAX_STEPS` (default `40`) and `AGENT_TIMEOUT_MS` (default `300000`, or 300 seconds)
+- `SCHEDULE_DEFAULT_TIMEZONE` (default `Asia/Shanghai`), `SCHEDULE_ENABLED`, `SCHEDULE_POLL_MS` (default `15000`), and `SCHEDULE_LEASE_MS` (default `360000`, greater than Agent timeout)
 - `LARKSUITE_CLI_CONFIG_DIR` and `LARKSUITE_CLI_DATA_DIR`
 
 OpenAI requests set `store: false`. Minori never falls back to Chat Completions when a custom base URL fails the Responses/tool-call probe.
@@ -111,7 +114,7 @@ That transition acceptance is complete. The installed command is now bound to th
 
 ## Real acceptance
 
-After both Live Group History permissions are granted and published, verify through sanitized probes that history loading and group-member name resolution succeed in an ordinary-message test group containing Minori. If either grant is pending approval or publication, keep the current production image healthy and stop before Group Context acceptance.
+After the Live Group History and `im:chat:read` permissions are granted and published, verify through sanitized probes that history loading, group-member name resolution, and unique exact group-target resolution succeed. If any grant is pending approval or publication, keep the current production image healthy and stop before Group Context or scheduler acceptance.
 
 Against one exact commit and image:
 
@@ -124,6 +127,7 @@ Against one exact commit and image:
 7. Verify `group_history_unavailable` locally with a controlled permission/API double; do not revoke a production permission during acceptance.
 8. Restart the service and repeat one private and one group invocation. Verify readiness, persisted OAuth, Group Context, and ordinary non-topic replies remain healthy.
 9. Re-run one real knowledge read and source link, then disposable create, append, and exact patch operations. Preserve the Write Replay Boundary evidence, and manually remove the disposable document in Feishu because Minori has no delete tool.
+10. Enable the scheduler only after disabled preflight. Create one private one-time task and one uniquely targeted group recurrence; verify top-level delivery, no Typing, no topic reply, current Team Context, optional Scheduled Context cutoff, one latest-only catch-up after restart, and no automatic retry after a controlled terminal failure.
 
 Append one object per check to the gitignored `acceptance.local.jsonl`. Records may contain only the check name, exact full commit and image, trigger/reply IDs for invoked messages, cutoff timestamp, history status/count/page count, readiness category, timestamp, and pass/fail result. Never record group-history bodies, member names, Open IDs, prompts, provider output, OAuth data, environment values, credentials, or document contents.
 
@@ -145,5 +149,6 @@ Troubleshooting:
 - `lark`: rerun `npm run lark:auth` with the persistent credential mount and verify the Dedicated Knowledge User still has access.
 - `feishu`: verify app credentials, bot open ID, long connection, event subscription, bot availability, and app permissions.
 - `worker`: inspect redacted logs for stable error codes; do not copy raw secrets into tickets.
+- `scheduler`: verify the kill switch, schedule migrations, dispatcher status, and lease greater than the Agent timeout; scheduler degradation must not stop ordinary messages.
 
 For credential rotation, update `/opt/minori/minori.env` with mode `0600`, reauthenticate `/opt/minori/lark` when rotating the CLI app or user grant, then create a later approved GitHub Release Intent. Revoke the old credential only after readiness and the real group/private acceptance checks pass.

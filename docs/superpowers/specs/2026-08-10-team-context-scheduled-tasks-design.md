@@ -1,5 +1,7 @@
 # Team Context and Scheduled Tasks Design
 
+**Implementation status (2026-08-10):** Team Context and the disabled-first Scheduled Tasks runtime are implemented on the local candidate branch. Production enablement and live Scheduled Task acceptance remain separate protected release actions.
+
 **Date:** 2026-08-10  
 **Status:** Approved
 

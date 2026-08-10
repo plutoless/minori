@@ -535,7 +535,9 @@ export function createKnowledgeTools(
         execute: async (input) => {
           const task = await schedules.store.get(input.taskId);
           if (!task) throw new Error('schedule_not_found');
-          const nextDueAt = schedules.calendar.next(task.schedule, schedules.now());
+          const nextDueAt = task.schedule.kind === 'once'
+            ? task.schedule.at
+            : schedules.calendar.next(task.schedule, schedules.now());
           if (!nextDueAt) throw new Error('schedule_next_occurrence_unavailable');
           return writeAudit.run({
             toolName: 'resumeSchedule', targetIdentifiers: { taskId: input.taskId },

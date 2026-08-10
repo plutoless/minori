@@ -111,4 +111,26 @@ describe('PostgresScheduledRunStore', () => {
     await expect(runs.cancelQueuedForTask(task.id)).resolves.toBe(false);
     expect(await runs.get(due.run.id)).toMatchObject({ status: 'processing' });
   });
+
+  it('rebinds the same never-started one-time run after pause, edit, and resume', async () => {
+    const task = await createTask('once');
+    const due = await runs.createDue({
+      scheduleId: task.id, expectedDueAt: task.nextDueAt!, scheduledFor: task.nextDueAt!,
+    });
+    if (due.status !== 'created') throw new Error('run_not_created');
+    await schedules.pause(task.id, 1, 'ou_editor');
+    await schedules.update(task.id, 2, 'ou_editor', { instruction: 'Updated frozen instruction' });
+    const resumed = await schedules.resume(
+      task.id, 3, 'ou_editor', new Date('2026-08-11T01:00:00Z'),
+    );
+    expect(resumed).toMatchObject({ status: 'updated', task: { state: 'in_flight', version: 4 } });
+    expect(await runs.get(due.run.id)).toMatchObject({
+      id: due.run.id, status: 'queued', taskVersion: 4,
+      instruction: 'Updated frozen instruction', scheduledFor: task.nextDueAt,
+    });
+    const rows = await database.pool.query(
+      'select id from scheduled_runs where schedule_id = $1', [task.id],
+    );
+    expect(rows.rows).toHaveLength(1);
+  });
 });
