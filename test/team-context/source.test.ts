@@ -256,4 +256,47 @@ describe('DefaultTeamContextSource', () => {
     })).rejects.toMatchObject({ code: 'team_context_over_budget' });
     expect(patchDocument).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      name: 'same bullet under a different heading',
+      markdown: '# Team\n## A\n- Same\n## B\n- Same\n',
+      pattern: '## B\n- Same',
+      replacement: '## B',
+    },
+    {
+      name: 'nested list changed into a top-level list',
+      markdown: '# Team\n- Parent\n  - Child\n',
+      pattern: '  - Child',
+      replacement: '- Child',
+    },
+  ])('rejects mechanical cleanup when $name changes Markdown meaning', async ({
+    markdown, pattern, replacement,
+  }) => {
+    const { source, patchDocument } = fixture({ fetched: document({ markdown }) });
+
+    await expect(source.update({
+      expectedRevision: 7,
+      pattern,
+      replacement,
+      reason: 'mechanical_cleanup',
+      semanticChangeApproved: false,
+    })).rejects.toMatchObject({ code: 'team_context_semantic_approval_required' });
+    expect(patchDocument).not.toHaveBeenCalled();
+  });
+
+  it('allows removing an exact duplicate in the same Markdown structure', async () => {
+    const { source, patchDocument } = fixture({
+      fetched: document({ markdown: '# Team\n## A\n- Same\n- Same\n' }),
+    });
+
+    await expect(source.update({
+      expectedRevision: 7,
+      pattern: '- Same\n- Same',
+      replacement: '- Same',
+      reason: 'mechanical_cleanup',
+      semanticChangeApproved: false,
+    })).resolves.toMatchObject({ revisionId: 8 });
+    expect(patchDocument).toHaveBeenCalledOnce();
+  });
 });

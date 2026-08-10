@@ -94,12 +94,28 @@ function replaceExactlyOnce(content: string, pattern: string, replacement: strin
   return content.slice(0, first) + replacement + content.slice(first + pattern.length);
 }
 
-function mechanicalSignature(content: string): string {
-  return [...new Set(normalizeTeamContext(content)
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean))]
-    .join('\n');
+function mechanicalSequence(content: string): string[] {
+  const headings: string[] = [];
+  const entries: string[] = [];
+  for (const rawLine of content.replace(/\r\n?/gu, '\n').split('\n')) {
+    const line = rawLine.replace(/[ \t]+$/gu, '');
+    if (line.trim().length === 0) continue;
+    const heading = /^(#{1,6})[ \t]+(.+)$/u.exec(line);
+    if (heading) {
+      const level = heading[1]!.length;
+      headings.length = level - 1;
+      headings[level - 1] = heading[2]!.trim();
+      entries.push(`heading:${level}:${headings.slice(0, level).join('\u0000')}`);
+      continue;
+    }
+    entries.push(`content:${headings.join('\u0000')}:${line}`);
+  }
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    if (seen.has(entry)) return false;
+    seen.add(entry);
+    return true;
+  });
 }
 
 function isSnapshotStaleError(error: unknown): boolean {
@@ -230,7 +246,8 @@ export class DefaultTeamContextSource implements TeamContextSource {
       input.replacement,
     ));
     if (input.reason === 'mechanical_cleanup') {
-      if (mechanicalSignature(current.markdown) !== mechanicalSignature(proposed)) {
+      if (JSON.stringify(mechanicalSequence(current.markdown))
+        !== JSON.stringify(mechanicalSequence(proposed))) {
         throw new TeamContextUpdateError('team_context_semantic_approval_required');
       }
     } else if (!input.semanticChangeApproved) {
