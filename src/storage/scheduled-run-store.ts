@@ -98,7 +98,8 @@ export class PostgresScheduledRunStore {
         await tx.execute(sql`
           update scheduled_tasks set latest_missed_at = greatest(
             coalesce(latest_missed_at, ${input.scheduledFor}), ${input.scheduledFor}
-          ), updated_at = now() where id = ${input.scheduleId}
+          ), next_due_at = ${input.nextDueAt ?? task.next_due_at},
+          updated_at = now() where id = ${input.scheduleId}
         `);
         return { status: 'active_run' as const };
       }
@@ -123,6 +124,7 @@ export class PostgresScheduledRunStore {
         update scheduled_tasks set
           state = ${task.schedule_kind === 'once' ? 'in_flight' : 'active'},
           next_due_at = ${task.schedule_kind === 'once' ? null : input.nextDueAt ?? null},
+          latest_missed_at = null,
           latest_run_status = 'queued', updated_at = now()
         where id = ${input.scheduleId}
       `);

@@ -141,6 +141,15 @@ export class PostgresScheduleStore {
     return (result.rows as TaskRow[]).map(mapTask);
   }
 
+  async listDispatchable(now: Date, limit = 50): Promise<ScheduledTask[]> {
+    const result = await this.db.execute(sql`${TASK_SELECT}
+      where task.state = 'active'
+        and (task.next_due_at <= ${now} or task.latest_missed_at is not null)
+      order by coalesce(task.latest_missed_at, task.next_due_at), task.id
+      limit ${limit}`);
+    return (result.rows as TaskRow[]).map(mapTask);
+  }
+
   async create(input: CreateScheduleInput): Promise<
     { status: 'created'; task: ScheduledTask } | { status: 'name_conflict'; task: ScheduledTask }
   > {
