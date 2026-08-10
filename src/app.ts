@@ -17,6 +17,7 @@ import { createScheduledTaskWorker, type ScheduledTaskWorker } from './schedule/
 import { DefaultTeamContextSource, type TeamContextSource } from './team-context/source.js';
 import { MessageWorker } from './worker/message-worker.js';
 import { createAdmissionCoordinator, type AdmissionCoordinator } from './worker/admission-coordinator.js';
+import { AGENT_ADMISSION_CONCURRENCY } from './worker/admission-policy.js';
 
 export interface MinoriApp {
   start(): Promise<void>;
@@ -193,7 +194,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
     let nextScheduledWorker: ScheduledTaskWorker | undefined;
     let nextDispatcher: ScheduleDispatcher | undefined;
     let nextCoordinator: AdmissionCoordinator | undefined;
-    if (storage.scheduleStore && storage.scheduledRunStore) {
+    if (config.scheduleEnabled && storage.scheduleStore && storage.scheduledRunStore) {
       nextScheduledWorker = createScheduledTaskWorker({
         runs: storage.scheduledRunStore,
         schedules: storage.scheduleStore,
@@ -218,13 +219,13 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
         store: storage.scheduleStore,
         runs: storage.scheduledRunStore,
         calendar,
-        enabled: config.scheduleEnabled,
+        enabled: true,
         pollMs: config.schedulePollMs,
       });
       nextCoordinator = createAdmissionCoordinator({
         message: nextWorker,
         scheduled: nextScheduledWorker,
-        concurrency: 4,
+        concurrency: AGENT_ADMISSION_CONCURRENCY,
         pollMs: 1_000,
         onError: (errorCode) => logger.warn({ errorCode }, 'admission iteration failed'),
       });
@@ -247,7 +248,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
     }, gateway);
 
     await nextWorker.start(nextCoordinator ? false : true);
-    if (nextScheduledWorker) await nextScheduledWorker.recover(new Date());
+    nextScheduledWorker?.start(Math.min(config.scheduleLeaseMs / 2, 30_000));
     await nextCoordinator?.start();
     nextDispatcher?.start();
     try {
@@ -256,6 +257,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       workerStatus = 'degraded';
       nextDispatcher?.stop();
       await nextCoordinator?.stop();
+      await nextScheduledWorker?.stop();
       await nextWorker.stop();
       throw error;
     }
@@ -263,6 +265,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       nextConnection.stop();
       nextDispatcher?.stop();
       await nextCoordinator?.stop();
+      await nextScheduledWorker?.stop();
       await nextWorker.stop();
       return;
     }
@@ -335,6 +338,9 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       if (worker) {
         await worker.stop();
         worker = undefined;
+      }
+      if (scheduledWorker) {
+        await scheduledWorker.stop();
       }
       scheduledWorker = undefined;
       workerStatus = 'degraded';

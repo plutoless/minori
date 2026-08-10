@@ -30,7 +30,7 @@ export type ScheduleChanges = {
 };
 
 export type ScheduleMutationResult =
-  | { status: 'updated'; task: ScheduledTask }
+  | { status: 'updated'; task: ScheduledTask; queuedOldVersion?: { taskVersion: number } }
   | { status: 'not_found' }
   | { status: 'version_conflict'; task: ScheduledTask }
   | { status: 'name_conflict'; task: ScheduledTask }
@@ -141,6 +141,11 @@ export class PostgresScheduleStore {
     return (result.rows as TaskRow[]).map(mapTask);
   }
 
+  async databaseNow(): Promise<Date> {
+    const result = await this.db.execute(sql`select clock_timestamp() as now`);
+    return new Date((result.rows[0] as { now: Date | string }).now);
+  }
+
   async listDispatchable(now: Date, limit = 50): Promise<ScheduledTask[]> {
     const result = await this.db.execute(sql`${TASK_SELECT}
       where task.state = 'active'
@@ -220,6 +225,11 @@ export class PostgresScheduleStore {
         if (current.state === 'completed' || current.state === 'deleted') {
           return { status: 'invalid_state' as const, task: current };
         }
+        const queued = await tx.execute(sql`
+          select task_version from scheduled_runs where schedule_id = ${id} and status = 'queued'
+          order by scheduled_for limit 1
+        `);
+        const queuedTaskVersion = (queued.rows[0] as { task_version: number } | undefined)?.task_version;
         const next = {
           name: changes.name ?? current.name,
           instruction: changes.instruction ?? current.instruction,
@@ -263,7 +273,13 @@ export class PostgresScheduleStore {
         `);
         const task = await readTask(tx, id);
         if (!task) throw new Error('schedule_not_updated');
-        return { status: 'updated' as const, task };
+        return {
+          status: 'updated' as const,
+          task,
+          ...(queuedTaskVersion === undefined
+            ? {}
+            : { queuedOldVersion: { taskVersion: queuedTaskVersion } }),
+        };
       });
     } catch (error) {
       if (databaseErrorCode(error) !== '23505') throw error;
@@ -326,13 +342,20 @@ export class PostgresScheduleStore {
           order by scheduled_for desc limit 1 for update
         `);
         cancelledOnceRunId = (cancelled.rows[0] as { id: string } | undefined)?.id;
-        if (!cancelledOnceRunId) return { status: 'invalid_state' as const, task: current };
+        if (!cancelledOnceRunId) {
+          const databaseTime = await tx.execute(sql`select clock_timestamp() as now`);
+          const now = new Date((databaseTime.rows[0] as { now: Date | string }).now);
+          if (!nextDueAt || nextDueAt <= now) {
+            return { status: 'invalid_state' as const, task: current };
+          }
+        }
       }
+      const rebindQueuedOnce = Boolean(cancelledOnceRunId);
       await tx.execute(sql`
-        update scheduled_tasks set state = ${resumingQueuedOnce ? 'in_flight' : target},
+        update scheduled_tasks set state = ${rebindQueuedOnce ? 'in_flight' : target},
           current_version = ${version},
           name_reserved = ${nameReserved},
-          next_due_at = ${target === 'active' && !resumingQueuedOnce
+          next_due_at = ${target === 'active' && !rebindQueuedOnce
             ? nextDueAt ?? current.nextDueAt ?? null
             : null},
           deleted_at = ${target === 'deleted' ? new Date() : null}, updated_at = now()
@@ -384,7 +407,10 @@ export class PostgresScheduleStore {
     const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1_000);
     return this.db.transaction(async (tx) => {
       const rows = await tx.execute(sql`
-        update scheduled_tasks set body_purged_at = ${now}, updated_at = now()
+        update scheduled_tasks set
+          name = concat('purged-', id::text),
+          origin_display_name = '', result_display_name = '', context_display_name = null,
+          body_purged_at = ${now}, updated_at = now()
         where state in ('completed', 'deleted') and body_purged_at is null
           and coalesce(completed_at, deleted_at) < ${cutoff}
         returning id
@@ -392,10 +418,19 @@ export class PostgresScheduleStore {
       const ids = rows.rows.map((row) => String((row as { id: string }).id));
       for (const id of ids) {
         await tx.execute(sql`
-          update scheduled_task_revisions set instruction = null, body_purged_at = ${now}
+          update scheduled_task_revisions set
+            instruction = null, result_display_name = '', context_display_name = null,
+            body_purged_at = ${now}
           where schedule_id = ${id}
         `);
       }
+      await tx.execute(sql`
+        update scheduled_runs set instruction = '', prepared_result_text = null,
+          result_display_name = '', context_display_name = null, updated_at = now()
+        where status in ('completed', 'failed', 'delivery_uncertain', 'cancelled')
+          and updated_at < ${cutoff}
+          and (instruction <> '' or prepared_result_text is not null)
+      `);
       return ids.length;
     });
   }

@@ -3,6 +3,10 @@ import { randomUUID } from 'node:crypto';
 
 import type { ScheduledRun, ScheduledRunStatus } from '../schedule/types.js';
 import type { Database } from './database.js';
+import {
+  AGENT_ADMISSION_CONCURRENCY,
+  AGENT_ADMISSION_LOCK_KEY,
+} from '../worker/admission-policy.js';
 
 type RunRow = {
   id: string;
@@ -138,11 +142,22 @@ export class PostgresScheduledRunStore {
     });
   }
 
-  async claim(id: string, now: Date, leaseMs: number): Promise<ScheduledRun | undefined> {
+  async claim(id: string, _now: Date, leaseMs: number): Promise<ScheduledRun | undefined> {
     return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${AGENT_ADMISSION_LOCK_KEY}))`);
+      const candidate = await tx.execute(sql`
+        select schedule_id from scheduled_runs where id = ${id} and status = 'queued'
+      `);
+      const scheduleId = (candidate.rows[0] as { schedule_id: string } | undefined)?.schedule_id;
+      if (!scheduleId) return undefined;
+      const taskResult = await tx.execute(sql`
+        select state from scheduled_tasks where id = ${scheduleId} for update
+      `);
+      const taskState = (taskResult.rows[0] as { state: string } | undefined)?.state;
+      if (taskState !== 'active' && taskState !== 'in_flight') return undefined;
       const result = await tx.execute(sql`
         update scheduled_runs set status = 'processing', claim_attempt = claim_attempt + 1,
-          leased_until = ${new Date(now.getTime() + leaseMs)}, updated_at = now()
+          leased_until = clock_timestamp() + (${leaseMs} * interval '1 millisecond'), updated_at = now()
         where id = ${id} and status = 'queued'
         returning *
       `);
@@ -156,23 +171,37 @@ export class PostgresScheduledRunStore {
     });
   }
 
-  async claimNext(now: Date, leaseMs: number): Promise<ScheduledRun | undefined> {
+  async claimNext(_now: Date, leaseMs: number): Promise<ScheduledRun | undefined> {
     return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${AGENT_ADMISSION_LOCK_KEY}))`);
       const selected = await tx.execute(sql`
-        select run.id from scheduled_runs run where run.status = 'queued'
+        select run.id, run.schedule_id from scheduled_runs run where run.status = 'queued'
           and not exists (select 1 from scheduled_runs active where active.status = 'processing')
+          and (
+            (select count(*) from processed_events where status = 'processing')
+            + (select count(*) from scheduled_runs where status = 'processing')
+          ) < ${AGENT_ADMISSION_CONCURRENCY}
+          and not exists (
+            select 1 from processed_events waiting
+            where waiting.status = 'queued' and waiting.next_attempt_at <= clock_timestamp()
+          )
           and not exists (
             select 1 from processed_events event
             where event.status = 'processing' and event.conversation_key = run.result_chat_id
           )
-        order by run.scheduled_for, run.created_at for update of run skip locked limit 1
+        order by run.scheduled_for, run.created_at limit 1
       `);
-      const id = (selected.rows[0] as { id: string } | undefined)?.id;
-      if (!id) return undefined;
+      const candidate = selected.rows[0] as { id: string; schedule_id: string } | undefined;
+      if (!candidate) return undefined;
+      const taskResult = await tx.execute(sql`
+        select state from scheduled_tasks where id = ${candidate.schedule_id} for update
+      `);
+      const taskState = (taskResult.rows[0] as { state: string } | undefined)?.state;
+      if (taskState !== 'active' && taskState !== 'in_flight') return undefined;
       const result = await tx.execute(sql`
         update scheduled_runs set status = 'processing', claim_attempt = claim_attempt + 1,
-          leased_until = ${new Date(now.getTime() + leaseMs)}, updated_at = now()
-        where id = ${id} and status = 'queued' returning *
+          leased_until = clock_timestamp() + (${leaseMs} * interval '1 millisecond'), updated_at = now()
+        where id = ${candidate.id} and status = 'queued' returning *
       `);
       const row = result.rows[0] as RunRow | undefined;
       if (!row) return undefined;
@@ -196,6 +225,18 @@ export class PostgresScheduledRunStore {
       ?.delivery_idempotency_key;
     if (!key) throw new Error('scheduled_delivery_already_attempted');
     return key;
+  }
+
+  async extendLease(id: string, claimAttempt: number, leaseMs: number): Promise<boolean> {
+    const result = await this.db.execute(sql`
+      update scheduled_runs set
+        leased_until = clock_timestamp() + (${leaseMs} * interval '1 millisecond'),
+        updated_at = now()
+      where id = ${id} and status = 'processing' and claim_attempt = ${claimAttempt}
+        and leased_until >= clock_timestamp()
+      returning id
+    `);
+    return result.rows.length === 1;
   }
 
   async markDelivered(id: string, claimAttempt: number, messageId: string): Promise<void> {
@@ -242,18 +283,22 @@ export class PostgresScheduledRunStore {
     outcomeCategory?: string,
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
-      const result = await tx.execute(sql`
-        update scheduled_runs set status = ${outcome}, outcome_category = ${outcomeCategory ?? null},
-          leased_until = null, updated_at = now()
-        where id = ${id} and status = 'processing' and claim_attempt = ${claimAttempt}
-        returning schedule_id
+      const candidate = await tx.execute(sql`
+        select schedule_id from scheduled_runs where id = ${id}
       `);
-      const row = result.rows[0] as { schedule_id: string } | undefined;
+      const row = candidate.rows[0] as { schedule_id: string } | undefined;
       if (!row) throw new Error('scheduled_run_claim_stale');
       const taskResult = await tx.execute(sql`
         select schedule_kind, state from scheduled_tasks where id = ${row.schedule_id} for update
       `);
       const task = taskResult.rows[0] as { schedule_kind: 'once' | 'cron'; state: string };
+      const result = await tx.execute(sql`
+        update scheduled_runs set status = ${outcome}, outcome_category = ${outcomeCategory ?? null},
+          leased_until = null, updated_at = now()
+        where id = ${id} and status = 'processing' and claim_attempt = ${claimAttempt}
+        returning id
+      `);
+      if (result.rows.length !== 1) throw new Error('scheduled_run_claim_stale');
       const terminalOneTime = task.schedule_kind === 'once' && task.state !== 'deleted';
       await tx.execute(sql`
         update scheduled_tasks set
@@ -266,15 +311,23 @@ export class PostgresScheduledRunStore {
     });
   }
 
-  async recoverExpired(now: Date): Promise<number> {
-    return this.db.transaction(async (tx) => {
-      const result = await tx.execute(sql`
-        update scheduled_runs set status = 'failed', leased_until = null,
-          outcome_category = 'scheduled_run_claim_expired', updated_at = now()
-        where status = 'processing' and leased_until < ${now}
-        returning schedule_id
-      `);
-      for (const row of result.rows as Array<{ schedule_id: string }>) {
+  async recoverExpired(_now: Date): Promise<number> {
+    const candidates = await this.db.execute(sql`
+      select id, schedule_id from scheduled_runs
+      where status = 'processing' and leased_until < clock_timestamp()
+      order by leased_until, id
+    `);
+    let recovered = 0;
+    for (const row of candidates.rows as Array<{ id: string; schedule_id: string }>) {
+      await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select id from scheduled_tasks where id = ${row.schedule_id} for update`);
+        const result = await tx.execute(sql`
+          update scheduled_runs set status = 'failed', leased_until = null,
+            outcome_category = 'scheduled_run_claim_expired', updated_at = now()
+          where id = ${row.id} and status = 'processing' and leased_until < clock_timestamp()
+          returning id
+        `);
+        if (result.rows.length !== 1) return;
         await tx.execute(sql`
           update scheduled_tasks set
             state = case when schedule_kind = 'once' and state <> 'deleted'
@@ -282,12 +335,13 @@ export class PostgresScheduledRunStore {
             name_reserved = case when schedule_kind = 'once' or state = 'deleted'
               then false else name_reserved end,
             completed_at = case when schedule_kind = 'once' and state <> 'deleted'
-              then ${now} else completed_at end,
+              then clock_timestamp() else completed_at end,
             latest_run_status = 'failed', updated_at = now()
           where id = ${row.schedule_id}
         `);
-      }
-      return result.rows.length;
-    });
+        recovered += 1;
+      });
+    }
+    return recovered;
   }
 }

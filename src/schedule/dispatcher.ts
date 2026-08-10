@@ -10,7 +10,7 @@ export interface ScheduleDispatcher {
 }
 
 export type ScheduleDispatcherDependencies = {
-  store: Pick<PostgresScheduleStore, 'listDispatchable'>;
+  store: Pick<PostgresScheduleStore, 'databaseNow' | 'listDispatchable'>;
   runs: Pick<PostgresScheduledRunStore, 'createDue'>;
   calendar: CalendarCalculator;
   enabled: boolean;
@@ -50,9 +50,10 @@ export function createScheduleDispatcher(
   let timer: NodeJS.Timeout | undefined;
   let polling: Promise<unknown> | undefined;
 
-  const poll = async (now: Date) => {
+  const poll = async (_callerNow: Date) => {
     if (!dependencies.enabled) return { created: 0, folded: 0 };
     try {
+      const now = await dependencies.store.databaseNow();
       let created = 0;
       let folded = 0;
       for (const task of await dependencies.store.listDispatchable(now)) {

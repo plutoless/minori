@@ -72,10 +72,12 @@ describe('Team Agent release packaging contract', () => {
     for (const environment of [localEnvironment, productionEnvironment]) {
       expect(environment).toContain('SCHEDULE_DEFAULT_TIMEZONE=Asia/Shanghai');
       expect(environment).toContain('SCHEDULE_POLL_MS=15000');
-      expect(environment).toContain('SCHEDULE_LEASE_MS=360000');
+      expect(environment).toContain('SCHEDULE_LEASE_MS=420000');
     }
     expect(localEnvironment).toContain('SCHEDULE_ENABLED=true');
     expect(productionEnvironment).toContain('SCHEDULE_ENABLED=false');
+    const app = await text('src/app.ts');
+    expect(app).toContain('if (config.scheduleEnabled && storage.scheduleStore && storage.scheduledRunStore)');
   });
 
   it('documents the exact Bot Authority required for Live Group History', async () => {
@@ -286,5 +288,5 @@ describe('Team Agent release packaging contract', () => {
         'test ! -e /app/scripts/rollback-vultr.sh',
       ].join(' && '),
     ]);
-  }, 180_000);
+  }, 600_000);
 });

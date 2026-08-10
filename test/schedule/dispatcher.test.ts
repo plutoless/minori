@@ -15,7 +15,10 @@ const task = {
 
 describe('ScheduleDispatcher', () => {
   it('folds downtime to the latest calendar occurrence and advances from the calendar', async () => {
-    const store = { listDispatchable: vi.fn().mockResolvedValue([task]) };
+    const store = {
+      databaseNow: vi.fn().mockResolvedValue(new Date('2026-08-13T02:00:00Z')),
+      listDispatchable: vi.fn().mockResolvedValue([task]),
+    };
     const runs = { createDue: vi.fn().mockResolvedValue({ status: 'created', run: {} }) };
     const calendar = {
       normalize: vi.fn(),
@@ -24,9 +27,10 @@ describe('ScheduleDispatcher', () => {
     };
     const dispatcher = createScheduleDispatcher({ store, runs, calendar, enabled: true, pollMs: 15_000 });
 
-    await expect(dispatcher.poll(new Date('2026-08-13T02:00:00Z'))).resolves.toEqual({
+    await expect(dispatcher.poll(new Date('2030-01-01T00:00:00Z'))).resolves.toEqual({
       created: 1, folded: 1,
     });
+    expect(store.listDispatchable).toHaveBeenCalledWith(new Date('2026-08-13T02:00:00Z'));
     expect(runs.createDue).toHaveBeenCalledWith({
       scheduleId: 'task_1', expectedDueAt: task.nextDueAt,
       scheduledFor: new Date('2026-08-13T01:00:00Z'),
@@ -36,7 +40,10 @@ describe('ScheduleDispatcher', () => {
   });
 
   it('is disabled without querying and degrades independently after a poll failure', async () => {
-    const store = { listDispatchable: vi.fn().mockRejectedValue(new Error('secret')) };
+    const store = {
+      databaseNow: vi.fn().mockResolvedValue(new Date()),
+      listDispatchable: vi.fn().mockRejectedValue(new Error('secret')),
+    };
     const runs = { createDue: vi.fn() };
     const calendar = { normalize: vi.fn(), latestAtOrBefore: vi.fn(), next: vi.fn() };
     const disabled = createScheduleDispatcher({ store, runs, calendar, enabled: false, pollMs: 15_000 });

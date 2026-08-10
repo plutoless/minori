@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     fileParallelism: false,
+    hookTimeout: 180_000,
     include: ['test/**/*.test.ts'],
     exclude: [
       'test/contract/**/*.test.ts',

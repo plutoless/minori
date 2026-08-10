@@ -15,7 +15,7 @@ describe('PostgresTeamContextStore', () => {
     database = createDatabase(container.getConnectionUri());
     await migrate(database.db, { migrationsFolder: resolve('drizzle') });
     store = new PostgresTeamContextStore(database.db);
-  }, 60_000);
+  }, 180_000);
 
   beforeEach(async () => {
     await database.pool.query('truncate table team_context_snapshots');

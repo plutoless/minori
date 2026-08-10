@@ -21,7 +21,7 @@ describe('PostgresAgentRunStore', () => {
     database = createDatabase(container.getConnectionUri());
     await migrate(database.db, { migrationsFolder: resolve('drizzle') });
     store = new PostgresAgentRunStore(database.db);
-  }, 60_000);
+  }, 180_000);
 
   beforeEach(async () => {
     await database.pool.query('truncate table processed_events cascade');

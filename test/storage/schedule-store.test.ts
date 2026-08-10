@@ -4,18 +4,21 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
 import { PostgresScheduleStore } from '../../src/storage/schedule-store.js';
+import { PostgresScheduledRunStore } from '../../src/storage/scheduled-run-store.js';
 
 describe('PostgresScheduleStore', () => {
   let container: StartedPostgreSqlContainer;
   let database: DatabaseHandle;
   let store: PostgresScheduleStore;
+  let runs: PostgresScheduledRunStore;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:17-alpine').start();
     database = createDatabase(container.getConnectionUri());
     await migrate(database.db, { migrationsFolder: resolve('drizzle') });
     store = new PostgresScheduleStore(database.db);
-  }, 60_000);
+    runs = new PostgresScheduledRunStore(database.db);
+  }, 180_000);
 
   beforeEach(async () => {
     await database.pool.query('truncate scheduled_runs, scheduled_task_revisions, scheduled_tasks cascade');
@@ -89,16 +92,36 @@ describe('PostgresScheduleStore', () => {
   it('purges terminal bodies after 30 days but retains structural audit fields', async () => {
     const created = await store.create(input());
     if (created.status !== 'created') throw new Error('fixture_not_created');
+    const due = await runs.createDue({
+      scheduleId: created.task.id,
+      expectedDueAt: created.task.nextDueAt!,
+      scheduledFor: created.task.nextDueAt!,
+      nextDueAt: new Date('2026-08-12T01:00:00Z'),
+    });
+    if (due.status !== 'created') throw new Error('run_not_created');
+    await runs.claim(due.run.id, new Date('2026-08-11T01:00:00Z'), 60_000);
+    await runs.prepareDelivery(due.run.id, 1, 'Generated private result');
+    await runs.finish(due.run.id, 1, 'completed');
     await store.delete(created.task.id, 1, 'ou_editor');
     await database.pool.query(
       "update scheduled_tasks set deleted_at = '2026-06-01T00:00:00Z' where id = $1",
       [created.task.id],
     );
+    await database.pool.query(
+      "update scheduled_runs set updated_at = '2026-06-01T00:00:00Z' where id = $1",
+      [due.run.id],
+    );
 
     await store.purgeTerminalBodies(new Date('2026-08-10T00:00:00Z'));
 
     const task = await store.get(created.task.id);
-    expect(task).toMatchObject({ id: created.task.id, name: 'Daily brief', state: 'deleted' });
+    expect(task).toMatchObject({
+      id: created.task.id,
+      name: `purged-${created.task.id}`,
+      state: 'deleted',
+      origin: { displayName: '' },
+      resultTarget: { displayName: '' },
+    });
     expect(task?.instruction).toBeUndefined();
     const revision = await database.pool.query(
       'select instruction, body_purged_at from scheduled_task_revisions where schedule_id = $1',
@@ -106,5 +129,27 @@ describe('PostgresScheduleStore', () => {
     );
     expect(revision.rows[0].instruction).toBeNull();
     expect(revision.rows[0].body_purged_at).toBeInstanceOf(Date);
+    const runRow = await database.pool.query(
+      `select instruction, prepared_result_text, result_display_name, context_display_name
+       from scheduled_runs where id = $1`,
+      [due.run.id],
+    );
+    expect(runRow.rows[0]).toEqual({
+      instruction: '', prepared_result_text: null,
+      result_display_name: '', context_display_name: null,
+    });
+  }, 30_000);
+
+  it('resumes a one-time task paused before its first run', async () => {
+    const once = input('One time');
+    const at = new Date('2026-08-20T01:00:00Z');
+    const created = await store.create({
+      ...once, schedule: { kind: 'once', at, timezone: 'Asia/Shanghai' }, nextDueAt: at,
+    });
+    if (created.status !== 'created') throw new Error('fixture_not_created');
+    await store.pause(created.task.id, 1, 'ou_editor');
+    await expect(store.resume(created.task.id, 2, 'ou_editor', at)).resolves.toMatchObject({
+      status: 'updated', task: { state: 'active', nextDueAt: at },
+    });
   });
 });

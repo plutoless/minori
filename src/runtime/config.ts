@@ -23,7 +23,7 @@ const envSchema = z.object({
   SCHEDULE_DEFAULT_TIMEZONE: z.string().min(1).default('Asia/Shanghai'),
   SCHEDULE_ENABLED: z.stringbool().default(true),
   SCHEDULE_POLL_MS: z.coerce.number().int().min(1_000).max(300_000).default(15_000),
-  SCHEDULE_LEASE_MS: z.coerce.number().int().min(30_000).max(900_000).default(360_000),
+  SCHEDULE_LEASE_MS: z.coerce.number().int().min(30_000).max(900_000).default(420_000),
   LARK_CLI_BIN: z.string().default('lark-cli'),
   LARKSUITE_CLI_CONFIG_DIR: z.string().default('/var/lib/minori/lark'),
 });
@@ -37,8 +37,8 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
   } catch {
     throw new Error('schedule_default_timezone_invalid');
   }
-  if (parsed.SCHEDULE_LEASE_MS <= parsed.AGENT_TIMEOUT_MS) {
-    throw new Error('schedule_lease_must_exceed_agent_timeout');
+  if (parsed.SCHEDULE_ENABLED && parsed.SCHEDULE_LEASE_MS < parsed.AGENT_TIMEOUT_MS + 90_000) {
+    throw new Error('schedule_lease_must_cover_agent_and_delivery');
   }
 
   return {

@@ -523,9 +523,7 @@ export async function runKnowledgeAgent(
           actorOpenId: input.trigger.senderOpenId,
           origin: {
             chatId: input.trigger.chatId,
-            displayName: input.trigger.chatType === 'group'
-              ? initialGroupContext?.currentSenderName ?? '当前群聊'
-              : '当前私聊',
+            displayName: input.trigger.chatType === 'group' ? '当前群聊' : '当前私聊',
             chatType: input.trigger.chatType,
           },
         },

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createScheduledTaskWorker } from '../../src/schedule/worker.js';
 
@@ -22,6 +22,7 @@ const task = {
 function fixture() {
   const runs = {
     claimNext: vi.fn().mockResolvedValue(run),
+    extendLease: vi.fn().mockResolvedValue(true),
     prepareDelivery: vi.fn().mockResolvedValue(`s:${run.id}:result`),
     markDelivered: vi.fn().mockResolvedValue(undefined),
     beginFallback: vi.fn().mockResolvedValue(`s:${run.id}:fallback`),
@@ -40,6 +41,7 @@ function fixture() {
 }
 
 describe('ScheduledTaskWorker', () => {
+  afterEach(() => vi.useRealTimers());
   it('executes and sends one ordinary result with durable ordering and no retry', async () => {
     const { worker, runs, agent, messenger } = fixture();
     await expect(worker.processOne(new Date())).resolves.toBe(true);
@@ -71,4 +73,68 @@ describe('ScheduledTaskWorker', () => {
     expect(runs.recoverExpired).toHaveBeenCalledOnce();
     expect(agent.runScheduled).not.toHaveBeenCalled();
   });
+
+  it('periodically recovers claims that expire after startup', async () => {
+    vi.useFakeTimers();
+    const { worker, runs } = fixture();
+    worker.start(1_000);
+    await vi.advanceTimersByTimeAsync(2_100);
+    expect(runs.recoverExpired).toHaveBeenCalledTimes(3);
+    await worker.stop();
+  });
+
+  it('renews the durable lease while the Agent is still running', async () => {
+    vi.useFakeTimers();
+    const { worker, runs, agent } = fixture();
+    let finishAgent!: (value: Awaited<ReturnType<typeof agent.runScheduled>>) => void;
+    agent.runScheduled.mockImplementation(() => new Promise((resolve) => {
+      finishAgent = resolve;
+    }));
+    const processing = worker.processOne(new Date());
+    await vi.advanceTimersByTimeAsync(30_100);
+    expect(runs.extendLease).toHaveBeenCalledWith(run.id, 1, 360_000);
+    finishAgent({ text: 'Done', outcome: 'completed', sources: [], usage: {}, writeAttempts: [] });
+    await processing;
+  });
+
+  it('aborts the Agent and sends nothing after lease ownership is lost', async () => {
+    vi.useFakeTimers();
+    const { worker, runs, agent, messenger } = fixture();
+    runs.extendLease.mockResolvedValue(false);
+    agent.runScheduled.mockImplementation((_run, _dependencies, signal) => new Promise((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    }));
+    const processing = worker.processOne(new Date());
+    await vi.advanceTimersByTimeAsync(30_100);
+    await processing;
+    expect(messenger.sendText).not.toHaveBeenCalled();
+    expect(runs.prepareDelivery).not.toHaveBeenCalled();
+  });
+
+  it('waits for a pending renewal and revalidates ownership before delivery', async () => {
+    vi.useFakeTimers();
+    const { worker, runs, agent, messenger } = fixture();
+    let settleRenewal!: (value: boolean) => void;
+    runs.extendLease
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        settleRenewal = resolve;
+      }))
+      .mockResolvedValue(true);
+    let finishAgent!: (value: Awaited<ReturnType<typeof agent.runScheduled>>) => void;
+    agent.runScheduled.mockImplementation(() => new Promise((resolve) => {
+      finishAgent = resolve;
+    }));
+
+    const processing = worker.processOne(new Date());
+    await vi.advanceTimersByTimeAsync(30_100);
+    finishAgent({ text: 'Done', outcome: 'completed', sources: [], usage: {}, writeAttempts: [] });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(messenger.sendText).not.toHaveBeenCalled();
+    settleRenewal(true);
+    await processing;
+    expect(runs.extendLease).toHaveBeenLastCalledWith(run.id, 1, 900_000);
+    expect(runs.extendLease).toHaveBeenCalledBefore(runs.prepareDelivery);
+    expect(messenger.sendText).toHaveBeenCalledOnce();
+  });
+
 });

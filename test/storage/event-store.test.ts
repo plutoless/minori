@@ -90,8 +90,8 @@ describe('PostgresEventStore', () => {
 
   it('retries after a bounded minimum delay without losing its attempt count', async () => {
     const boundedStore = new PostgresEventStore(database.db, {
-      minRetryDelayMs: 20,
-      maxRetryDelayMs: 1_000,
+      minRetryDelayMs: 2_000,
+      maxRetryDelayMs: 5_000,
     });
     await boundedStore.enqueue(event());
     const first = await boundedStore.claimReady(1, new Date(Date.now() + 60_000));
@@ -99,7 +99,7 @@ describe('PostgresEventStore', () => {
 
     await boundedStore.retry('evt_1', 1, 'model_unavailable', new Date(Date.now() - 1));
     expect(await boundedStore.claimReady(1, new Date(Date.now() + 60_000))).toEqual([]);
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
 
     const second = await boundedStore.claimReady(1, new Date(Date.now() + 60_000));
     expect(second[0]?.attempts).toBe(2);
@@ -161,14 +161,14 @@ describe('PostgresEventStore', () => {
   it('bounds an excessively distant retry time', async () => {
     const boundedStore = new PostgresEventStore(database.db, {
       minRetryDelayMs: 0,
-      maxRetryDelayMs: 50,
+      maxRetryDelayMs: 2_000,
     });
     await boundedStore.enqueue(event());
     await boundedStore.claimReady(1, new Date(Date.now() + 60_000));
 
     await boundedStore.retry('evt_1', 1, 'temporary_failure', new Date(Date.now() + 60_000));
     expect(await boundedStore.claimReady(1, new Date(Date.now() + 60_000))).toEqual([]);
-    await new Promise((resolve) => setTimeout(resolve, 75));
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
 
     expect((await boundedStore.claimReady(1, new Date(Date.now() + 60_000)))[0]?.attempts).toBe(2);
   });

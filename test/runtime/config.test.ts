@@ -18,7 +18,7 @@ describe('loadConfig', () => {
       scheduleDefaultTimezone: 'Asia/Shanghai',
       scheduleEnabled: true,
       schedulePollMs: 15_000,
-      scheduleLeaseMs: 360_000,
+      scheduleLeaseMs: 420_000,
     });
   });
 
@@ -27,16 +27,16 @@ describe('loadConfig', () => {
       SCHEDULE_DEFAULT_TIMEZONE: 'America/Los_Angeles',
       SCHEDULE_ENABLED: 'false',
       SCHEDULE_POLL_MS: '30000',
-      SCHEDULE_LEASE_MS: '400000',
+      SCHEDULE_LEASE_MS: '360000',
     })).toMatchObject({
       scheduleDefaultTimezone: 'America/Los_Angeles', scheduleEnabled: false,
-      schedulePollMs: 30_000, scheduleLeaseMs: 400_000,
+      schedulePollMs: 30_000, scheduleLeaseMs: 360_000,
     });
     expect(() => loadConfig({ SCHEDULE_DEFAULT_TIMEZONE: 'Mars/Olympus' })).toThrow(
       'schedule_default_timezone_invalid',
     );
-    expect(() => loadConfig({ AGENT_TIMEOUT_MS: '300000', SCHEDULE_LEASE_MS: '300000' }))
-      .toThrow('schedule_lease_must_exceed_agent_timeout');
+    expect(() => loadConfig({ AGENT_TIMEOUT_MS: '300000', SCHEDULE_LEASE_MS: '360000' }))
+      .toThrow('schedule_lease_must_cover_agent_and_delivery');
   });
 
   it('accepts one optional bounded Team Context document configuration', () => {
