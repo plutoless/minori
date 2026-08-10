@@ -159,8 +159,13 @@ export class PostgresScheduledRunStore {
   async claimNext(now: Date, leaseMs: number): Promise<ScheduledRun | undefined> {
     return this.db.transaction(async (tx) => {
       const selected = await tx.execute(sql`
-        select id from scheduled_runs where status = 'queued'
-        order by scheduled_for, created_at for update skip locked limit 1
+        select run.id from scheduled_runs run where run.status = 'queued'
+          and not exists (select 1 from scheduled_runs active where active.status = 'processing')
+          and not exists (
+            select 1 from processed_events event
+            where event.status = 'processing' and event.conversation_key = run.result_chat_id
+          )
+        order by run.scheduled_for, run.created_at for update of run skip locked limit 1
       `);
       const id = (selected.rows[0] as { id: string } | undefined)?.id;
       if (!id) return undefined;

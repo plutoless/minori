@@ -101,6 +101,11 @@ export class PostgresEventStore implements EventStore {
         where ranked.conversation_position = 1
           and event.status = 'queued'
           and event.next_attempt_at <= now()
+          and not exists (
+            select 1 from scheduled_runs scheduled
+            where scheduled.status = 'processing'
+              and scheduled.result_chat_id = event.conversation_key
+          )
         order by event.received_at, event.event_id
         for update of event skip locked
         limit ${limit}
