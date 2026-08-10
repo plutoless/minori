@@ -63,6 +63,7 @@ describe('buildHealthServer', () => {
       retention: async () => 'ok',
       worker: async () => 'ok',
       teamContext: async () => 'degraded',
+      scheduler: async () => 'degraded',
     });
 
     const response = await app.inject({ method: 'GET', url: '/health/ready' });
@@ -72,7 +73,7 @@ describe('buildHealthServer', () => {
       status: 'ok',
       components: {
         database: 'ok', feishu: 'ok', lark: 'ok', model: 'ok',
-        retention: 'ok', worker: 'ok', teamContext: 'degraded',
+        retention: 'ok', worker: 'ok', teamContext: 'degraded', scheduler: 'degraded',
       },
     });
     await app.close();

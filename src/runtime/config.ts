@@ -20,6 +20,10 @@ const envSchema = z.object({
   TEAM_CONTEXT_DOCUMENT_TOKEN: z.string().min(1).optional(),
   TEAM_CONTEXT_TOKEN_BUDGET: z.coerce.number().int().positive().default(8_000),
   TEAM_CONTEXT_STALE_MAX_MS: z.coerce.number().int().nonnegative().default(86_400_000),
+  SCHEDULE_DEFAULT_TIMEZONE: z.string().min(1).default('Asia/Shanghai'),
+  SCHEDULE_ENABLED: z.stringbool().default(true),
+  SCHEDULE_POLL_MS: z.coerce.number().int().min(1_000).max(300_000).default(15_000),
+  SCHEDULE_LEASE_MS: z.coerce.number().int().min(30_000).max(900_000).default(360_000),
   LARK_CLI_BIN: z.string().default('lark-cli'),
   LARKSUITE_CLI_CONFIG_DIR: z.string().default('/var/lib/minori/lark'),
 });
@@ -28,6 +32,14 @@ export type AppConfig = ReturnType<typeof loadConfig>;
 
 export function loadConfig(env: NodeJS.ProcessEnv) {
   const parsed = envSchema.parse(env);
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: parsed.SCHEDULE_DEFAULT_TIMEZONE }).format(0);
+  } catch {
+    throw new Error('schedule_default_timezone_invalid');
+  }
+  if (parsed.SCHEDULE_LEASE_MS <= parsed.AGENT_TIMEOUT_MS) {
+    throw new Error('schedule_lease_must_exceed_agent_timeout');
+  }
 
   return {
     nodeEnv: parsed.NODE_ENV,
@@ -47,6 +59,10 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
     teamContextDocumentToken: parsed.TEAM_CONTEXT_DOCUMENT_TOKEN,
     teamContextTokenBudget: parsed.TEAM_CONTEXT_TOKEN_BUDGET,
     teamContextStaleMaxMs: parsed.TEAM_CONTEXT_STALE_MAX_MS,
+    scheduleDefaultTimezone: parsed.SCHEDULE_DEFAULT_TIMEZONE,
+    scheduleEnabled: parsed.SCHEDULE_ENABLED,
+    schedulePollMs: parsed.SCHEDULE_POLL_MS,
+    scheduleLeaseMs: parsed.SCHEDULE_LEASE_MS,
     larkCliBin: parsed.LARK_CLI_BIN,
     larkConfigDir: parsed.LARKSUITE_CLI_CONFIG_DIR,
   };

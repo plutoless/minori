@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 export type ComponentStatus = 'ok' | 'degraded' | 'unconfigured';
 export type HealthComponent =
   | 'database' | 'feishu' | 'lark' | 'model' | 'retention' | 'worker'
-  | 'teamContext';
+  | 'teamContext' | 'scheduler';
 export type HealthProbes = Partial<Record<HealthComponent, () => Promise<ComponentStatus>>>;
 
 export function buildHealthServer(probes: HealthProbes): FastifyInstance {
@@ -23,7 +23,7 @@ export function buildHealthServer(probes: HealthProbes): FastifyInstance {
     );
     const components = Object.fromEntries(entries) as Partial<Record<HealthComponent, ComponentStatus>>;
     const blockingComponents = Object.entries(components)
-      .filter(([name]) => name !== 'teamContext')
+      .filter(([name]) => name !== 'teamContext' && name !== 'scheduler')
       .map(([, value]) => value);
     const status = blockingComponents.every((value) => value === 'ok')
       ? 'ok'

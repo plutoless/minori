@@ -34,6 +34,8 @@ describe('createStorageRuntime', () => {
     expect(runtime).not.toHaveProperty('allowedChatStore');
     expect(runtime.agentRunStore).toBeDefined();
     expect(runtime.teamContextStore).toBeDefined();
+    expect(runtime.scheduleStore).toBeDefined();
+    expect(runtime.scheduledRunStore).toBeDefined();
     expect(runtime.retentionStatus()).toBe('degraded');
 
     await runtime.start();
@@ -58,6 +60,8 @@ describe('createStorageRuntime', () => {
     expect(runtime.eventStore).toBeUndefined();
     expect(runtime.agentRunStore).toBeUndefined();
     expect(runtime.teamContextStore).toBeUndefined();
+    expect(runtime.scheduleStore).toBeUndefined();
+    expect(runtime.scheduledRunStore).toBeUndefined();
 
     await runtime.stop();
   });
