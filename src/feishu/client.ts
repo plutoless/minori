@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import { Client, defaultHttpInstance } from '@larksuiteoapi/node-sdk';
 import { FeishuGroupContextSource } from './group-context.js';
+import { FeishuChatDirectory } from './chat-directory.js';
 
 type ApiResponse<T> = { code?: number | undefined; data?: T | undefined };
 
@@ -14,6 +15,22 @@ export type FeishuBotIdentity = { openId: string; appId: string };
 
 export type FeishuSdk = {
   im: { v1: {
+    chat: {
+      list(payload?: {
+        params?: {
+          page_token?: string | undefined;
+          page_size?: number | undefined;
+        } | undefined;
+      }): Promise<ApiResponse<{
+        items?: Array<{
+          chat_id?: string | undefined;
+          name?: string | undefined;
+          chat_mode?: 'group' | 'p2p' | 'topic' | undefined;
+        }> | undefined;
+        page_token?: string | undefined;
+        has_more?: boolean | undefined;
+      }>>;
+    };
     message: {
       reply(payload: {
         path: { message_id: string };
@@ -179,5 +196,6 @@ export function createOfficialFeishuRuntime(
   return {
     messenger: new FeishuClientAdapter(client, logger),
     groupContext: new FeishuGroupContextSource(client, logger),
+    chatDirectory: new FeishuChatDirectory(client, logger),
   };
 }
