@@ -56,7 +56,10 @@ describe('DefaultContextAssembler', () => {
       conversation: [],
       currentInvocation: { speakerName: '成员', text: 'hello' },
       conversationTokenTarget: 10,
-    })[0]?.content).toBe('[Team Context][Stale][Revision 5]\nlast known good');
+    })[0]?.content).toBe(
+      '[Team Context][Stale][Revision 5]\nlast known good\n'
+      + '[Context Limitation] team_context_stale',
+    );
 
     expect(assembler.assemble({
       teamContext: { status: 'unavailable', errorCategory: 'team_context_unavailable' },
@@ -67,5 +70,20 @@ describe('DefaultContextAssembler', () => {
       role: 'user',
       content: '[Team Context][Context Limitation] team_context_unavailable',
     });
+  });
+
+  it('preserves the over-budget category while supplying the last accepted context', () => {
+    expect(assembler.assemble({
+      teamContext: {
+        status: 'over_budget', content: 'last accepted', sourceRevision: 4,
+        estimatedTokens: 3, fetchedAt: new Date(), errorCategory: 'team_context_over_budget',
+      },
+      conversation: [],
+      currentInvocation: { speakerName: '成员', text: 'hello' },
+      conversationTokenTarget: 10,
+    })[0]?.content).toBe(
+      '[Team Context][Over Budget Fallback][Revision 4]\nlast accepted\n'
+      + '[Context Limitation] team_context_over_budget',
+    );
   });
 });

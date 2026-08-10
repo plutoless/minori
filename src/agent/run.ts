@@ -12,7 +12,7 @@ import type {
 } from '../feishu/group-context.js';
 import type { AgentRunStore } from '../storage/agent-run-store.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
-import type { TeamContextSource } from '../team-context/source.js';
+import { TeamContextUpdateError, type TeamContextSource } from '../team-context/source.js';
 import { DefaultContextAssembler } from './context-assembler.js';
 import type { AgentHistoryMessage } from './context-window.js';
 import { TEAM_AGENT_INSTRUCTIONS } from './instructions.js';
@@ -134,9 +134,18 @@ class WriteAuditUnavailable extends Error {
   }
 }
 
-function stableWriteErrorCategory(error: unknown) {
-  return error instanceof KnowledgeWriteConflict
-    ? 'knowledge_write_conflict'
+function stableWriteErrorCategory(
+  error: unknown,
+  toolName: Parameters<PersistentWriteAudit['run']>[0]['toolName'],
+) {
+  if (error instanceof TeamContextUpdateError) return error.code;
+  if (error instanceof KnowledgeWriteConflict) {
+    return toolName === 'updateTeamContext'
+      ? 'team_context_conflict'
+      : 'knowledge_write_conflict';
+  }
+  return toolName === 'updateTeamContext'
+    ? 'team_context_update_failed'
     : 'knowledge_write_failed';
 }
 
@@ -195,7 +204,7 @@ function createWriteAudit(
         if (error instanceof WriteAuditUnavailable) throw error;
         const errorCategory = signal.aborted
           ? AGENT_RUN_ABORTED_CATEGORY
-          : stableWriteErrorCategory(error);
+          : stableWriteErrorCategory(error, input.toolName);
         try {
           await withAuditFinalization(() => store.finishWrite(write.id, {
             outcome: signal.aborted ? 'unknown' : 'failed',

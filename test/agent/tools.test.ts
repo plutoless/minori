@@ -102,6 +102,7 @@ describe('createKnowledgeTools', () => {
       expectedRevision: 7,
       pattern: 'Old rule',
       replacement: 'New rule',
+      reason: 'correction',
       semanticChangeApproved: true,
     }, undefined);
     expect(audited).toEqual([{
@@ -109,6 +110,15 @@ describe('createKnowledgeTools', () => {
       targetIdentifiers: { documentToken: 'dox_team' },
       sanitizedSummary: 'updated Team Context',
     }]);
+
+    await expect(tools.updateTeamContext!.execute?.({
+      ...input,
+      reason: 'approved_consolidation',
+      semanticChangeApproved: false,
+    }, { toolCallId: 'call_unapproved', messages: [] })).rejects.toThrow(
+      'team_context_semantic_approval_required',
+    );
+    expect(update).toHaveBeenCalledTimes(1);
 
     const scheduledTools = createKnowledgeTools(
       service(), { search: vi.fn().mockResolvedValue([]) }, new SourceRegistry(),

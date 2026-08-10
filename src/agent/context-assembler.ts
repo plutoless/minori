@@ -16,10 +16,15 @@ export interface ContextAssembler {
 function teamContextMessages(context: TeamContextLoad | undefined): AgentHistoryMessage[] {
   if (!context) return [];
   if (context.content && context.sourceRevision !== undefined) {
-    const freshness = context.status === 'loaded' ? '' : '[Stale]';
+    const freshness = context.status === 'loaded'
+      ? ''
+      : context.status === 'over_budget' ? '[Over Budget Fallback]' : '[Stale]';
+    const limitation = context.errorCategory
+      ? `\n[Context Limitation] ${context.errorCategory}`
+      : '';
     return [{
       role: 'user',
-      content: `[Team Context]${freshness}[Revision ${context.sourceRevision}]\n${context.content}`,
+      content: `[Team Context]${freshness}[Revision ${context.sourceRevision}]\n${context.content}${limitation}`,
     }];
   }
   return context.errorCategory ? [{

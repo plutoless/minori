@@ -15,6 +15,7 @@ export interface TeamContextSource {
     expectedRevision: number;
     pattern: string;
     replacement: string;
+    reason: TeamContextMutationReason;
     semanticChangeApproved: boolean;
   }, signal?: AbortSignal): Promise<KnowledgeWriteResult>;
 }
@@ -29,9 +30,21 @@ export type TeamContextSourceOptions = {
   estimateTokens?: (text: string) => number;
 };
 
+export type TeamContextMutationReason =
+  | 'durable_assertion'
+  | 'explicit_retention'
+  | 'correction'
+  | 'forgetting'
+  | 'approved_consolidation'
+  | 'mechanical_cleanup';
+
 export class TeamContextUpdateError extends Error {
   constructor(
-    public readonly code: 'team_context_over_budget' | 'team_context_conflict',
+    public readonly code:
+      | 'team_context_over_budget'
+      | 'team_context_conflict'
+      | 'team_context_unavailable'
+      | 'team_context_semantic_approval_required',
   ) {
     super(code);
     this.name = 'TeamContextUpdateError';
@@ -81,6 +94,18 @@ function replaceExactlyOnce(content: string, pattern: string, replacement: strin
   return content.slice(0, first) + replacement + content.slice(first + pattern.length);
 }
 
+function mechanicalSignature(content: string): string {
+  return [...new Set(normalizeTeamContext(content)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean))]
+    .join('\n');
+}
+
+function isSnapshotStaleError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'team_context_snapshot_stale';
+}
+
 export class DefaultTeamContextSource implements TeamContextSource {
   private readonly now: () => Date;
   private readonly estimateTokens: (text: string) => number;
@@ -98,7 +123,10 @@ export class DefaultTeamContextSource implements TeamContextSource {
     status: 'stale' | 'over_budget' | 'unavailable',
   ): Promise<TeamContextLoad> {
     const snapshot = await this.options.store.load(this.options.documentToken);
-    if (snapshot && this.now().getTime() - snapshot.fetchedAt.getTime() <= this.options.staleMaxMs) {
+    if (snapshot && (
+      status === 'over_budget'
+      || this.now().getTime() - snapshot.fetchedAt.getTime() <= this.options.staleMaxMs
+    )) {
       return {
         status,
         content: snapshot.normalizedContent,
@@ -137,7 +165,20 @@ export class DefaultTeamContextSource implements TeamContextSource {
         estimatedTokens,
         fetchedAt: this.now(),
       };
-      await this.options.store.accept(snapshot);
+      try {
+        await this.options.store.accept(snapshot);
+      } catch (error) {
+        if (!isSnapshotStaleError(error)) throw error;
+        const newer = await this.options.store.load(this.options.documentToken);
+        if (!newer) throw error;
+        return {
+          status: 'loaded',
+          content: newer.normalizedContent,
+          sourceRevision: newer.sourceRevision,
+          estimatedTokens: newer.estimatedTokens,
+          fetchedAt: newer.fetchedAt,
+        };
+      }
       return {
         status: 'loaded',
         content,
@@ -161,21 +202,40 @@ export class DefaultTeamContextSource implements TeamContextSource {
     expectedRevision: number;
     pattern: string;
     replacement: string;
+    reason: TeamContextMutationReason;
     semanticChangeApproved: boolean;
   }, signal?: AbortSignal): Promise<KnowledgeWriteResult> {
     signal?.throwIfAborted();
-    const current = await this.options.knowledge.fetchDocument({
-      doc: this.options.documentToken,
-    }, signal);
-    if (current.token !== this.options.documentToken) {
-      throw new TeamContextUpdateError('team_context_conflict');
+    let current;
+    try {
+      current = await this.options.knowledge.fetchDocument({
+        doc: this.options.documentToken,
+      }, signal);
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      const invalidation = invalidationFor(error);
+      if (invalidation) {
+        await this.options.store.invalidate(this.options.documentToken, invalidation);
+        throw new TeamContextUpdateError('team_context_unavailable');
+      }
+      throw error;
     }
-    if (current.revisionId !== input.expectedRevision) throw new KnowledgeWriteConflict();
+    if (current.token !== this.options.documentToken) {
+      await this.options.store.invalidate(this.options.documentToken, 'team_context_missing');
+      throw new TeamContextUpdateError('team_context_unavailable');
+    }
     const proposed = normalizeTeamContext(replaceExactlyOnce(
       current.markdown,
       input.pattern,
       input.replacement,
     ));
+    if (input.reason === 'mechanical_cleanup') {
+      if (mechanicalSignature(current.markdown) !== mechanicalSignature(proposed)) {
+        throw new TeamContextUpdateError('team_context_semantic_approval_required');
+      }
+    } else if (!input.semanticChangeApproved) {
+      throw new TeamContextUpdateError('team_context_semantic_approval_required');
+    }
     if (this.estimateTokens(proposed) > this.options.tokenBudget) {
       throw new TeamContextUpdateError('team_context_over_budget');
     }
@@ -184,9 +244,15 @@ export class DefaultTeamContextSource implements TeamContextSource {
         doc: this.options.documentToken,
         pattern: input.pattern,
         replacement: input.replacement,
-        expectedRevision: input.expectedRevision,
+        expectedRevision: current.revisionId,
       }, signal);
     } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      const invalidation = invalidationFor(error);
+      if (invalidation) {
+        await this.options.store.invalidate(this.options.documentToken, invalidation);
+        throw new TeamContextUpdateError('team_context_unavailable');
+      }
       if (error instanceof KnowledgeWriteConflict) throw error;
       throw error;
     }

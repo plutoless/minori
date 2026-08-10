@@ -19,6 +19,7 @@ function fixture(options: {
   snapshot?: TeamContextSnapshot;
   now?: Date;
   estimatedTokens?: number;
+  patchError?: unknown;
 } = {}) {
   let snapshot = options.snapshot;
   const store: TeamContextStore = {
@@ -29,11 +30,13 @@ function fixture(options: {
   const fetchDocument = options.fetchError === undefined
     ? vi.fn(async () => options.fetched ?? document())
     : vi.fn(async () => { throw options.fetchError; });
-  const patchDocument = vi.fn(async () => ({
-    operation: 'patch' as const,
-    token: 'dox_team', title: 'Team Context',
-    url: 'https://acme.feishu.cn/docx/dox_team', revisionId: 8,
-  }));
+  const patchDocument = options.patchError === undefined
+    ? vi.fn(async () => ({
+      operation: 'patch' as const,
+      token: 'dox_team', title: 'Team Context',
+      url: 'https://acme.feishu.cn/docx/dox_team', revisionId: 8,
+    }))
+    : vi.fn(async () => { throw options.patchError; });
   const knowledge = { fetchDocument, patchDocument } as unknown as KnowledgeService;
   const source = new DefaultTeamContextSource({
     documentToken: 'dox_team',
@@ -152,6 +155,47 @@ describe('DefaultTeamContextSource', () => {
     });
   });
 
+  it('keeps an older last-known-good snapshot for over-budget consolidation guidance', async () => {
+    const { source } = fixture({
+      estimatedTokens: 8_001,
+      snapshot: {
+        documentToken: 'dox_team', sourceRevision: 2, normalizedContent: '# Old accepted\n',
+        estimatedTokens: 4, fetchedAt: new Date('2026-08-08T11:00:00Z'),
+      },
+    });
+
+    await expect(source.load()).resolves.toMatchObject({
+      status: 'over_budget', content: '# Old accepted\n', sourceRevision: 2,
+      errorCategory: 'team_context_over_budget',
+    });
+  });
+
+  it('prefers a newer concurrently accepted snapshot over an older fetched revision', async () => {
+    const newer: TeamContextSnapshot = {
+      documentToken: 'dox_team', sourceRevision: 8, normalizedContent: '# Newer\n',
+      estimatedTokens: 3, fetchedAt: new Date('2026-08-10T12:00:01Z'),
+    };
+    const store: TeamContextStore = {
+      load: vi.fn().mockResolvedValue(newer),
+      accept: vi.fn().mockRejectedValue(new Error('team_context_snapshot_stale')),
+      invalidate: vi.fn(),
+    };
+    const source = new DefaultTeamContextSource({
+      documentToken: 'dox_team', tokenBudget: 8_000, staleMaxMs: 86_400_000,
+      knowledge: {
+        fetchDocument: vi.fn().mockResolvedValue(document()),
+      } as unknown as KnowledgeService,
+      store,
+      now: () => new Date('2026-08-10T12:00:00Z'),
+      estimateTokens: () => 12,
+    });
+
+    await expect(source.load()).resolves.toEqual({
+      status: 'loaded', content: '# Newer\n', sourceRevision: 8,
+      estimatedTokens: 3, fetchedAt: newer.fetchedAt,
+    });
+  });
+
   it('propagates cancellation instead of converting it into stale context', async () => {
     const controller = new AbortController();
     controller.abort(new Error('cancelled'));
@@ -160,23 +204,45 @@ describe('DefaultTeamContextSource', () => {
     await expect(source.load(controller.signal)).rejects.toThrow('cancelled');
   });
 
-  it('requires the expected configured revision before a narrow patch', async () => {
+  it('re-reads and safely reapplies once when only the revision changed', async () => {
     const { source, patchDocument } = fixture();
 
     await expect(source.update({
       expectedRevision: 6, pattern: 'Conclusions first.', replacement: 'Sources first.',
-      semanticChangeApproved: true,
-    })).rejects.toBeInstanceOf(KnowledgeWriteConflict);
-    expect(patchDocument).not.toHaveBeenCalled();
-
-    await expect(source.update({
-      expectedRevision: 7, pattern: 'Conclusions first.', replacement: 'Sources first.',
-      semanticChangeApproved: true,
+      reason: 'correction', semanticChangeApproved: true,
     })).resolves.toMatchObject({ token: 'dox_team', revisionId: 8 });
     expect(patchDocument).toHaveBeenCalledWith({
       doc: 'dox_team', pattern: 'Conclusions first.', replacement: 'Sources first.',
       expectedRevision: 7,
     }, undefined);
+  });
+
+  it('reports a conflict when concurrent meaning changed the exact target', async () => {
+    const { source, patchDocument } = fixture({
+      fetched: document({ markdown: '# Team Context\n\n- A different decision.\n', revisionId: 8 }),
+    });
+
+    await expect(source.update({
+      expectedRevision: 7, pattern: 'Conclusions first.', replacement: 'Sources first.',
+      reason: 'correction', semanticChangeApproved: true,
+    })).rejects.toBeInstanceOf(KnowledgeWriteConflict);
+    expect(patchDocument).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { stage: 'read', fetchError: new LarkCliError('cli_error', { subtype: 'forbidden' }) },
+    { stage: 'write', patchError: new LarkCliError('cli_error', { subtype: 'not_found' }) },
+  ])('invalidates immediately when update-time $stage loses authority', async (options) => {
+    const { source, store } = fixture(options);
+
+    await expect(source.update({
+      expectedRevision: 7, pattern: 'Conclusions first.', replacement: 'Sources first.',
+      reason: 'correction', semanticChangeApproved: true,
+    })).rejects.toMatchObject({ code: 'team_context_unavailable' });
+    expect(store.invalidate).toHaveBeenCalledWith(
+      'dox_team',
+      options.stage === 'read' ? 'team_context_forbidden' : 'team_context_missing',
+    );
   });
 
   it('rejects an update whose complete proposed document exceeds the budget', async () => {
@@ -186,7 +252,7 @@ describe('DefaultTeamContextSource', () => {
       expectedRevision: 7,
       pattern: 'Conclusions first.',
       replacement: 'A much larger durable rule.',
-      semanticChangeApproved: true,
+      reason: 'correction', semanticChangeApproved: true,
     })).rejects.toMatchObject({ code: 'team_context_over_budget' });
     expect(patchDocument).not.toHaveBeenCalled();
   });

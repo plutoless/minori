@@ -246,6 +246,7 @@ describe('runKnowledgeAgent', () => {
       expectedRevision: 7,
       pattern: '- 周报格式：未约定',
       replacement: '- 周报格式：先给结论，再列来源',
+      reason: 'durable_assertion',
       semanticChangeApproved: true,
     }, expect.any(AbortSignal));
     expect(audit.beginWrite).toHaveBeenCalledWith('run_1', {
@@ -264,6 +265,39 @@ describe('runKnowledgeAgent', () => {
     expect(reply.writeAttempts).toMatchObject([{
       toolName: 'updateTeamContext', outcome: 'succeeded',
     }]);
+  });
+
+  it('audits a concurrent Team Context edit with its stable conflict category', async () => {
+    const durableInput: AgentRunInput = { ...input, prompt: '以后周报先给结论。' };
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_context', toolName: 'updateTeamContext',
+          input: JSON.stringify({
+            expectedRevision: 7, pattern: '旧规则', replacement: '先给结论',
+            reason: 'correction', semanticChangeApproved: true,
+          }),
+        }], 'tool-calls'),
+        generated([{ type: 'text', text: '团队上下文刚刚发生了并发修改，我没有覆盖它。' }], 'stop'),
+      ],
+    });
+    const audit = agentRunStore();
+
+    await runKnowledgeAgent(durableInput, dependencies(durableInput.prompt, model, {
+      agentRunStore: audit,
+      teamContextSource: {
+        documentToken: 'dox_team',
+        load: vi.fn().mockResolvedValue({
+          status: 'loaded', content: '旧规则\n', sourceRevision: 7,
+          estimatedTokens: 3, fetchedAt: new Date(),
+        }),
+        update: vi.fn().mockRejectedValue(new KnowledgeWriteConflict()),
+      },
+    }));
+
+    expect(audit.finishWrite).toHaveBeenCalledWith('write_1', {
+      outcome: 'failed', errorCategory: 'team_context_conflict',
+    });
   });
 
   it('supplies transient named group history before one distinct Current Invocation', async () => {

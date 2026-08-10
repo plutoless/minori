@@ -37,8 +37,7 @@ type FetchedDocument = Awaited<ReturnType<KnowledgeService['fetchDocument']>>;
 
 export type PersistentWriteName =
   | 'createDocument' | 'appendDocument' | 'patchDocument'
-  | 'updateTeamContext'
-  | 'createSchedule' | 'updateSchedule' | 'pauseSchedule' | 'resumeSchedule' | 'deleteSchedule';
+  | 'updateTeamContext';
 
 export type PersistentWriteAuditInput = {
   toolName: PersistentWriteName;
@@ -309,8 +308,11 @@ export function createKnowledgeTools(
           semanticChangeApproved: z.boolean(),
         }).strict(),
         execute: async ({
-          expectedRevision, pattern, replacement, semanticChangeApproved,
+          expectedRevision, pattern, replacement, reason, semanticChangeApproved,
         }, { abortSignal }) => {
+          if (reason !== 'mechanical_cleanup' && !semanticChangeApproved) {
+            throw new Error('team_context_semantic_approval_required');
+          }
           const result = await writeAudit.run({
             toolName: 'updateTeamContext',
             targetIdentifiers: { documentToken: teamContext.source.documentToken },
@@ -319,6 +321,7 @@ export function createKnowledgeTools(
             expectedRevision,
             pattern,
             replacement,
+            reason,
             semanticChangeApproved,
           }, abortSignal));
           return {

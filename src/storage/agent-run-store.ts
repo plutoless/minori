@@ -117,7 +117,6 @@ export class PostgresAgentRunStore implements AgentRunStore {
 
     const typedToolNames = new Set<PersistentWriteName>([
       'createDocument', 'appendDocument', 'patchDocument', 'updateTeamContext',
-      'createSchedule', 'updateSchedule', 'pauseSchedule', 'resumeSchedule', 'deleteSchedule',
     ]);
     return rows.flatMap((row): WriteAttemptReceipt[] => {
       if (!typedToolNames.has(row.toolName as PersistentWriteName) || !row.sanitizedSummary) return [];
