@@ -36,32 +36,76 @@ _Avoid_: Reversible write, unrestricted write, destructive action, raw CLI acces
 The first production release's three Typed Knowledge Writes: create a document, append content, and apply a targeted patch. This is a release boundary, not Minori's permanent knowledge-management capability ceiling; rename, move, trash, and complete-content update may be added later as typed tools.
 _Avoid_: Final tool set, scenario restriction, unrestricted knowledge management
 
+**Persistent Agent Write**:
+Any audited Agent tool operation that changes durable state: a Typed Knowledge Write, a Team Context mutation, or a Scheduled Task lifecycle mutation. Reads, searches, list operations, and reply delivery are not Persistent Agent Writes.
+_Avoid_: Read tool, reply transport, unrestricted write, database access
+
 **Write Replay Boundary**:
-The moment the first Typed Knowledge Write begins in an Agent run. Before this boundary, a transient model or read-only-tool failure may safely retry the run; after it, Minori never automatically replays the whole run, even when the write outcome is unknown. Idempotent retry of the Feishu reply transport is separate from Agent-run replay.
+The moment the first Persistent Agent Write begins in an Agent run. Before this boundary, a transient model or read-only-tool failure may safely retry a message run under its existing policy; after it, Minori never automatically replays the whole run, even when the write outcome is unknown. Scheduled Runs never receive a business retry on either side of the boundary. Idempotent retry of reply transport is separate from Agent-run replay.
 _Avoid_: Retry every failure, completed-write boundary, reply retry
 
 **Feishu Delivered Member**:
 A user whose message Feishu delivers to the Minori Feishu App from private chat or a group where the bot is present. Minori treats the delivered event as sufficient admission and does not distinguish internal members from external collaborators.
 _Avoid_: Eligible Member, allowed-group member, internal-only user
 
+**Persistent Agent Control**:
+The authority every Feishu Delivered Member has to change Team Context and manage Scheduled Tasks, including cross-group result targets. External collaborators and internal members have the same Persistent Agent Control; Minori does not add an internal-member or maintainer gate.
+_Avoid_: Administrator permission, internal-member privilege, maintainer allowlist
+
+**Team Context**:
+The single configured Feishu document containing team-wide durable facts, decisions, preferences, terminology, and working defaults. It is loaded for every Agent run but an explicit Current Invocation may override it; only Core Policy is non-overridable. Only a member-triggered message run may modify it; Scheduled Runs always treat it as read-only.
+_Avoid_: System prompt, separate memory database, mandatory team policy, per-conversation memory
+
+**Team Context Snapshot**:
+The latest complete, within-budget Team Context revision that Minori successfully loaded and cached in Neon. It may bridge transient read failures for at most 24 hours, but explicit permission denial or document absence invalidates it immediately.
+_Avoid_: Permanent cache, partial document, independent memory store, authorization bypass
+
+**Durable Context Assertion**:
+Stable, team-wide information that the member directly states or explicitly adopts in the Current Invocation and that Minori may persist into Team Context without prior confirmation. Retrieved content, Live Group History, tool results, and model inference are not Durable Context Assertions unless the member explicitly asks Minori to retain them.
+_Avoid_: Model inference, retrieved fact, automatic summary, historical instruction
+
+**Scheduled Task**:
+A team-global persistent instruction with a stable ID and globally unique non-terminal name that creates future Agent runs on a one-time or recurring calendar. Every Feishu Delivered Member may list, read, change, pause, resume, or delete every Scheduled Task regardless of its Origin Conversation. A due one-time task is in flight until its run reaches a terminal outcome; its full definition and revisions persist while active, paused, or in flight and for 30 days after terminal completion or deletion.
+_Avoid_: Private reminder, conversation-owned task, hidden cron job, workflow graph
+
+**Origin Conversation**:
+The private chat or Group Context in which a Scheduled Task was created. It supplies audit provenance and the default result target, but it does not own or restrict access to the task.
+_Avoid_: Task owner, schedule permission boundary, result target
+
+**Result Target**:
+The stable Feishu chat selected to receive a Scheduled Run's ordinary result message and used as that run's Durable Conversation Queue serialization key. If delivery there fails, Minori does not retry the target and may send one body-free failure notice to the Origin Conversation.
+_Avoid_: Origin Conversation, task owner, reply thread, retry destination
+
+**Scheduled Context**:
+The optional Group Context whose Live Group History a Scheduled Task explicitly requests as background. It is independent of Result Target, is stored as a stable chat ID, and uses `scheduled_for` as its Invocation Context Cutoff.
+_Avoid_: Automatic result-target history, Origin Conversation, implicit group context
+
+**Calendar Schedule**:
+The deterministic one-time timestamp or basic recurring calendar rule attached to a Scheduled Task. It supports minute, hour, weekday, month, and day-of-month recurrence in one IANA timezone, but not holidays, business-day inference, event-relative timing, conditions, or workflow dependencies.
+_Avoid_: Conditional trigger, holiday calendar, event dependency, model-interpreted run time
+
+**Scheduled Run**:
+One durable execution created from a Scheduled Task for one `scheduled_for` occurrence and a task snapshot frozen at run creation. Ordinary task updates never rewrite a queued or processing run. A never-started one-time run may be cancelled, deliberately rebound to the updated task version, and explicitly requeued; once processing begins it is not interrupted and is never automatically retried.
+_Avoid_: Scheduled Task, mutable run, automatic retry, restored Agent process
+
 **Group Context**:
-The ordinary Feishu group chat identified by its chat ID and used as shared context when a member explicitly invokes Minori. Recent group messages may inform an Agent run even when they did not invoke Minori; Minori never intentionally creates a topic or treats every group message as a trigger.
+The ordinary Feishu group chat identified by its chat ID and used as shared context when a member invokes Minori there or a Scheduled Task explicitly binds it as Scheduled Context. Recent group messages may inform an Agent run even when they did not invoke Minori; Minori never intentionally creates a topic or treats every group message as a trigger.
 _Avoid_: Agent Thread, Group Reply Chain, Feishu topic, always-on Agent
 
 **Live Group History**:
-A bounded window of ordinary messages read from the current Group Context only when Minori is invoked. When it loads, it supplies group background without mixing in Retained Conversation History. It may be sent to the model for that run but is not copied wholesale into Minori's persistence; Feishu remains its source of truth. If it is unavailable, the group run instead receives prior Retained Conversation History, a stable limitation fact, and the distinct Current Invocation.
+A bounded window of ordinary messages read from the Group Context selected by a message invocation or explicit Scheduled Context. When it loads, it supplies group background without mixing in Retained Conversation History. It may be sent to the model for that run but is not copied wholesale into Minori's persistence; Feishu remains its source of truth. If it is unavailable, a message-triggered group run receives prior Retained Conversation History plus a stable limitation fact, while a Scheduled Run receives the limitation fact without retained-history fallback.
 _Avoid_: Retained Conversation History, group mirror, always-on ingestion
 
 **Current Invocation**:
-The delivered private message, direct group mention, or direct reply to Minori that explicitly starts one Agent run. Live Group History is background for interpreting this request; historical instructions do not independently authorize actions unless the Current Invocation adopts or refers to them.
+The authority-bearing request for one Agent run: a delivered private message, direct group mention, direct reply to Minori, or the frozen instruction of a Scheduled Run. Live Group History and other historical content are background; they do not independently authorize actions unless Current Invocation adopts or refers to them.
 _Avoid_: Latest group message, historical command, always-active session
 
 **Invocation Context Cutoff**:
-The occurrence time of the Current Invocation, which is the upper bound for Live Group History supplied to that run. Messages sent while the invocation waits in the Durable Conversation Queue belong only to later invocations.
+The upper bound for Live Group History supplied to one Agent run: the delivered message occurrence time for a message invocation, or `scheduled_for` for a Scheduled Run. Messages after that cutoff belong only to later invocations, even when execution or catch-up starts later.
 _Avoid_: Execution-start context, live tail, future messages
 
 **Durable Conversation Queue**:
-The PostgreSQL-backed queue of accepted Feishu events waiting for Agent execution. Minori runs at most four different conversations concurrently by default, serializes messages within each conversation, and lets additional conversations wait without imposing per-user or per-group quotas.
+The PostgreSQL-backed queue of accepted Feishu events and Scheduled Runs waiting for Agent execution. Minori runs at most four different conversations concurrently by default, serializes message invocations by their conversation and Scheduled Runs by Result Target, and lets additional conversations wait without imposing per-user or per-group quotas. At most one Scheduled Run executes at once, and a queued message wins admission when both invocation kinds are waiting; processing work is never preempted.
 _Avoid_: Admission limit, user quota, in-memory backlog
 
 **Processing Reaction**:
@@ -85,7 +129,7 @@ The configured OpenAI-compatible model endpoint, which receives the conversation
 _Avoid_: Secretless model call, locally isolated inference, guaranteed deletion
 
 **Persistence Data Boundary**:
-The trusted Neon PostgreSQL database that stores plaintext conversation bodies for 30 days and retains structural message records plus sanitized Agent and tool audit metadata afterward. Minori does not persist complete retrieved document bodies as a separate knowledge copy and does not add application-level encryption that would prevent conversation search.
+The trusted Neon PostgreSQL database that stores plaintext conversation bodies for 30 days, active, paused, or in-flight Scheduled Task definitions, and completed or deleted task bodies for 30 days. It retains structural message, task, Agent, and tool audit metadata afterward. Minori does not persist complete retrieved document bodies as a separate knowledge copy and does not add application-level encryption that would prevent conversation search.
 _Avoid_: Encrypted search index, permanent message body, document mirror
 
 **Source-linked Answer**:
