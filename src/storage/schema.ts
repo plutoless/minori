@@ -114,6 +114,12 @@ export const agentRuns = pgTable('agent_runs', {
   groupHistoryPageCount: integer('group_history_page_count'),
   groupHistoryCutoff: timestamp('group_history_cutoff', { withTimezone: true }),
   groupHistoryErrorCategory: text('group_history_error_category'),
+  teamContextStatus: text('team_context_status')
+    .$type<'loaded' | 'stale' | 'unavailable' | 'over_budget'>(),
+  teamContextRevision: integer('team_context_revision'),
+  teamContextTokenCount: integer('team_context_token_count'),
+  teamContextFetchedAt: timestamp('team_context_fetched_at', { withTimezone: true }),
+  teamContextErrorCategory: text('team_context_error_category'),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 });

@@ -55,6 +55,17 @@ describe('Team Agent release packaging contract', () => {
     expect(productionEnvironment).toContain('AGENT_TIMEOUT_MS=300000');
   });
 
+  it('publishes one bounded Team Context configuration in both environment examples', async () => {
+    const localEnvironment = await text('.env.example');
+    const productionEnvironment = await text('deploy/vultr/env.example');
+
+    for (const environment of [localEnvironment, productionEnvironment]) {
+      expect(environment).toContain('TEAM_CONTEXT_DOCUMENT_TOKEN=dox_team_context');
+      expect(environment).toContain('TEAM_CONTEXT_TOKEN_BUDGET=8000');
+      expect(environment).toContain('TEAM_CONTEXT_STALE_MAX_MS=86400000');
+    }
+  });
+
   it('documents the exact Bot Authority required for Live Group History', async () => {
     const readme = await text('README.md');
 

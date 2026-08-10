@@ -143,6 +143,7 @@ function agentRunStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
     finishWrite: vi.fn().mockResolvedValue(undefined),
     listWriteAttempts: vi.fn().mockResolvedValue([]),
     recordGroupHistory: vi.fn().mockResolvedValue(undefined),
+    recordTeamContext: vi.fn().mockResolvedValue(undefined),
     finish: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };

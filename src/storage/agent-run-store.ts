@@ -1,6 +1,7 @@
 import { asc, eq, sql } from 'drizzle-orm';
 import type { AgentRunOutcome, WriteAttemptReceipt } from '../agent/run-outcome.js';
 import type { PersistentWriteName } from '../agent/tools.js';
+import type { TeamContextLoad } from '../team-context/types.js';
 import type { GroupHistoryAudit } from '../feishu/group-context.js';
 import type { Database } from './database.js';
 import { agentRuns, toolRuns } from './schema.js';
@@ -21,6 +22,7 @@ export interface AgentRunStore {
   }): Promise<void>;
   listWriteAttempts(eventId: string): Promise<WriteAttemptReceipt[]>;
   recordGroupHistory(agentRunId: string, audit: GroupHistoryAudit): Promise<void>;
+  recordTeamContext(agentRunId: string, context: TeamContextLoad): Promise<void>;
   finish(agentRunId: string, input: {
     inputTokens?: number;
     outputTokens?: number;
@@ -137,6 +139,17 @@ export class PostgresAgentRunStore implements AgentRunStore {
       groupHistoryPageCount: audit.pageCallCount,
       groupHistoryCutoff: audit.cutoff,
       groupHistoryErrorCategory: audit.errorCategory ?? null,
+    }).where(eq(agentRuns.id, agentRunId)).returning({ id: agentRuns.id });
+    if (!updated) throw new Error('agent_run_not_found');
+  }
+
+  async recordTeamContext(agentRunId: string, context: TeamContextLoad): Promise<void> {
+    const [updated] = await this.db.update(agentRuns).set({
+      teamContextStatus: context.status,
+      teamContextRevision: context.sourceRevision ?? null,
+      teamContextTokenCount: context.estimatedTokens ?? null,
+      teamContextFetchedAt: context.fetchedAt ?? null,
+      teamContextErrorCategory: context.errorCategory ?? null,
     }).where(eq(agentRuns.id, agentRunId)).returning({ id: agentRuns.id });
     if (!updated) throw new Error('agent_run_not_found');
   }

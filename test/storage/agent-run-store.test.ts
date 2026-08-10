@@ -178,6 +178,28 @@ describe('PostgresAgentRunStore', () => {
     );
   });
 
+  it('persists only sanitized Team Context load metadata on the Agent run', async () => {
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
+    await store.recordTeamContext(run.id, {
+      status: 'stale',
+      content: '# Team Context\nsecret body\n',
+      sourceRevision: 8,
+      estimatedTokens: 33,
+      fetchedAt: new Date('2026-08-10T12:00:00Z'),
+      errorCategory: 'team_context_stale',
+    });
+
+    const [row] = await database.db.select().from(agentRuns).where(eq(agentRuns.id, run.id));
+    expect(row).toMatchObject({
+      teamContextStatus: 'stale',
+      teamContextRevision: 8,
+      teamContextTokenCount: 33,
+      teamContextFetchedAt: new Date('2026-08-10T12:00:00Z'),
+      teamContextErrorCategory: 'team_context_stale',
+    });
+    expect(JSON.stringify(row)).not.toContain('secret body');
+  });
+
   it('rejects group-history audit for a missing Agent run', async () => {
     await expect(store.recordGroupHistory('00000000-0000-0000-0000-000000000000', {
       status: 'unavailable',

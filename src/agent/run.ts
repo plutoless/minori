@@ -394,6 +394,17 @@ export async function runKnowledgeAgent(
     const teamContext = dependencies.teamContextSource
       ? await withAbort(() => dependencies.teamContextSource!.load(runSignal), runSignal)
       : undefined;
+    if (teamContext) {
+      try {
+        await withAbort(
+          () => dependencies.agentRunStore.recordTeamContext(run.id, teamContext),
+          runSignal,
+        );
+      } catch (error) {
+        if (runSignal.aborted) throw error;
+        throw new Error(AGENT_AUDIT_UNAVAILABLE);
+      }
+    }
 
     let groupReader: ScopedGroupContextReader | undefined;
     let initialGroupContext: InitialGroupContext | undefined;

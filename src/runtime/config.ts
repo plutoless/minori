@@ -17,6 +17,9 @@ const envSchema = z.object({
   AGENT_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(900_000).default(300_000),
   CONVERSATION_CONTEXT_TOKEN_TARGET: z.coerce.number().int().positive().default(24_000),
   MESSAGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
+  TEAM_CONTEXT_DOCUMENT_TOKEN: z.string().min(1).optional(),
+  TEAM_CONTEXT_TOKEN_BUDGET: z.coerce.number().int().positive().default(8_000),
+  TEAM_CONTEXT_STALE_MAX_MS: z.coerce.number().int().nonnegative().default(86_400_000),
   LARK_CLI_BIN: z.string().default('lark-cli'),
   LARKSUITE_CLI_CONFIG_DIR: z.string().default('/var/lib/minori/lark'),
 });
@@ -41,6 +44,9 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
     agentTimeoutMs: parsed.AGENT_TIMEOUT_MS,
     conversationContextTokenTarget: parsed.CONVERSATION_CONTEXT_TOKEN_TARGET,
     messageRetentionDays: parsed.MESSAGE_RETENTION_DAYS,
+    teamContextDocumentToken: parsed.TEAM_CONTEXT_DOCUMENT_TOKEN,
+    teamContextTokenBudget: parsed.TEAM_CONTEXT_TOKEN_BUDGET,
+    teamContextStaleMaxMs: parsed.TEAM_CONTEXT_STALE_MAX_MS,
     larkCliBin: parsed.LARK_CLI_BIN,
     larkConfigDir: parsed.LARKSUITE_CLI_CONFIG_DIR,
   };

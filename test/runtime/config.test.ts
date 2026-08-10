@@ -13,7 +13,24 @@ describe('loadConfig', () => {
       agentTimeoutMs: 300_000,
       conversationContextTokenTarget: 24_000,
       messageRetentionDays: 30,
+      teamContextTokenBudget: 8_000,
+      teamContextStaleMaxMs: 86_400_000,
     });
+  });
+
+  it('accepts one optional bounded Team Context document configuration', () => {
+    expect(loadConfig({
+      TEAM_CONTEXT_DOCUMENT_TOKEN: 'dox_team',
+      TEAM_CONTEXT_TOKEN_BUDGET: '7000',
+      TEAM_CONTEXT_STALE_MAX_MS: '3600000',
+    })).toMatchObject({
+      teamContextDocumentToken: 'dox_team',
+      teamContextTokenBudget: 7_000,
+      teamContextStaleMaxMs: 3_600_000,
+    });
+    expect(() => loadConfig({ TEAM_CONTEXT_DOCUMENT_TOKEN: '' })).toThrow();
+    expect(() => loadConfig({ TEAM_CONTEXT_TOKEN_BUDGET: '0' })).toThrow();
+    expect(() => loadConfig({ TEAM_CONTEXT_STALE_MAX_MS: '-1' })).toThrow();
   });
 
   it('accepts bounded Agent execution limits', () => {

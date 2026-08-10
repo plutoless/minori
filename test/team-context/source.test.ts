@@ -175,6 +175,19 @@ describe('DefaultTeamContextSource', () => {
     })).resolves.toMatchObject({ token: 'dox_team', revisionId: 8 });
     expect(patchDocument).toHaveBeenCalledWith({
       doc: 'dox_team', pattern: 'Conclusions first.', replacement: 'Sources first.',
+      expectedRevision: 7,
     }, undefined);
+  });
+
+  it('rejects an update whose complete proposed document exceeds the budget', async () => {
+    const { source, patchDocument } = fixture({ estimatedTokens: 8_001 });
+
+    await expect(source.update({
+      expectedRevision: 7,
+      pattern: 'Conclusions first.',
+      replacement: 'A much larger durable rule.',
+      semanticChangeApproved: true,
+    })).rejects.toMatchObject({ code: 'team_context_over_budget' });
+    expect(patchDocument).not.toHaveBeenCalled();
   });
 });

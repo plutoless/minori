@@ -69,6 +69,7 @@ describe('prompt-injection boundary', () => {
         finishWrite: vi.fn().mockResolvedValue(undefined),
         listWriteAttempts: vi.fn().mockResolvedValue([]),
         recordGroupHistory: vi.fn().mockResolvedValue(undefined),
+        recordTeamContext: vi.fn().mockResolvedValue(undefined),
         finish: vi.fn().mockResolvedValue(undefined),
       },
       conversationStore: {

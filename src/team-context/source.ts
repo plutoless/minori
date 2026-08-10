@@ -184,6 +184,7 @@ export class DefaultTeamContextSource implements TeamContextSource {
         doc: this.options.documentToken,
         pattern: input.pattern,
         replacement: input.replacement,
+        expectedRevision: input.expectedRevision,
       }, signal);
     } catch (error) {
       if (error instanceof KnowledgeWriteConflict) throw error;

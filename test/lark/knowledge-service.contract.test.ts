@@ -2,7 +2,9 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { LarkCommand } from '../../src/lark/command-catalog.js';
-import { LarkCliError, LarkContractError } from '../../src/lark/errors.js';
+import {
+  KnowledgeWriteConflict, LarkCliError, LarkContractError,
+} from '../../src/lark/errors.js';
 import { LarkKnowledgeService } from '../../src/lark/knowledge-service.js';
 import type { LarkExecutor } from '../../src/lark/runner.js';
 
@@ -194,6 +196,17 @@ describe('LarkKnowledgeService contract', () => {
       },
       { id: 'docs.fetch', doc: 'doxcnRoadmap' },
     ]);
+  });
+
+  it('rejects an exact patch when its caller-bound revision changed before write', async () => {
+    const { executor, run } = executorReturning(await fixtureData('docs-fetch'));
+    const service = new LarkKnowledgeService(executor);
+
+    await expect(service.patchDocument({
+      doc: 'doxcnRoadmap', pattern: 'read-only', replacement: 'team', expectedRevision: 6,
+    })).rejects.toBeInstanceOf(KnowledgeWriteConflict);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith({ id: 'docs.fetch', doc: 'doxcnRoadmap' });
   });
 
   it.each(['missing phrase', 'e'])(

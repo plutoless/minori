@@ -53,4 +53,28 @@ describe('buildHealthServer', () => {
     });
     await app.close();
   });
+
+  it('reports degraded Team Context without blocking core service readiness', async () => {
+    const app = buildHealthServer({
+      database: async () => 'ok',
+      feishu: async () => 'ok',
+      lark: async () => 'ok',
+      model: async () => 'ok',
+      retention: async () => 'ok',
+      worker: async () => 'ok',
+      teamContext: async () => 'degraded',
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/health/ready' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      status: 'ok',
+      components: {
+        database: 'ok', feishu: 'ok', lark: 'ok', model: 'ok',
+        retention: 'ok', worker: 'ok', teamContext: 'degraded',
+      },
+    });
+    await app.close();
+  });
 });

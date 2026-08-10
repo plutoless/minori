@@ -10,6 +10,7 @@ import type { AppConfig } from './runtime/config.js';
 import { buildHealthServer, type ComponentStatus, type HealthProbes } from './runtime/health.js';
 import { createModelPreflight } from './runtime/model-preflight.js';
 import { createStorageRuntime } from './storage/runtime.js';
+import { DefaultTeamContextSource, type TeamContextSource } from './team-context/source.js';
 import { MessageWorker } from './worker/message-worker.js';
 
 export interface MinoriApp {
@@ -40,6 +41,9 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
   let runtimeRetryTimer: ReturnType<typeof setInterval> | undefined;
   let shuttingDown = false;
   let workerStatus: ComponentStatus = 'unconfigured';
+  let teamContextStatus: ComponentStatus = config.teamContextDocumentToken
+    ? 'degraded'
+    : 'unconfigured';
   const feishuConfigured = Boolean(
     config.feishuAppId && config.feishuAppSecret && config.feishuBotOpenId,
   );
@@ -54,6 +58,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
     model: async () => modelPreflight.status(),
     retention: async () => storage.retentionStatus(),
     worker: async () => workerStatus,
+    teamContext: async () => teamContextStatus,
   } satisfies HealthProbes;
   const healthServer = buildHealthServer(probes);
   let started = false;
@@ -102,6 +107,25 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       aiModel: config.aiModel,
     });
     const service = new LarkKnowledgeService(lark);
+    let teamContextSource: TeamContextSource | undefined;
+    if (config.teamContextDocumentToken && storage.teamContextStore) {
+      const source = new DefaultTeamContextSource({
+        documentToken: config.teamContextDocumentToken,
+        tokenBudget: config.teamContextTokenBudget,
+        staleMaxMs: config.teamContextStaleMaxMs,
+        knowledge: service,
+        store: storage.teamContextStore,
+      });
+      teamContextSource = {
+        documentToken: source.documentToken,
+        async load(signal) {
+          const result = await source.load(signal);
+          teamContextStatus = result.status === 'loaded' ? 'ok' : 'degraded';
+          return result;
+        },
+        update: (input, signal) => source.update(input, signal),
+      };
+    }
     const feishu = createOfficialFeishuRuntime({
       appId: config.feishuAppId!,
       appSecret: config.feishuAppSecret!,
@@ -136,6 +160,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
           botOpenId: config.feishuBotOpenId!,
           botAppId: config.feishuAppId!,
           groupContextSource: feishu.groupContext,
+          ...(teamContextSource ? { teamContextSource } : {}),
           agentRunStore: storage.agentRunStore!,
           conversationKey: message.conversationKey,
           triggerMessageId: message.messageId,
