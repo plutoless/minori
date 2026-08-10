@@ -29,6 +29,7 @@ import {
   type GroupHistoryToolContext,
   type PersistentWriteAudit,
   type ScopedHistoryReader,
+  type ScheduleToolContext,
   type TeamContextToolContext,
 } from './tools.js';
 
@@ -64,6 +65,7 @@ export type TeamAgentDependencies = {
   writeAudit: PersistentWriteAudit;
   groupHistory?: GroupHistoryToolContext;
   teamContext?: TeamContextToolContext;
+  schedules?: ScheduleToolContext;
 };
 
 function createStepBudget(maxSteps: number) {
@@ -94,6 +96,7 @@ function createTeamAgentWithBudget(
       dependencies.writeAudit,
       dependencies.groupHistory,
       dependencies.teamContext,
+      dependencies.schedules,
     ),
     stopWhen: budget.stopWhen,
     providerOptions: { openai: { store: false } },
@@ -118,6 +121,7 @@ export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' 
   conversationStore: Pick<ConversationStore, 'search' | 'recentWithinBudget'>;
   groupContextSource?: GroupContextSource;
   teamContextSource?: TeamContextSource;
+  scheduleTools?: Omit<ScheduleToolContext, 'actorOpenId' | 'origin'>;
   contextTokenTarget?: number;
 };
 
@@ -492,6 +496,19 @@ export async function runKnowledgeAgent(
           source: dependencies.teamContextSource,
           current: teamContext,
           allowMutation: true,
+        },
+      } : {}),
+      ...(dependencies.scheduleTools ? {
+        schedules: {
+          ...dependencies.scheduleTools,
+          actorOpenId: input.trigger.senderOpenId,
+          origin: {
+            chatId: input.trigger.chatId,
+            displayName: input.trigger.chatType === 'group'
+              ? initialGroupContext?.currentSenderName ?? '当前群聊'
+              : '当前私聊',
+            chatType: input.trigger.chatType,
+          },
         },
       } : {}),
     }, stepBudget);

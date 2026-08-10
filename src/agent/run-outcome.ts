@@ -16,7 +16,9 @@ export type AgentRunOutcome =
 export type WriteAttemptReceipt = {
   toolName:
     | 'createDocument' | 'appendDocument' | 'patchDocument'
-    | 'updateTeamContext';
+    | 'updateTeamContext'
+    | 'createSchedule' | 'updateSchedule' | 'pauseSchedule'
+    | 'resumeSchedule' | 'deleteSchedule';
   outcome: 'succeeded' | 'failed' | 'unknown';
   sanitizedSummary: string;
   targetIdentifiers: Record<string, string>;
