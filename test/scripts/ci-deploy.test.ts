@@ -218,10 +218,15 @@ async function installerFixture() {
   return { root, publicKey: `${key}.pub`, authorizedKeys: join(root, 'root', '.ssh', 'authorized_keys') };
 }
 
-async function runInstaller(root: string, publicKey: string) {
+async function runInstaller(root: string, publicKey: string, extraEnv: NodeJS.ProcessEnv = {}) {
   try {
     const result = await execFileAsync(installer, [publicKey], {
-      env: { ...process.env, MINORI_INSTALL_TEST_MODE: '1', MINORI_INSTALL_TEST_ROOT: root },
+      env: {
+        ...process.env,
+        MINORI_INSTALL_TEST_MODE: '1',
+        MINORI_INSTALL_TEST_ROOT: root,
+        ...extraEnv,
+      },
     });
     return { code: 0, ...result };
   } catch (error) {
@@ -305,6 +310,106 @@ describe('isolated forced-command installer', { timeout: 15_000 }, () => {
     await expect(readFile(join(fixture.root, 'opt', 'minori', 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toBe(
       await readFile('deploy/vultr/rehearsal-v0.1.1.accepted', 'utf8'),
     );
+  });
+
+  it.each([
+    ['sshd syntax validation', 'sshd-test', 'unsafe_sshd_environment'],
+    ['effective-policy validation', 'effective-policy', 'unsafe_sshd_environment'],
+    ['sshd reload', 'reload', 'sshd_reload_failed'],
+    ['entrypoint installation', 'entrypoint-install', 'unsafe_installation'],
+  ])(
+    'keeps a preexisting deployment key revoked when %s fails during an upgrade',
+    async (_boundary, failure, category) => {
+      const fixture = await installerFixture();
+      await mkdir(dirname(fixture.authorizedKeys), { recursive: true, mode: 0o700 });
+      const unrelated = [
+        '# operator access remains byte-for-byte',
+        'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBOGUS operator@example',
+        '',
+      ].join('\n');
+      await writeFile(fixture.authorizedKeys, unrelated, { mode: 0o600 });
+      await expect(runInstaller(fixture.root, fixture.publicKey)).resolves.toEqual(
+        expect.objectContaining({ code: 0 }),
+      );
+      const before = await readFile(fixture.authorizedKeys, 'utf8');
+      const deploymentEntry = before.split('\n').find((line) => line.startsWith('restrict,command='));
+      expect(deploymentEntry).toBeDefined();
+
+      const result = await runInstaller(fixture.root, fixture.publicKey, {
+        MINORI_INSTALL_TEST_FAILURE: failure,
+      });
+
+      expect(result).toEqual(expect.objectContaining({
+        code: 1,
+        stderr: `minori_ci_install result=${category}\n`,
+      }));
+      const after = await readFile(fixture.authorizedKeys, 'utf8');
+      expect(after).toBe(unrelated);
+      expect(after).not.toContain(deploymentEntry!);
+    },
+  );
+
+  it.each([
+    [
+      'an earlier hostile first-active value followed by the desired value',
+      [
+        'permituserenvironment no',
+        'acceptenv LANG LC_*',
+        'setenv BASH_ENV=/tmp/hostile ENV=/dev/null BASH_ENV=/dev/null',
+      ].join('\n'),
+    ],
+    [
+      'a duplicate desired value',
+      [
+        'permituserenvironment no',
+        'acceptenv LANG LC_*',
+        'setenv BASH_ENV=/dev/null ENV=/dev/null ENV=/dev/null',
+      ].join('\n'),
+    ],
+  ])('rejects effective SetEnv containing %s', async (_case, effectivePolicy) => {
+    const fixture = await installerFixture();
+    await runInstaller(fixture.root, fixture.publicKey);
+
+    const result = await runInstaller(fixture.root, fixture.publicKey, {
+      MINORI_INSTALL_TEST_EFFECTIVE_POLICY: effectivePolicy,
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 1,
+      stderr: 'minori_ci_install result=unsafe_sshd_environment\n',
+    }));
+    expect(await readFile(fixture.authorizedKeys, 'utf8')).not.toContain('restrict,command=');
+  });
+
+  it('rejects a server-injected Bash function that the real login shell would import', async () => {
+    const fixture = await installerFixture();
+    const marker = join(fixture.root, 'server-function-ran');
+
+    await execFileAsync('/bin/bash', ['-c', 'hostile_server_function'], {
+      env: {
+        PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        'BASH_FUNC_hostile_server_function%%': `() { printf compromised > '${marker}'; }`,
+      },
+    });
+
+    await expect(readFile(marker, 'utf8')).resolves.toBe('compromised');
+    await rm(marker);
+    await runInstaller(fixture.root, fixture.publicKey);
+
+    const result = await runInstaller(fixture.root, fixture.publicKey, {
+      MINORI_INSTALL_TEST_EFFECTIVE_POLICY: [
+        'permituserenvironment no',
+        'acceptenv LANG LC_*',
+        'setenv BASH_ENV=/dev/null ENV=/dev/null BASH_FUNC_hostile_server_function%%=malicious',
+      ].join('\n'),
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 1,
+      stderr: 'minori_ci_install result=unsafe_sshd_environment\n',
+    }));
+    expect(await readFile(fixture.authorizedKeys, 'utf8')).not.toContain('restrict,command=');
+    await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('clears hostile Bash startup hooks before every installed entrypoint reaches Bash', async () => {

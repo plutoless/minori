@@ -132,6 +132,10 @@ install_file() {
   local mode="$1"
   local source="$2"
   local destination="$3"
+  if [[ $test_mode -eq 1 && "${MINORI_INSTALL_TEST_FAILURE:-}" == entrypoint-install \
+    && "$destination" == "${bin_dir}/ci-deploy" ]]; then
+    return 1
+  fi
   if [[ $test_mode -eq 1 ]]; then
     install -m "$mode" -- "$source" "$destination"
   else
@@ -195,6 +199,45 @@ if [[ $forced_count -gt 1 || $same_key_count -gt 1 || $exact_count -gt 1 \
   result_error ambiguous_deployment_key 1
 fi
 
+replace_authorized_keys() {
+  local operation="$1"
+  local temporary_keys existing_line
+  temporary_keys="$(mktemp "${ssh_dir}/authorized_keys.tmp.XXXXXX")" \
+    || result_error authorized_keys_write_failed 1
+  cleanup_keys() {
+    rm -f -- "$temporary_keys"
+  }
+  trap cleanup_keys EXIT
+  : > "$temporary_keys" || result_error authorized_keys_write_failed 1
+  while IFS= read -r existing_line || [[ -n "$existing_line" ]]; do
+    if [[ "$operation" == remove && "$existing_line" == "$authorized_entry" ]]; then
+      continue
+    fi
+    printf '%s\n' "$existing_line" >> "$temporary_keys" \
+      || result_error authorized_keys_write_failed 1
+  done < "$authorized_keys"
+  if [[ "$operation" == add ]]; then
+    printf '%s\n' "$authorized_entry" >> "$temporary_keys" \
+      || result_error authorized_keys_write_failed 1
+  fi
+  if [[ $test_mode -eq 0 ]]; then
+    chown root:root "$temporary_keys" || result_error authorized_keys_write_failed 1
+  fi
+  chmod 0600 "$temporary_keys" || result_error authorized_keys_write_failed 1
+  mv -f -- "$temporary_keys" "$authorized_keys" || result_error authorized_keys_write_failed 1
+  trap - EXIT
+}
+
+# A repeat installation is a policy/entrypoint upgrade. Revoke the one exact
+# deployment key atomically before changing either boundary. Any later failure
+# deliberately leaves CI deployment disabled while unrelated access is kept.
+if [[ $exact_count -eq 1 ]]; then
+  replace_authorized_keys remove
+fi
+if ! verify_secure_path "$ssh_dir" || ! verify_secure_path "$authorized_keys"; then
+  result_error unsafe_authorized_keys 1
+fi
+
 install_directory 0755 "$install_root"
 install_directory 0755 "$bin_dir"
 install_directory 0755 "$libexec_dir"
@@ -204,13 +247,6 @@ if [[ $test_mode -eq 1 ]]; then
   install_directory 0755 "${test_root}/etc/ssh"
 fi
 install_directory 0755 "$sshd_config_dir"
-install_file 0755 "${script_dir}/clean-entrypoint.py" "${bin_dir}/ci-deploy"
-install_file 0755 "${script_dir}/clean-entrypoint.py" "${bin_dir}/minori-release"
-install_file 0755 "${script_dir}/clean-entrypoint.py" "${bin_dir}/rehearse-release"
-install_file 0700 "${script_dir}/ci-deploy" "${libexec_dir}/ci-deploy"
-install_file 0700 "${script_dir}/minori-release" "${libexec_dir}/minori-release"
-install_file 0700 "${script_dir}/rehearse-release.sh" "${libexec_dir}/rehearse-release"
-install_file 0600 "${script_dir}/rehearsal-v0.1.1.accepted" "$rehearsal_consumed"
 if [[ -e "$sshd_policy" ]]; then
   if [[ ! -f "$sshd_policy" || -L "$sshd_policy" ]] || ! cmp -s -- "${script_dir}/sshd-minori-ci-deploy.conf" "$sshd_policy"; then
     result_error unsafe_sshd_environment 1
@@ -218,6 +254,48 @@ if [[ -e "$sshd_policy" ]]; then
 else
   install_file 0644 "${script_dir}/sshd-minori-ci-deploy.conf" "$sshd_policy"
 fi
+
+if [[ $test_mode -eq 1 ]]; then
+  if [[ "${MINORI_INSTALL_TEST_FAILURE:-}" == sshd-test ]]; then
+    result_error unsafe_sshd_environment 1
+  fi
+  effective_after="${MINORI_INSTALL_TEST_EFFECTIVE_POLICY:-permituserenvironment no
+acceptenv LANG LC_*
+setenv BASH_ENV=/dev/null ENV=/dev/null}"
+  if [[ "${MINORI_INSTALL_TEST_FAILURE:-}" == effective-policy ]]; then
+    effective_after='permituserenvironment no
+acceptenv LANG LC_*
+setenv BASH_ENV=/dev/null ENV=/dev/null BASH_FUNC_hostile_server_function%%=malicious'
+  fi
+else
+  /usr/sbin/sshd -t || result_error unsafe_sshd_environment 1
+  effective_after="$(/usr/sbin/sshd -T -C user=root,host=minori-ci-deploy.invalid,addr=127.0.0.1 2>/dev/null)" \
+    || result_error unsafe_sshd_environment 1
+fi
+permitted_user_environment="$(awk '$1 == "permituserenvironment" { print $2 }' <<< "$effective_after" | paste -sd ' ' -)"
+accepted_environment="$(awk '$1 == "acceptenv" { for (i = 2; i <= NF; i += 1) print $i }' <<< "$effective_after" | paste -sd ' ' -)"
+fixed_environment="$(awk '$1 == "setenv" { for (i = 2; i <= NF; i += 1) print $i }' <<< "$effective_after" | paste -sd ' ' -)"
+if [[ "$permitted_user_environment" != no \
+  || "$accepted_environment" != 'LANG LC_*' \
+  || "$fixed_environment" != 'BASH_ENV=/dev/null ENV=/dev/null' ]]; then
+  result_error unsafe_sshd_environment 1
+fi
+if [[ $test_mode -eq 1 ]]; then
+  if [[ "${MINORI_INSTALL_TEST_FAILURE:-}" == reload ]]; then
+    result_error sshd_reload_failed 1
+  fi
+else
+  /usr/bin/systemctl reload ssh.service || result_error sshd_reload_failed 1
+fi
+
+install_file 0755 "${script_dir}/clean-entrypoint.py" "${bin_dir}/ci-deploy" \
+  || result_error unsafe_installation 1
+install_file 0755 "${script_dir}/clean-entrypoint.py" "${bin_dir}/minori-release"
+install_file 0755 "${script_dir}/clean-entrypoint.py" "${bin_dir}/rehearse-release"
+install_file 0700 "${script_dir}/ci-deploy" "${libexec_dir}/ci-deploy"
+install_file 0700 "${script_dir}/minori-release" "${libexec_dir}/minori-release"
+install_file 0700 "${script_dir}/rehearse-release.sh" "${libexec_dir}/rehearse-release"
+install_file 0600 "${script_dir}/rehearsal-v0.1.1.accepted" "$rehearsal_consumed"
 post_install_paths=("$install_root" "$bin_dir" "$libexec_dir" "$release_dir" "$rehearsal_consumed" "${bin_dir}/ci-deploy" \
   "${bin_dir}/minori-release" "${bin_dir}/rehearse-release" "${libexec_dir}/ci-deploy" \
   "${libexec_dir}/minori-release" "${libexec_dir}/rehearse-release" "$sshd_config_dir" "$sshd_policy")
@@ -230,42 +308,8 @@ for secure_path in "${post_install_paths[@]}"; do
   fi
 done
 
-if [[ $test_mode -eq 0 ]]; then
-  /usr/sbin/sshd -t || result_error unsafe_sshd_environment 1
-  effective_after="$(/usr/sbin/sshd -T -C user=root,host=minori-ci-deploy.invalid,addr=127.0.0.1 2>/dev/null)" \
-    || result_error unsafe_sshd_environment 1
-  mapfile -t accepted_environment < <(awk '$1 == "acceptenv" { for (i = 2; i <= NF; i += 1) print $i }' <<< "$effective_after")
-  mapfile -t fixed_environment < <(awk '$1 == "setenv" { for (i = 2; i <= NF; i += 1) print $i }' <<< "$effective_after")
-  if [[ "${accepted_environment[*]}" != 'LANG LC_*' \
-    || " ${fixed_environment[*]} " != *' BASH_ENV=/dev/null '* \
-    || " ${fixed_environment[*]} " != *' ENV=/dev/null '* ]]; then
-    result_error unsafe_sshd_environment 1
-  fi
-  /usr/bin/systemctl reload ssh.service || result_error sshd_reload_failed 1
-fi
-
-if [[ $exact_count -eq 0 ]]; then
-  temporary_keys="$(mktemp "${ssh_dir}/authorized_keys.tmp.XXXXXX")"
-  cleanup_keys() {
-    rm -f -- "$temporary_keys"
-  }
-  trap cleanup_keys EXIT
-  if ! cp -- "$authorized_keys" "$temporary_keys"; then
-    result_error authorized_keys_write_failed 1
-  fi
-  if [[ -s "$temporary_keys" && "$(tail -c 1 "$temporary_keys" | wc -l)" -eq 0 ]]; then
-    printf '\n' >> "$temporary_keys"
-  fi
-  printf '%s\n' "$authorized_entry" >> "$temporary_keys"
-  if [[ $test_mode -eq 0 ]]; then
-    chown root:root "$temporary_keys"
-  fi
-  chmod 0600 "$temporary_keys"
-  mv -f -- "$temporary_keys" "$authorized_keys"
-  trap - EXIT
-fi
-
 if ! verify_secure_path "$ssh_dir" || ! verify_secure_path "$authorized_keys"; then
   result_error unsafe_authorized_keys 1
 fi
+replace_authorized_keys add
 printf 'minori_ci_install result=success\n'

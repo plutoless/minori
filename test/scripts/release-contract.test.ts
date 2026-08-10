@@ -132,10 +132,12 @@ describe('Team Agent release packaging contract', () => {
     expect(installer).toContain('forced_command="${bin_dir}/ci-deploy"');
     expect(installer).toContain('forced_prefix="restrict,command=\\\"${forced_command}\\\""');
     expect(installer).toContain("permituserenvironment\" { print $2 }' <<< \"$effective_before\")\" != no");
-    expect(installer).toContain("\"${accepted_environment[*]}\" != 'LANG LC_*'");
+    expect(installer).toContain("\"$accepted_environment\" != 'LANG LC_*'");
+    expect(installer).toContain("\"$fixed_environment\" != 'BASH_ENV=/dev/null ENV=/dev/null'");
     expect(installer).toContain('/usr/bin/systemctl reload ssh.service');
     expect(installer).toContain('ambiguous_deployment_key');
-    expect(installer).toContain('cp -- "$authorized_keys" "$temporary_keys"');
+    expect(installer).toContain('replace_authorized_keys remove');
+    expect(installer).toContain('replace_authorized_keys add');
     expect(installer).toContain('stat -c \'%u %g %a\'');
     expect(installer).toContain('(8#$mode & 8#022) == 0');
     expect(installer).toContain('clean-entrypoint.py');
