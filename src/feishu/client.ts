@@ -11,6 +11,10 @@ export interface FeishuMessenger {
   removeReaction(messageId: string, reactionId: string): Promise<void>;
 }
 
+export interface ScheduledResultMessenger {
+  sendText(chatId: string, text: string, idempotencyKey: string): Promise<string>;
+}
+
 export type FeishuBotIdentity = { openId: string; appId: string };
 
 export type FeishuSdk = {
@@ -32,6 +36,10 @@ export type FeishuSdk = {
       }>>;
     };
     message: {
+      create(payload: {
+        data: { receive_id: string; msg_type: 'text'; content: string; uuid: string };
+        params: { receive_id_type: 'chat_id' };
+      }): Promise<ApiResponse<{ message_id?: string | undefined }>>;
       reply(payload: {
         path: { message_id: string };
         data: {
@@ -118,7 +126,7 @@ function assertApiSuccess(response: ApiResponse<unknown>, errorCode: string) {
   if (response.code !== undefined && response.code !== 0) throw new Error(errorCode);
 }
 
-export class FeishuClientAdapter implements FeishuMessenger {
+export class FeishuClientAdapter implements FeishuMessenger, ScheduledResultMessenger {
   constructor(private readonly client: FeishuSdk, private readonly logger: Logger) {}
 
   async replyText(messageId: string, text: string, idempotencyKey: string): Promise<string> {
@@ -138,6 +146,25 @@ export class FeishuClientAdapter implements FeishuMessenger {
     const replyMessageId = response.data?.message_id;
     if (!replyMessageId) throw new Error('reply_missing_message_id');
     return replyMessageId;
+  }
+
+  async sendText(chatId: string, text: string, idempotencyKey: string): Promise<string> {
+    if (idempotencyKey.length === 0 || idempotencyKey.length > 50) {
+      throw new Error('invalid_send_idempotency_key');
+    }
+    const response = await this.client.im.v1.message.create({
+      data: {
+        receive_id: chatId,
+        msg_type: 'text',
+        content: JSON.stringify({ text }),
+        uuid: idempotencyKey,
+      },
+      params: { receive_id_type: 'chat_id' },
+    });
+    assertApiSuccess(response, 'scheduled_delivery_rejected');
+    const messageId = response.data?.message_id;
+    if (!messageId) throw new Error('scheduled_delivery_uncertain');
+    return messageId;
   }
 
   async isBotMessage(messageId: string, bot: FeishuBotIdentity): Promise<boolean> {

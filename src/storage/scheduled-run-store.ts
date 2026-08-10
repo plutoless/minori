@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 
 import type { ScheduledRun, ScheduledRunStatus } from '../schedule/types.js';
 import type { Database } from './database.js';
@@ -111,14 +112,19 @@ export class PostgresScheduledRunStore {
       if (!instruction) throw new Error('schedule_body_unavailable');
       const created = await tx.execute(sql`
         insert into scheduled_runs (
-          schedule_id, scheduled_for, task_version, instruction,
+          id, schedule_id, scheduled_for, task_version, instruction,
           result_chat_id, result_display_name, result_chat_type,
           context_chat_id, context_display_name, delivery_idempotency_key
         ) values (
-          ${input.scheduleId}, ${input.scheduledFor}, ${task.current_version}, ${instruction},
+          ${randomUUID()}, ${input.scheduleId}, ${input.scheduledFor}, ${task.current_version}, ${instruction},
           ${task.result_chat_id}, ${task.result_display_name}, ${task.result_chat_type},
-          ${task.context_chat_id}, ${task.context_display_name}, gen_random_uuid()::text
+          ${task.context_chat_id}, ${task.context_display_name}, null
         ) returning *
+      `);
+      const createdRow = created.rows[0] as RunRow;
+      await tx.execute(sql`
+        update scheduled_runs set delivery_idempotency_key = ${`s:${createdRow.id}:result`}
+        where id = ${createdRow.id}
       `);
       await tx.execute(sql`
         update scheduled_tasks set
@@ -128,7 +134,7 @@ export class PostgresScheduledRunStore {
           latest_run_status = 'queued', updated_at = now()
         where id = ${input.scheduleId}
       `);
-      return { status: 'created' as const, run: mapRun(created.rows[0] as RunRow) };
+      return { status: 'created' as const, run: mapRun(createdRow) };
     });
   }
 
@@ -148,6 +154,72 @@ export class PostgresScheduledRunStore {
       `);
       return mapRun(row);
     });
+  }
+
+  async claimNext(now: Date, leaseMs: number): Promise<ScheduledRun | undefined> {
+    return this.db.transaction(async (tx) => {
+      const selected = await tx.execute(sql`
+        select id from scheduled_runs where status = 'queued'
+        order by scheduled_for, created_at for update skip locked limit 1
+      `);
+      const id = (selected.rows[0] as { id: string } | undefined)?.id;
+      if (!id) return undefined;
+      const result = await tx.execute(sql`
+        update scheduled_runs set status = 'processing', claim_attempt = claim_attempt + 1,
+          leased_until = ${new Date(now.getTime() + leaseMs)}, updated_at = now()
+        where id = ${id} and status = 'queued' returning *
+      `);
+      const row = result.rows[0] as RunRow | undefined;
+      if (!row) return undefined;
+      await tx.execute(sql`
+        update scheduled_tasks set latest_run_status = 'processing', updated_at = now()
+        where id = ${row.schedule_id}
+      `);
+      return mapRun(row);
+    });
+  }
+
+  async prepareDelivery(id: string, claimAttempt: number, text: string): Promise<string> {
+    const result = await this.db.execute(sql`
+      update scheduled_runs set prepared_result_text = ${text}, delivery_attempted_at = now(),
+        updated_at = now()
+      where id = ${id} and status = 'processing' and claim_attempt = ${claimAttempt}
+        and delivery_attempted_at is null
+      returning delivery_idempotency_key
+    `);
+    const key = (result.rows[0] as { delivery_idempotency_key: string | null } | undefined)
+      ?.delivery_idempotency_key;
+    if (!key) throw new Error('scheduled_delivery_already_attempted');
+    return key;
+  }
+
+  async markDelivered(id: string, claimAttempt: number, messageId: string): Promise<void> {
+    const result = await this.db.execute(sql`
+      update scheduled_runs set delivery_message_id = ${messageId}, updated_at = now()
+      where id = ${id} and status = 'processing' and claim_attempt = ${claimAttempt}
+        and delivery_attempted_at is not null and delivery_message_id is null
+      returning id
+    `);
+    if (result.rows.length !== 1) throw new Error('scheduled_delivery_state_stale');
+  }
+
+  async beginFallback(id: string, claimAttempt: number): Promise<string> {
+    const result = await this.db.execute(sql`
+      update scheduled_runs set fallback_attempted_at = now(), updated_at = now()
+      where id = ${id} and status = 'processing' and claim_attempt = ${claimAttempt}
+        and fallback_attempted_at is null
+      returning id
+    `);
+    if (result.rows.length !== 1) throw new Error('scheduled_fallback_already_attempted');
+    return `s:${id}:fallback`;
+  }
+
+  async finishFallback(id: string, messageId?: string, category?: string): Promise<void> {
+    await this.db.execute(sql`
+      update scheduled_runs set fallback_message_id = ${messageId ?? null},
+        fallback_outcome_category = ${category ?? null}, updated_at = now()
+      where id = ${id} and fallback_attempted_at is not null
+    `);
   }
 
   async cancelQueuedForTask(scheduleId: string): Promise<boolean> {
@@ -190,12 +262,27 @@ export class PostgresScheduledRunStore {
   }
 
   async recoverExpired(now: Date): Promise<number> {
-    const result = await this.db.execute(sql`
-      update scheduled_runs set status = 'failed', leased_until = null,
-        outcome_category = 'scheduled_run_claim_expired', updated_at = now()
-      where status = 'processing' and leased_until < ${now}
-      returning id
-    `);
-    return result.rows.length;
+    return this.db.transaction(async (tx) => {
+      const result = await tx.execute(sql`
+        update scheduled_runs set status = 'failed', leased_until = null,
+          outcome_category = 'scheduled_run_claim_expired', updated_at = now()
+        where status = 'processing' and leased_until < ${now}
+        returning schedule_id
+      `);
+      for (const row of result.rows as Array<{ schedule_id: string }>) {
+        await tx.execute(sql`
+          update scheduled_tasks set
+            state = case when schedule_kind = 'once' and state <> 'deleted'
+              then 'completed' else state end,
+            name_reserved = case when schedule_kind = 'once' or state = 'deleted'
+              then false else name_reserved end,
+            completed_at = case when schedule_kind = 'once' and state <> 'deleted'
+              then ${now} else completed_at end,
+            latest_run_status = 'failed', updated_at = now()
+          where id = ${row.schedule_id}
+        `);
+      }
+      return result.rows.length;
+    });
   }
 }
