@@ -112,6 +112,10 @@ _Avoid_: Admission limit, user quota, in-memory backlog
 The temporary `Typing` reaction Minori places immediately after an accepted Feishu message is durably persisted. It may remain while the event waits in the Durable Conversation Queue and is removed after reply, explicit failure, or stopped processing; it does not mean model execution has already started.
 _Avoid_: Queue position, progress message, reasoning trace, status card
 
+**Progress Reply**:
+The single fixed ordinary reply Minori may send when a supported member-triggered event is still processing after 20 seconds. It is not retained in Minori's conversation history and has no authority, though Feishu may later return it as ordinary Live Group History.
+_Avoid_: Processing Reaction, periodic update, progress percentage, reasoning trace
+
 **Execution Budget Exhaustion**:
 The deliberate end of one Agent run after its configured model/tool step limit or wall-clock deadline is reached. Minori preserves completed writes, blocks further tools and writes, does not automatically rerun the task, records whether the step limit or timeout was reached, and tells the member they may explicitly continue in a new run.
 _Avoid_: Successful completion, generic Agent failure, automatic retry

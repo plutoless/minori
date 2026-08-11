@@ -5,6 +5,7 @@ import { MessageWorker } from '../../src/worker/message-worker.js';
 function recovered(overrides: Partial<StoredEvent> = {}): StoredEvent {
   return {
     eventId: 'evt_crash', attempts: 2,
+    receivedAt: new Date('2026-08-05T01:00:00.000Z'),
     payload: {
       eventId: 'evt_crash', messageId: 'om_1', chatId: 'oc_1',
       conversationKey: 'oc_1', senderOpenId: 'ou_1', chatType: 'group',
@@ -31,6 +32,8 @@ function setup(now: Date) {
   const eventStore = {
     enqueue: vi.fn(), claimReady: vi.fn(async () => []), recoverExpiredLeases: vi.fn(async () => 0),
     attachProcessingReaction: vi.fn(async () => true),
+    markProgressAttempted: vi.fn(async () => true),
+    confirmProgressSent: vi.fn(async () => true),
     markReplyStarted: vi.fn(async () => { calls.push('mark'); }),
     retry: vi.fn(async () => { calls.push('retry'); }),
     complete: vi.fn(async () => {
@@ -93,6 +96,8 @@ describe('MessageWorker restart recovery', () => {
     const eventStore = {
       enqueue: vi.fn(), claimReady: vi.fn(async () => []), recoverExpiredLeases: vi.fn(async () => 0),
       attachProcessingReaction: vi.fn(async () => true),
+      markProgressAttempted: vi.fn(async () => true),
+      confirmProgressSent: vi.fn(async () => true),
       complete: vi.fn(async () => ({})),
       markReplyUncertain: vi.fn(async () => ({})),
       retry: vi.fn(async () => undefined),
@@ -202,5 +207,27 @@ describe('MessageWorker restart recovery', () => {
     );
     expect(state.messenger.replyText.mock.calls[0]?.[1])
       .toContain('https://acme.feishu.cn/docx/created');
+  });
+
+  it('does not repeat a Progress Reply after its durable attempt marker', async () => {
+    const state = setup(new Date('2026-08-05T01:00:00.000Z'));
+    state.runAgent.mockResolvedValueOnce({
+      text: 'final answer', sources: [], usage: {},
+      outcome: 'completed', writeAttempts: [],
+    });
+    const event = recovered({
+      receivedAt: new Date('2026-08-05T00:00:00.000Z'),
+      progressAttemptedAt: new Date('2026-08-05T00:00:20.000Z'),
+      progressMessageId: undefined,
+      replyIdempotencyKey: undefined,
+      replyAttemptedAt: undefined,
+      preparedReplyText: undefined,
+    });
+
+    await state.worker.process(event);
+
+    expect(state.eventStore.markProgressAttempted).not.toHaveBeenCalled();
+    expect(state.messenger.replyText).toHaveBeenCalledOnce();
+    expect(state.messenger.replyText.mock.calls[0]?.[1]).toBe('final answer');
   });
 });

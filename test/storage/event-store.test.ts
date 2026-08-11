@@ -204,6 +204,40 @@ describe('PostgresEventStore', () => {
     expect(recovered?.replyAttemptedAt).toEqual(attemptedAt);
   });
 
+  it('marks one Progress Reply attempt and returns its confirmed message after retry', async () => {
+    const immediate = new PostgresEventStore(database.db, {
+      minRetryDelayMs: 0,
+      maxRetryDelayMs: 0,
+    });
+    await immediate.enqueue(event());
+    const [claimed] = await immediate.claimReady(1, new Date(Date.now() + 60_000));
+    const attemptedAt = new Date('2026-08-11T10:00:20.000Z');
+
+    expect(claimed?.receivedAt).toBeInstanceOf(Date);
+    expect(await immediate.markProgressAttempted('evt_1', 1, attemptedAt)).toBe(true);
+    expect(await immediate.markProgressAttempted('evt_1', 1, attemptedAt)).toBe(false);
+    expect(await immediate.confirmProgressSent('evt_1', 1, 'om_progress_1')).toBe(true);
+    await immediate.retry('evt_1', 1, 'agent_failed', new Date());
+
+    const [recovered] = await immediate.claimReady(1, new Date(Date.now() + 60_000));
+    expect(recovered).toMatchObject({
+      progressAttemptedAt: attemptedAt,
+      progressMessageId: 'om_progress_1',
+    });
+    expect(JSON.stringify(recovered)).not.toContain('我还在处理');
+  });
+
+  it('rejects Progress Reply after final reply start or stale lease recovery', async () => {
+    await store.enqueue(event());
+    await store.claimReady(1, new Date(Date.now() - 1));
+    await store.recoverExpiredLeases(new Date(), 1);
+    await store.claimReady(1, new Date(Date.now() + 60_000));
+
+    expect(await store.markProgressAttempted('evt_1', 1, new Date())).toBe(false);
+    await store.markReplyStarted('evt_1', 2, 'reply-key', new Date(), 'answer');
+    expect(await store.markProgressAttempted('evt_1', 2, new Date())).toBe(false);
+  });
+
   it('returns the durable write replay boundary on a recovered claim', async () => {
     const immediateStore = new PostgresEventStore(database.db, {
       minRetryDelayMs: 0,

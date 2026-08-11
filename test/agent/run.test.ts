@@ -201,6 +201,105 @@ describe('runKnowledgeAgent', () => {
     expect(serialized.match(/When is the beta launch\?/gu)).toHaveLength(1);
   });
 
+  it('keeps an old permission failure explicitly historical when no current read occurs', async () => {
+    const historical = '2026-08-10 audit: Wiki read was blocked by missing scopes.';
+    const knowledge = service();
+    const model = new MockLanguageModelV4({
+      doGenerate: (options) => {
+        const serialized = JSON.stringify(options.prompt);
+        const followsEvidenceBoundary = serialized.includes(
+          'Do not present historical content as a live result from the current run.',
+        ) && serialized.includes(historical);
+        return Promise.resolve(generated([{
+          type: 'text',
+          text: followsEvidenceBoundary
+            ? '历史记录显示昨天的读取被权限拦截；本次没有实时验证。'
+            : '实时读取仍被权限拦截。',
+        }], 'stop'));
+      },
+    });
+    const prompt = '现在 Wiki 情况怎么样？';
+    const retained = conversationStore(prompt);
+    retained.recentWithinBudget.mockResolvedValueOnce([
+      {
+        messageId: 'om_old', conversationId: 'conv_1', role: 'assistant',
+        content: historical, createdAt: new Date('2026-08-10T02:00:00Z'),
+      },
+      {
+        messageId: 'om_trigger', conversationId: 'conv_1', role: 'user',
+        content: prompt, createdAt: new Date('2026-08-11T02:00:00Z'),
+      },
+    ]);
+
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt },
+      dependencies(prompt, model, { conversationStore: retained, service: knowledge }),
+    );
+
+    expect(reply.text).toBe('历史记录显示昨天的读取被权限拦截；本次没有实时验证。');
+    expect(knowledge.search).not.toHaveBeenCalled();
+  });
+
+  it('uses a current successful tool result without inventing a current read failure', async () => {
+    const knowledge = service();
+    const doGenerate = vi.fn()
+      .mockResolvedValueOnce(generated([{
+        type: 'tool-call', toolCallId: 'call_search', toolName: 'searchKnowledge',
+        input: JSON.stringify({ query: 'DevX Wiki' }),
+      }], 'tool-calls'))
+      .mockImplementationOnce((options) => {
+        const serialized = JSON.stringify(options.prompt);
+        const hasCurrentResult = serialized.includes('Launch plan')
+          && serialized.includes('Do not present historical content as a live result');
+        return Promise.resolve(generated([{
+          type: 'text',
+          text: hasCurrentResult
+            ? '本次实时搜索成功，找到了 Launch plan。'
+            : '实时读取被权限拦截。',
+        }], 'stop'));
+      });
+    const model = new MockLanguageModelV4({
+      doGenerate,
+    });
+
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt: '实时检查 DevX Wiki。' },
+      dependencies('实时检查 DevX Wiki。', model, { service: knowledge }),
+    );
+
+    expect(knowledge.search).toHaveBeenCalledWith(
+      { query: 'DevX Wiki' },
+      expect.any(AbortSignal),
+    );
+    expect(reply.text).toBe('本次实时搜索成功，找到了 Launch plan。');
+    expect(reply.text).not.toContain('权限拦截');
+  });
+
+  it('keeps an unverified member-provided current fact attributed to the member', async () => {
+    const prompt = '我刚刚已经给机器人开了 Wiki 权限。';
+    const model = new MockLanguageModelV4({
+      doGenerate: (options) => {
+        const serialized = JSON.stringify(options.prompt);
+        const hasAttributionRule = serialized.includes(
+          'attribute it to the member rather than claiming independent confirmation',
+        );
+        return Promise.resolve(generated([{
+          type: 'text',
+          text: hasAttributionRule
+            ? '收到，你说已经开通了 Wiki 权限；我还没有独立验证。'
+            : 'Wiki 权限已经确认开通。',
+        }], 'stop'));
+      },
+    });
+
+    const reply = await runKnowledgeAgent(
+      { ...input, prompt },
+      dependencies(prompt, model, { conversationStore: conversationStore(prompt) }),
+    );
+
+    expect(reply.text).toBe('收到，你说已经开通了 Wiki 权限；我还没有独立验证。');
+  });
+
   it('can retain a naturally stated durable team assertion through one fenced update', async () => {
     const durableInput: AgentRunInput = {
       ...input,

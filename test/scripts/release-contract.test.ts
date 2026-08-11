@@ -105,6 +105,39 @@ describe('Team Agent release packaging contract', () => {
     }
   });
 
+  it('documents one fixed delayed Progress Reply without changing Scheduled Runs', async () => {
+    const readme = await text('README.md');
+    const activeDesign = await text(
+      'docs/superpowers/specs/2026-08-07-team-agent-design.md',
+    );
+    const localEnvironment = await text('.env.example');
+    const productionEnvironment = await text('deploy/vultr/env.example');
+
+    for (const guidance of [readme, activeDesign]) {
+      expect(guidance).toContain('Progress Reply');
+      expect(guidance).toContain('20 seconds');
+      expect(guidance).toContain('我还在处理这条请求，完成后会继续回复。');
+      expect(guidance).toContain('not appended to Retained Conversation History');
+      expect(guidance).toContain('Scheduled Runs do not send Progress Replies');
+    }
+    for (const environment of [localEnvironment, productionEnvironment]) {
+      expect(environment).not.toContain('PROGRESS_REPLY');
+    }
+  });
+
+  it('documents historical evidence without introducing a mandatory tool workflow', async () => {
+    const readme = await text('README.md');
+    const activeDesign = await text(
+      'docs/superpowers/specs/2026-08-07-team-agent-design.md',
+    );
+
+    for (const guidance of [readme, activeDesign]) {
+      expect(guidance).toContain('Historical content may be cited');
+      expect(guidance).toContain('not been verified live');
+      expect(guidance).toContain('no intent classifier');
+    }
+  });
+
   it('keeps active acceptance guidance on the exact sanitized evidence whitelist', async () => {
     const readme = await text('README.md');
     const activeDesign = await text(
@@ -177,16 +210,16 @@ describe('Team Agent release packaging contract', () => {
     expect(entrypoint).toContain('release_command=(/opt/minori/bin/minori-release)');
   });
 
-  it('declares the exact scheduled-tasks release version in both package manifests', async () => {
+  it('declares the exact current release version in both package manifests', async () => {
     const manifest = JSON.parse(await text('package.json')) as { version: string };
     const lockfile = JSON.parse(await text('package-lock.json')) as {
       version: string;
       packages: Record<string, { version?: string }>;
     };
 
-    expect(manifest.version).toBe('0.2.0');
-    expect(lockfile.version).toBe('0.2.0');
-    expect(lockfile.packages[''].version).toBe('0.2.0');
+    expect(manifest.version).toBe('0.2.1');
+    expect(lockfile.version).toBe('0.2.1');
+    expect(lockfile.packages[''].version).toBe('0.2.1');
   });
 
   it('documents the GitHub-only release operator paths without a legacy deploy command', async () => {

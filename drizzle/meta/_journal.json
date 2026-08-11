@@ -78,6 +78,13 @@
       "when": 1786395040108,
       "tag": "0010_dusty_omega_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786445984242,
+      "tag": "0011_progress_reply",
+      "breakpoints": true
     }
   ]
 }
