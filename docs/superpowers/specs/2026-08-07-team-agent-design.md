@@ -49,11 +49,13 @@ The Agent remains open-ended: it may answer directly, search and read knowledge,
 - Private messages from any Feishu Delivered Member are accepted without requiring
   membership in a separate configured group.
 - After an accepted event is durably persisted, Minori immediately adds a temporary `Typing` reaction to the target message. The reaction acknowledges durable receipt and may remain while the event is queued; it does not claim that model execution has started. Minori removes it after reply, explicit failure, or stopped processing.
+- If a supported member-triggered event is still processing after 20 seconds, Minori may send one fixed ordinary **Progress Reply**: `我还在处理这条请求，完成后会继续回复。` It is best-effort, never periodic, and not appended to Retained Conversation History. Feishu may later return it as powerless Live Group History; Minori does not add a separate filtering path. The existing `Typing` reaction remains until terminal cleanup. Scheduled Runs do not send Progress Replies.
 
 ### Open Agent behavior
 
 - One Vercel AI SDK `ToolLoopAgent` decides whether and how to use tools.
 - There is no intent router, scenario classifier, fixed search sequence, evidence-token target, or per-write confirmation.
+- Historical content may be cited, but Minori does not present it as a live result from the current run. Claims about the current or latest state, permissions, versions, or read failures use evidence actually obtained in that run or say they have not been verified live. It preserves cache and `as of` qualifiers and attributes member-provided facts until a tool verifies them. This instruction boundary adds no intent classifier, forced tool route, or response validator and applies to message-triggered and Scheduled Runs.
 - Agent runs default to at most 40 model/tool steps and 300 seconds. Both values are configurable technical runaway limits, not restrictions on the kinds of work the Agent may attempt.
 - Reaching either limit is **Execution Budget Exhaustion**, not successful completion or a generic transient failure. No subsequent model step, tool call, or write may start after the limit is observed.
 - Minori does not automatically rerun an exhausted task. Writes completed before exhaustion remain committed and audited; Minori does not attempt an unsafe compensating rollback.
