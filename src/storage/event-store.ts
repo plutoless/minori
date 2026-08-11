@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { NormalizedMessage } from '../contracts/messages.js';
 import type { Database } from './database.js';
 import { processedEvents } from './schema.js';
@@ -11,7 +11,10 @@ export type StoredEvent = {
   eventId: string;
   payload: NormalizedMessage;
   attempts: number;
+  receivedAt: Date;
   processingReactionId?: string;
+  progressAttemptedAt?: Date;
+  progressMessageId?: string;
   writeStartedAt?: Date;
   replyIdempotencyKey?: string;
   replyAttemptedAt?: Date;
@@ -35,6 +38,16 @@ export interface EventStore {
     attemptedAt: Date,
     preparedReplyText?: string,
   ): Promise<void>;
+  markProgressAttempted(
+    eventId: string,
+    claimAttempt: number,
+    attemptedAt: Date,
+  ): Promise<boolean>;
+  confirmProgressSent(
+    eventId: string,
+    claimAttempt: number,
+    messageId: string,
+  ): Promise<boolean>;
   attachProcessingReaction(eventId: string, reactionId: string): Promise<boolean>;
   markReplyUncertain(eventId: string, claimAttempt: number): Promise<TerminalEventResult>;
   retry(
@@ -135,7 +148,10 @@ export class PostgresEventStore implements EventStore {
         event.event_id as "eventId",
         event.payload,
         event.attempts,
+        event.received_at as "receivedAt",
         event.processing_reaction_id as "processingReactionId",
+        event.progress_attempted_at as "progressAttemptedAt",
+        event.progress_message_id as "progressMessageId",
         event.write_started_at as "writeStartedAt",
         event.reply_idempotency_key as "replyIdempotencyKey",
         event.reply_attempted_at as "replyAttemptedAt",
@@ -147,7 +163,10 @@ export class PostgresEventStore implements EventStore {
       eventId: string;
       payload: NormalizedMessage;
       attempts: number;
+      receivedAt: Date;
       processingReactionId: string | null;
+      progressAttemptedAt: Date | null;
+      progressMessageId: string | null;
       writeStartedAt: Date | null;
       replyIdempotencyKey: string | null;
       replyAttemptedAt: Date | null;
@@ -155,8 +174,13 @@ export class PostgresEventStore implements EventStore {
     }>).map((row) => ({
       eventId: row.eventId,
       attempts: row.attempts,
+      receivedAt: new Date(row.receivedAt),
       payload: { ...row.payload, occurredAt: new Date(row.payload.occurredAt) },
       ...(row.processingReactionId ? { processingReactionId: row.processingReactionId } : {}),
+      ...(row.progressAttemptedAt
+        ? { progressAttemptedAt: new Date(row.progressAttemptedAt) }
+        : {}),
+      ...(row.progressMessageId ? { progressMessageId: row.progressMessageId } : {}),
       ...(row.writeStartedAt ? { writeStartedAt: new Date(row.writeStartedAt) } : {}),
       ...(row.replyIdempotencyKey ? { replyIdempotencyKey: row.replyIdempotencyKey } : {}),
       ...(row.replyAttemptedAt ? { replyAttemptedAt: new Date(row.replyAttemptedAt) } : {}),
@@ -226,6 +250,43 @@ export class PostgresEventStore implements EventStore {
       eq(processedEvents.attempts, claimAttempt),
     )).returning({ eventId: processedEvents.eventId });
     this.assertClaimUpdated(updated);
+  }
+
+  async markProgressAttempted(
+    eventId: string,
+    claimAttempt: number,
+    attemptedAt: Date,
+  ): Promise<boolean> {
+    const updated = await this.db.update(processedEvents).set({
+      progressAttemptedAt: attemptedAt,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(processedEvents.eventId, eventId),
+      eq(processedEvents.status, 'processing'),
+      eq(processedEvents.attempts, claimAttempt),
+      isNull(processedEvents.replyAttemptedAt),
+      isNull(processedEvents.progressAttemptedAt),
+    )).returning({ eventId: processedEvents.eventId });
+    return updated.length === 1;
+  }
+
+  async confirmProgressSent(
+    eventId: string,
+    claimAttempt: number,
+    messageId: string,
+  ): Promise<boolean> {
+    const updated = await this.db.update(processedEvents).set({
+      progressMessageId: messageId,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(processedEvents.eventId, eventId),
+      eq(processedEvents.status, 'processing'),
+      eq(processedEvents.attempts, claimAttempt),
+      isNotNull(processedEvents.progressAttemptedAt),
+      isNull(processedEvents.progressMessageId),
+      isNull(processedEvents.replyAttemptedAt),
+    )).returning({ eventId: processedEvents.eventId });
+    return updated.length === 1;
   }
 
   async markReplyUncertain(

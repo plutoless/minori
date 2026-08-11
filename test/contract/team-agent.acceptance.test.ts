@@ -138,6 +138,20 @@ describe('open team Agent release contract', () => {
       returning claim_attempt as "claimAttempt"
     `);
     expect(legacyRun.rows).toEqual([{ claimAttempt: null }]);
+
+    const legacyEvent = await database.pool.query<{
+      attemptedAt: Date | null;
+      messageId: string | null;
+    }>(`
+      insert into processed_events (
+        event_id, message_id, payload, conversation_key, status
+      ) values (
+        'evt_rollback_probe', 'om_rollback_probe',
+        '{"eventId":"evt_rollback_probe","messageId":"om_rollback_probe","chatId":"oc_rollback_probe","conversationKey":"oc_rollback_probe","senderOpenId":"ou_probe","chatType":"p2p","content":{"kind":"text","text":"probe","feishuLinks":[]},"occurredAt":"2026-08-11T00:00:00.000Z"}'::jsonb,
+        'oc_rollback_probe', 'queued'
+      ) returning progress_attempted_at as "attemptedAt", progress_message_id as "messageId"
+    `);
+    expect(legacyEvent.rows).toEqual([{ attemptedAt: null, messageId: null }]);
   });
 
   it('answers delivered external group and private messages with fixture-backed sources', async () => {

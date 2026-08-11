@@ -30,6 +30,8 @@ export const processedEvents = pgTable('processed_events', {
   nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).defaultNow().notNull(),
   leasedUntil: timestamp('leased_until', { withTimezone: true }),
   processingReactionId: text('processing_reaction_id'),
+  progressAttemptedAt: timestamp('progress_attempted_at', { withTimezone: true }),
+  progressMessageId: text('progress_message_id'),
   writeStartedAt: timestamp('write_started_at', { withTimezone: true }),
   replyIdempotencyKey: text('reply_idempotency_key'),
   replyAttemptedAt: timestamp('reply_attempted_at', { withTimezone: true }),
