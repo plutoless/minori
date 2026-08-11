@@ -1,7 +1,7 @@
 # Current Evidence and Delayed Progress Reply Design
 
 **Date:** 2026-08-11  
-**Status:** Approved  
+**Status:** Approved
 **Audience:** Minori maintainers and operators
 
 ## Summary
