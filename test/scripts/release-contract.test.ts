@@ -210,16 +210,16 @@ describe('Team Agent release packaging contract', () => {
     expect(entrypoint).toContain('release_command=(/opt/minori/bin/minori-release)');
   });
 
-  it('declares the exact scheduled-tasks release version in both package manifests', async () => {
+  it('declares the exact current release version in both package manifests', async () => {
     const manifest = JSON.parse(await text('package.json')) as { version: string };
     const lockfile = JSON.parse(await text('package-lock.json')) as {
       version: string;
       packages: Record<string, { version?: string }>;
     };
 
-    expect(manifest.version).toBe('0.2.0');
-    expect(lockfile.version).toBe('0.2.0');
-    expect(lockfile.packages[''].version).toBe('0.2.0');
+    expect(manifest.version).toBe('0.2.1');
+    expect(lockfile.version).toBe('0.2.1');
+    expect(lockfile.packages[''].version).toBe('0.2.1');
   });
 
   it('documents the GitHub-only release operator paths without a legacy deploy command', async () => {
