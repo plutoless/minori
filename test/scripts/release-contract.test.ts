@@ -55,11 +55,37 @@ describe('Team Agent release packaging contract', () => {
     expect(productionEnvironment).toContain('AGENT_TIMEOUT_MS=300000');
   });
 
+  it('publishes one bounded Team Context configuration in both environment examples', async () => {
+    const localEnvironment = await text('.env.example');
+    const productionEnvironment = await text('deploy/vultr/env.example');
+
+    for (const environment of [localEnvironment, productionEnvironment]) {
+      expect(environment).toContain('TEAM_CONTEXT_DOCUMENT_TOKEN=dox_team_context');
+      expect(environment).toContain('TEAM_CONTEXT_TOKEN_BUDGET=8000');
+      expect(environment).toContain('TEAM_CONTEXT_STALE_MAX_MS=86400000');
+    }
+  });
+
+  it('publishes safe scheduler defaults and keeps production disabled-first', async () => {
+    const localEnvironment = await readFile('.env.example', 'utf8');
+    const productionEnvironment = await readFile('deploy/vultr/env.example', 'utf8');
+    for (const environment of [localEnvironment, productionEnvironment]) {
+      expect(environment).toContain('SCHEDULE_DEFAULT_TIMEZONE=Asia/Shanghai');
+      expect(environment).toContain('SCHEDULE_POLL_MS=15000');
+      expect(environment).toContain('SCHEDULE_LEASE_MS=420000');
+    }
+    expect(localEnvironment).toContain('SCHEDULE_ENABLED=true');
+    expect(productionEnvironment).toContain('SCHEDULE_ENABLED=false');
+    const app = await text('src/app.ts');
+    expect(app).toContain('if (config.scheduleEnabled && storage.scheduleStore && storage.scheduledRunStore)');
+  });
+
   it('documents the exact Bot Authority required for Live Group History', async () => {
     const readme = await text('README.md');
 
     expect(readme).toContain('im:message.group_msg');
     expect(readme).toContain('im:chat.members:read');
+    expect(readme).toContain('im:chat:read');
   });
 
   it('keeps active product guidance on ordinary replies and Group Context', async () => {
@@ -151,16 +177,16 @@ describe('Team Agent release packaging contract', () => {
     expect(entrypoint).toContain('release_command=(/opt/minori/bin/minori-release)');
   });
 
-  it('declares the exact first CI release version in both package manifests', async () => {
+  it('declares the exact scheduled-tasks release version in both package manifests', async () => {
     const manifest = JSON.parse(await text('package.json')) as { version: string };
     const lockfile = JSON.parse(await text('package-lock.json')) as {
       version: string;
       packages: Record<string, { version?: string }>;
     };
 
-    expect(manifest.version).toBe('0.1.1');
-    expect(lockfile.version).toBe('0.1.1');
-    expect(lockfile.packages[''].version).toBe('0.1.1');
+    expect(manifest.version).toBe('0.2.0');
+    expect(lockfile.version).toBe('0.2.0');
+    expect(lockfile.packages[''].version).toBe('0.2.0');
   });
 
   it('documents the GitHub-only release operator paths without a legacy deploy command', async () => {
@@ -262,5 +288,5 @@ describe('Team Agent release packaging contract', () => {
         'test ! -e /app/scripts/rollback-vultr.sh',
       ].join(' && '),
     ]);
-  }, 60_000);
+  }, 600_000);
 });

@@ -6,11 +6,17 @@ import { PostgresConversationStore } from './conversation-store.js';
 import { createDatabase, type DatabaseHandle } from './database.js';
 import { PostgresEventStore } from './event-store.js';
 import { createRetentionService, type RetentionService } from './retention.js';
+import { PostgresTeamContextStore } from './team-context-store.js';
+import { PostgresScheduleStore } from './schedule-store.js';
+import { PostgresScheduledRunStore } from './scheduled-run-store.js';
 
 export type StorageRuntime = {
   eventStore?: PostgresEventStore;
   conversationStore?: PostgresConversationStore;
   agentRunStore?: PostgresAgentRunStore;
+  teamContextStore?: PostgresTeamContextStore;
+  scheduleStore?: PostgresScheduleStore;
+  scheduledRunStore?: PostgresScheduledRunStore;
   databaseStatus(): Promise<ComponentStatus>;
   retentionStatus(): ComponentStatus;
   start(): Promise<void>;
@@ -33,8 +39,15 @@ export function createStorageRuntime(config: AppConfig, logger: Logger): Storage
   const conversationStore = new PostgresConversationStore(database.db, {
     retentionMs: config.messageRetentionDays * DAY_MS,
   });
+  const scheduleStore = new PostgresScheduleStore(database.db);
   let currentRetentionStatus: ComponentStatus = 'degraded';
-  const retention: RetentionService = createRetentionService(conversationStore, {
+  const retention: RetentionService = createRetentionService({
+    async purgeExpired(before) {
+      const messages = await conversationStore.purgeExpired(before);
+      const schedules = await scheduleStore.purgeTerminalBodies(new Date());
+      return messages + schedules;
+    },
+  }, {
     retentionMs: config.messageRetentionDays * DAY_MS,
     onSuccess: () => { currentRetentionStatus = 'ok'; },
     onError: (details) => {
@@ -49,6 +62,9 @@ export function createStorageRuntime(config: AppConfig, logger: Logger): Storage
     eventStore: new PostgresEventStore(database.db),
     conversationStore,
     agentRunStore: new PostgresAgentRunStore(database.db),
+    teamContextStore: new PostgresTeamContextStore(database.db),
+    scheduleStore,
+    scheduledRunStore: new PostgresScheduledRunStore(database.db),
     async databaseStatus() {
       if (stopped) return 'degraded';
       try {

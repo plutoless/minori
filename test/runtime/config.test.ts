@@ -13,7 +13,45 @@ describe('loadConfig', () => {
       agentTimeoutMs: 300_000,
       conversationContextTokenTarget: 24_000,
       messageRetentionDays: 30,
+      teamContextTokenBudget: 8_000,
+      teamContextStaleMaxMs: 86_400_000,
+      scheduleDefaultTimezone: 'Asia/Shanghai',
+      scheduleEnabled: true,
+      schedulePollMs: 15_000,
+      scheduleLeaseMs: 420_000,
     });
+  });
+
+  it('validates scheduler timezone, kill switch, cadence, and lease boundary', () => {
+    expect(loadConfig({
+      SCHEDULE_DEFAULT_TIMEZONE: 'America/Los_Angeles',
+      SCHEDULE_ENABLED: 'false',
+      SCHEDULE_POLL_MS: '30000',
+      SCHEDULE_LEASE_MS: '360000',
+    })).toMatchObject({
+      scheduleDefaultTimezone: 'America/Los_Angeles', scheduleEnabled: false,
+      schedulePollMs: 30_000, scheduleLeaseMs: 360_000,
+    });
+    expect(() => loadConfig({ SCHEDULE_DEFAULT_TIMEZONE: 'Mars/Olympus' })).toThrow(
+      'schedule_default_timezone_invalid',
+    );
+    expect(() => loadConfig({ AGENT_TIMEOUT_MS: '300000', SCHEDULE_LEASE_MS: '360000' }))
+      .toThrow('schedule_lease_must_cover_agent_and_delivery');
+  });
+
+  it('accepts one optional bounded Team Context document configuration', () => {
+    expect(loadConfig({
+      TEAM_CONTEXT_DOCUMENT_TOKEN: 'dox_team',
+      TEAM_CONTEXT_TOKEN_BUDGET: '7000',
+      TEAM_CONTEXT_STALE_MAX_MS: '3600000',
+    })).toMatchObject({
+      teamContextDocumentToken: 'dox_team',
+      teamContextTokenBudget: 7_000,
+      teamContextStaleMaxMs: 3_600_000,
+    });
+    expect(() => loadConfig({ TEAM_CONTEXT_DOCUMENT_TOKEN: '' })).toThrow();
+    expect(() => loadConfig({ TEAM_CONTEXT_TOKEN_BUDGET: '0' })).toThrow();
+    expect(() => loadConfig({ TEAM_CONTEXT_STALE_MAX_MS: '-1' })).toThrow();
   });
 
   it('accepts bounded Agent execution limits', () => {

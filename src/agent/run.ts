@@ -12,7 +12,9 @@ import type {
 } from '../feishu/group-context.js';
 import type { AgentRunStore } from '../storage/agent-run-store.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
-import { selectRecentHistory, type AgentHistoryMessage } from './context-window.js';
+import { TeamContextUpdateError, type TeamContextSource } from '../team-context/source.js';
+import { DefaultContextAssembler } from './context-assembler.js';
+import type { AgentHistoryMessage } from './context-window.js';
 import { TEAM_AGENT_INSTRUCTIONS } from './instructions.js';
 import {
   budgetExhaustedText,
@@ -25,8 +27,10 @@ import { SourceRegistry, type AgentSource } from './sources.js';
 import {
   createKnowledgeTools,
   type GroupHistoryToolContext,
-  type KnowledgeWriteAudit,
+  type PersistentWriteAudit,
   type ScopedHistoryReader,
+  type ScheduleToolContext,
+  type TeamContextToolContext,
 } from './tools.js';
 
 export type AgentReply = {
@@ -46,6 +50,12 @@ export type AgentRunInput = {
     chatId: string;
     chatType: 'group' | 'p2p';
     occurredAt: Date;
+  } | {
+    kind: 'scheduled_task';
+    scheduledRunId: string;
+    chatId: string;
+    chatType: 'group' | 'p2p';
+    occurredAt: Date;
   };
 };
 
@@ -58,8 +68,10 @@ export type TeamAgentDependencies = {
   service: KnowledgeService;
   history: ScopedHistoryReader;
   sources: SourceRegistry;
-  writeAudit: KnowledgeWriteAudit;
+  writeAudit: PersistentWriteAudit;
   groupHistory?: GroupHistoryToolContext;
+  teamContext?: TeamContextToolContext;
+  schedules?: ScheduleToolContext;
 };
 
 function createStepBudget(maxSteps: number) {
@@ -89,6 +101,8 @@ function createTeamAgentWithBudget(
       dependencies.sources,
       dependencies.writeAudit,
       dependencies.groupHistory,
+      dependencies.teamContext,
+      dependencies.schedules,
     ),
     stopWhen: budget.stopWhen,
     providerOptions: { openai: { store: false } },
@@ -112,6 +126,11 @@ export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' 
   triggerMessageId: string;
   conversationStore: Pick<ConversationStore, 'search' | 'recentWithinBudget'>;
   groupContextSource?: GroupContextSource;
+  teamContextSource?: TeamContextSource;
+  scheduleTools?: Omit<ScheduleToolContext, 'actorOpenId' | 'origin'>;
+  invocationSource?:
+    | { kind: 'message'; eventId: string; claimAttempt: number }
+    | { kind: 'scheduled'; scheduledRunId: string; claimAttempt: number };
   contextTokenTarget?: number;
 };
 
@@ -128,9 +147,18 @@ class WriteAuditUnavailable extends Error {
   }
 }
 
-function stableWriteErrorCategory(error: unknown) {
-  return error instanceof KnowledgeWriteConflict
-    ? 'knowledge_write_conflict'
+function stableWriteErrorCategory(
+  error: unknown,
+  toolName: Parameters<PersistentWriteAudit['run']>[0]['toolName'],
+) {
+  if (error instanceof TeamContextUpdateError) return error.code;
+  if (error instanceof KnowledgeWriteConflict) {
+    return toolName === 'updateTeamContext'
+      ? 'team_context_conflict'
+      : 'knowledge_write_conflict';
+  }
+  return toolName === 'updateTeamContext'
+    ? 'team_context_update_failed'
     : 'knowledge_write_failed';
 }
 
@@ -140,9 +168,13 @@ function createWriteAudit(
   signal: AbortSignal,
   writeAttempts: WriteAttemptReceipt[],
   replayBoundary: { crossed: boolean },
-): KnowledgeWriteAudit {
+): PersistentWriteAudit {
   return {
-    async run(input, operation) {
+    async run<T>(
+      input: Parameters<PersistentWriteAudit['run']>[0],
+      operation: () => Promise<T>,
+      identifiersForResult?: (result: T) => Record<string, string> | undefined,
+    ) {
       let write: { id: string };
       try {
         write = await withAbort(
@@ -167,7 +199,7 @@ function createWriteAudit(
       try {
         signal.throwIfAborted();
         const result = await operation();
-        const identifiers = resultIdentifiers(result);
+        const identifiers = identifiersForResult?.(result) ?? resultIdentifiers(result);
         try {
           await withAuditFinalization(
             () => store.finishWrite(write.id, {
@@ -185,7 +217,7 @@ function createWriteAudit(
         if (error instanceof WriteAuditUnavailable) throw error;
         const errorCategory = signal.aborted
           ? AGENT_RUN_ABORTED_CATEGORY
-          : stableWriteErrorCategory(error);
+          : stableWriteErrorCategory(error, input.toolName);
         try {
           await withAuditFinalization(() => store.finishWrite(write.id, {
             outcome: signal.aborted ? 'unknown' : 'failed',
@@ -336,11 +368,19 @@ export async function runKnowledgeAgent(
   let run: { id: string };
   try {
     run = await withAbort(
-      () => dependencies.agentRunStore.start({
-        eventId: dependencies.eventId,
-        claimAttempt: dependencies.claimAttempt,
-        model: dependencies.modelName,
-      }),
+      () => dependencies.agentRunStore.start(
+        dependencies.invocationSource?.kind === 'scheduled'
+          ? {
+            scheduledRunId: dependencies.invocationSource.scheduledRunId,
+            claimAttempt: dependencies.invocationSource.claimAttempt,
+            model: dependencies.modelName,
+          }
+          : {
+            eventId: dependencies.invocationSource?.eventId ?? dependencies.eventId,
+            claimAttempt: dependencies.invocationSource?.claimAttempt ?? dependencies.claimAttempt,
+            model: dependencies.modelName,
+          },
+      ),
       runSignal,
       (lateRun) => withAuditFinalization(() => dependencies.agentRunStore.finish(lateRun.id, {
         toolCallCount: 0,
@@ -381,6 +421,21 @@ export async function runKnowledgeAgent(
       throw new Error('conversation_history_mismatch');
     }
 
+    const teamContext = dependencies.teamContextSource
+      ? await withAbort(() => dependencies.teamContextSource!.load(runSignal), runSignal)
+      : undefined;
+    if (teamContext) {
+      try {
+        await withAbort(
+          () => dependencies.agentRunStore.recordTeamContext(run.id, teamContext),
+          runSignal,
+        );
+      } catch (error) {
+        if (runSignal.aborted) throw error;
+        throw new Error(AGENT_AUDIT_UNAVAILABLE);
+      }
+    }
+
     let groupReader: ScopedGroupContextReader | undefined;
     let initialGroupContext: InitialGroupContext | undefined;
     if (input.trigger.chatType === 'group') {
@@ -391,7 +446,9 @@ export async function runKnowledgeAgent(
             chatId: input.trigger.chatId,
             cutoff,
             triggerMessageId: dependencies.triggerMessageId,
-            currentSenderOpenId: input.trigger.senderOpenId,
+            currentSenderOpenId: input.trigger.kind === 'feishu_member'
+              ? input.trigger.senderOpenId
+              : dependencies.botOpenId,
             botOpenId: dependencies.botOpenId,
             botAppId: dependencies.botAppId,
           });
@@ -453,19 +510,45 @@ export async function runKnowledgeAgent(
       ...(groupReader ? {
         groupHistory: { reader: groupReader, recordAudit: recordGroupHistory },
       } : {}),
-    }, stepBudget);
-    const history = input.trigger.chatType === 'group'
-      ? selectRecentHistory([
-        ...(initialGroupContext!.audit.status === 'unavailable'
-          ? retainedHistoryBeforeInvocation
-          : []),
-        ...groupModelMessages(initialGroupContext!),
-        {
-          role: 'user',
-          content: `[Current Invocation][${initialGroupContext!.currentSenderName}] ${input.prompt}`,
+      ...(dependencies.teamContextSource && teamContext ? {
+        teamContext: {
+          source: dependencies.teamContextSource,
+          current: teamContext,
+          allowMutation: input.trigger.kind === 'feishu_member',
         },
-      ], contextTokenTarget)
-      : selectRecentHistory(authoritativeHistory, contextTokenTarget);
+      } : {}),
+      ...(dependencies.scheduleTools && input.trigger.kind === 'feishu_member' ? {
+        schedules: {
+          ...dependencies.scheduleTools,
+          actorOpenId: input.trigger.senderOpenId,
+          origin: {
+            chatId: input.trigger.chatId,
+            displayName: input.trigger.chatType === 'group' ? '当前群聊' : '当前私聊',
+            chatType: input.trigger.chatType,
+          },
+        },
+      } : {}),
+    }, stepBudget);
+    const history = new DefaultContextAssembler().assemble({
+      ...(teamContext ? { teamContext } : {}),
+      conversation: input.trigger.chatType === 'group'
+        ? [
+          ...(initialGroupContext!.audit.status === 'unavailable'
+            ? retainedHistoryBeforeInvocation
+            : []),
+          ...groupModelMessages(initialGroupContext!),
+        ]
+        : retainedHistoryBeforeInvocation,
+      currentInvocation: {
+        speakerName: input.trigger.kind === 'scheduled_task'
+          ? 'Scheduled Task'
+          : input.trigger.chatType === 'group'
+          ? initialGroupContext!.currentSenderName
+          : '成员',
+        text: input.prompt,
+      },
+      conversationTokenTarget: contextTokenTarget,
+    });
     const result = await agent.generate({
       messages: history,
       abortSignal: runSignal,

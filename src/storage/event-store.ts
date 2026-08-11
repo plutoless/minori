@@ -2,6 +2,10 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { NormalizedMessage } from '../contracts/messages.js';
 import type { Database } from './database.js';
 import { processedEvents } from './schema.js';
+import {
+  AGENT_ADMISSION_CONCURRENCY,
+  AGENT_ADMISSION_LOCK_KEY,
+} from '../worker/admission-policy.js';
 
 export type StoredEvent = {
   eventId: string;
@@ -70,13 +74,16 @@ export class PostgresEventStore implements EventStore {
   }
 
   async enqueue(event: NormalizedMessage): Promise<'queued' | 'duplicate'> {
-    const inserted = await this.db.insert(processedEvents).values({
-      eventId: event.eventId,
-      messageId: event.messageId,
-      payload: event,
-      conversationKey: event.conversationKey,
-      status: 'queued',
-    }).onConflictDoNothing().returning({ eventId: processedEvents.eventId });
+    const inserted = await this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${AGENT_ADMISSION_LOCK_KEY}))`);
+      return tx.insert(processedEvents).values({
+        eventId: event.eventId,
+        messageId: event.messageId,
+        payload: event,
+        conversationKey: event.conversationKey,
+        status: 'queued',
+      }).onConflictDoNothing().returning({ eventId: processedEvents.eventId });
+    });
 
     return inserted.length === 1 ? 'queued' : 'duplicate';
   }
@@ -84,8 +91,14 @@ export class PostgresEventStore implements EventStore {
   async claimReady(limit: number, leaseUntil: Date): Promise<StoredEvent[]> {
     if (limit <= 0) return [];
 
-    const result = await this.db.execute(sql`
-      with ranked as materialized (
+    const result = await this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${AGENT_ADMISSION_LOCK_KEY}))`);
+      return tx.execute(sql`
+      with capacity as (
+        select greatest(0, ${AGENT_ADMISSION_CONCURRENCY}
+          - (select count(*)::int from processed_events where status = 'processing')
+          - (select count(*)::int from scheduled_runs where status = 'processing')) as slots
+      ), ranked as materialized (
         select
           event_id,
           row_number() over (
@@ -101,9 +114,14 @@ export class PostgresEventStore implements EventStore {
         where ranked.conversation_position = 1
           and event.status = 'queued'
           and event.next_attempt_at <= now()
+          and not exists (
+            select 1 from scheduled_runs scheduled
+            where scheduled.status = 'processing'
+              and scheduled.result_chat_id = event.conversation_key
+          )
         order by event.received_at, event.event_id
         for update of event skip locked
-        limit ${limit}
+        limit (select least(slots, ${limit}) from capacity)
       )
       update processed_events event
       set
@@ -122,7 +140,8 @@ export class PostgresEventStore implements EventStore {
         event.reply_idempotency_key as "replyIdempotencyKey",
         event.reply_attempted_at as "replyAttemptedAt",
         event.outcome ->> 'preparedReplyText' as "preparedReplyText"
-    `);
+      `);
+    });
 
     return (result.rows as Array<{
       eventId: string;

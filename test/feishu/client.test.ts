@@ -5,13 +5,26 @@ import { FeishuClientAdapter } from '../../src/feishu/client.js';
 function sdk() {
   return {
     im: { v1: {
-      message: { reply: vi.fn(), get: vi.fn() },
+      message: { create: vi.fn(), reply: vi.fn(), get: vi.fn() },
       messageReaction: { create: vi.fn(), delete: vi.fn() },
     } },
   };
 }
 
 describe('FeishuClientAdapter', () => {
+  it('sends a scheduled result as a top-level chat message without reply or reaction', async () => {
+    const client = sdk();
+    client.im.v1.message.create.mockResolvedValue({ data: { message_id: 'om_scheduled' } });
+    const adapter = new FeishuClientAdapter(client, pino({ level: 'silent' }));
+    await expect(adapter.sendText('oc_target', 'result', 'sched_123:result')).resolves
+      .toBe('om_scheduled');
+    expect(client.im.v1.message.create).toHaveBeenCalledWith({
+      data: { receive_id: 'oc_target', msg_type: 'text', content: '{"text":"result"}', uuid: 'sched_123:result' },
+      params: { receive_id_type: 'chat_id' },
+    });
+    expect(client.im.v1.message.reply).not.toHaveBeenCalled();
+    expect(client.im.v1.messageReaction.create).not.toHaveBeenCalled();
+  });
   it('replies with a deterministic bounded UUID', async () => {
     const client = sdk();
     client.im.v1.message.reply.mockResolvedValue({ data: { message_id: 'om_reply' } });

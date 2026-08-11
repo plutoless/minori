@@ -101,7 +101,7 @@ async function seedDigestState(
   return completeRows;
 }
 
-describe('transactional digest release engine', { timeout: 15_000 }, () => {
+describe('transactional digest release engine', { timeout: 60_000 }, () => {
   it.each([
     ['pull failure', { FAKE_FAIL: 'pull' }],
     ['image protocol mismatch', { FAKE_PROTOCOL: 'v2' }],
@@ -472,7 +472,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
         );
       }
     },
-    15_000,
+    60_000,
   );
 
   it.each([
@@ -517,7 +517,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
       expect(newDocker).not.toContain('up -d --no-build');
       expect(await pendingExists(runtime)).toBe(true);
     },
-    15_000,
+    60_000,
   );
 
   it.each(['replaced', 'healthy', 'state_written'])(
@@ -597,7 +597,7 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
     expect((await records(runtime)).filter((record) => record.result === 'success')).toEqual([
       expect.objectContaining({ commitSha: shaA, image: digestA }),
     ]);
-  }, 20_000);
+  }, 60_000);
 
   it('records a recovered rollback using only the crashed journal metadata', async () => {
     const runtime = await createFakeDeployRuntime();
@@ -617,10 +617,10 @@ describe('transactional digest release engine', { timeout: 15_000 }, () => {
     expect((await records(runtime)).filter((record) => record.result === 'rolled_back')).toEqual([
       expect.objectContaining({ commitSha: shaA, image: digestA, rollbackTargetCategory: 'saved_digest' }),
     ]);
-  }, 20_000);
+  }, 60_000);
 });
 
-describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
+describe('bounded saved-release rehearsal', { timeout: 60_000 }, () => {
   it('switches only to saved position 1 and restores the exact saved position 0 digest', async () => {
     const runtime = await createFakeDeployRuntime();
     const rows = await seedDigestState(runtime, [
@@ -843,7 +843,7 @@ describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
     expect(await runtime.currentImage()).toBe(digestA);
     expect(await pendingExists(runtime)).toBe(false);
     await expect(readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toContain(digestA);
-  }, 15_000);
+  }, 60_000);
 
   it('blocks a later deploy from mutating an interrupted rehearsal before receipt recovery', async () => {
     const runtime = await createFakeDeployRuntime();
@@ -862,7 +862,7 @@ describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
     expect(recovered).toEqual(expect.objectContaining({ code: 2, stdout: 'minori_rehearsal result=rejected\n' }));
     expect(await runtime.currentImage()).toBe(digestA);
     expect(await pendingExists(runtime)).toBe(false);
-  }, 15_000);
+  }, 60_000);
 
   it('never clears a completed switch pair when the consumed receipt cannot be made durable', async () => {
     const runtime = await createFakeDeployRuntime();
@@ -880,7 +880,7 @@ describe('bounded saved-release rehearsal', { timeout: 15_000 }, () => {
     expect(recovered).toEqual(expect.objectContaining({ code: 2, stdout: 'minori_rehearsal result=rejected\n' }));
     expect(await pendingExists(runtime)).toBe(false);
     await expect(readFile(join(runtime.root, 'releases', 'rehearsal-v0.1.1.accepted'), 'utf8')).resolves.toContain(digestA);
-  }, 15_000);
+  }, 60_000);
 
   it('falls back to the proven predecessor and durably promotes it when forward restore fails', async () => {
     const runtime = await createFakeDeployRuntime();

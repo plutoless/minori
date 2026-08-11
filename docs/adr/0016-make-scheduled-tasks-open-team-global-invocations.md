@@ -1,0 +1,3 @@
+# Make Scheduled Tasks open team-global invocations
+
+Every Feishu Delivered Member, including an external collaborator, may read and manage one team-global Scheduled Task registry and select any visible group as a Result Target or explicit Scheduled Context. Scheduled Tasks use deterministic Calendar Schedules, versioned mutations, terminal content retention, no automatic Agent retry, per-task non-overlap, Result Target serialization, and one background concurrency slot; Origin Conversation is provenance and fallback delivery rather than an ownership boundary. We accept the resulting cross-conversation visibility and influence to keep future work as open and collaborative as immediate Minori runs.

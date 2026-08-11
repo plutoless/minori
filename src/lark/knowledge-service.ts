@@ -52,6 +52,7 @@ export interface KnowledgeService extends KnowledgeReader {
     doc: string;
     pattern: string;
     replacement: string;
+    expectedRevision?: number;
   }, signal?: AbortSignal): Promise<KnowledgeWriteResult>;
 }
 
@@ -260,10 +261,13 @@ export class LarkKnowledgeService implements KnowledgeService {
   }
 
   async patchDocument(
-    input: { doc: string; pattern: string; replacement: string },
+    input: { doc: string; pattern: string; replacement: string; expectedRevision?: number },
     signal?: AbortSignal,
   ): Promise<KnowledgeWriteResult> {
     const current = await this.fetchDocument({ doc: input.doc }, signal);
+    if (input.expectedRevision !== undefined && current.revisionId !== input.expectedRevision) {
+      throw new KnowledgeWriteConflict();
+    }
     if (countExactOccurrences(current.markdown, input.pattern) !== 1) {
       throw new KnowledgeWriteConflict();
     }

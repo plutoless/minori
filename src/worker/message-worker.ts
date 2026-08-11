@@ -85,7 +85,7 @@ export class MessageWorker {
     for (const resolve of [...this.wakeResolvers]) resolve();
   }
 
-  async start(): Promise<void> {
+  async start(selfPolling = true): Promise<void> {
     if (!this.stopping) return;
     this.stopping = false;
     await this.recoverExpiredLeases();
@@ -93,7 +93,19 @@ export class MessageWorker {
       void this.recoverExpiredLeases().catch(() => undefined);
     }, this.recoveryIntervalMs);
     this.recoveryTimer.unref?.();
-    this.loops = Array.from({ length: this.concurrency }, () => this.runLoop());
+    this.loops = selfPolling
+      ? Array.from({ length: this.concurrency }, () => this.runLoop())
+      : [];
+  }
+
+  async processNext(): Promise<boolean> {
+    const [event] = await this.options.eventStore.claimReady(
+      1,
+      new Date(this.now().getTime() + this.leaseMs),
+    );
+    if (!event) return false;
+    await this.process(event);
+    return true;
   }
 
   async stop(): Promise<void> {
@@ -349,14 +361,7 @@ export class MessageWorker {
   private async runLoop() {
     while (!this.stopping && !this.options.signal?.aborted) {
       try {
-        const [event] = await this.options.eventStore.claimReady(
-          1,
-          new Date(this.now().getTime() + this.leaseMs),
-        );
-        if (event) {
-          await this.process(event);
-          continue;
-        }
+        if (await this.processNext()) continue;
       } catch {
         this.options.logger.warn(
           { errorCode: 'worker_iteration_failed' },

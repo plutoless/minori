@@ -7,6 +7,11 @@ import type {
   GroupHistoryAudit,
   ScopedGroupContextReader,
 } from '../feishu/group-context.js';
+import type { TeamContextSource } from '../team-context/source.js';
+import type { TeamContextLoad } from '../team-context/types.js';
+import type { ChatDirectory } from '../feishu/chat-directory.js';
+import type { CalendarCalculator, CalendarScheduleInput, ScheduleTarget } from '../schedule/types.js';
+import type { PostgresScheduleStore } from '../storage/schedule-store.js';
 import { SourceRegistry } from './sources.js';
 
 export type ScopedHistoryReader = {
@@ -33,23 +38,107 @@ const TOKEN_SCHEMA = z.string().min(1).max(200).regex(/^[A-Za-z0-9_-]+$/u);
 
 type FetchedDocument = Awaited<ReturnType<KnowledgeService['fetchDocument']>>;
 
-export type KnowledgeWriteAuditInput = {
-  toolName: 'createDocument' | 'appendDocument' | 'patchDocument';
+export type PersistentWriteName =
+  | 'createDocument' | 'appendDocument' | 'patchDocument'
+  | 'updateTeamContext'
+  | 'createSchedule' | 'updateSchedule' | 'pauseSchedule'
+  | 'resumeSchedule' | 'deleteSchedule';
+
+export type PersistentWriteAuditInput = {
+  toolName: PersistentWriteName;
   targetIdentifiers: Record<string, string>;
   sanitizedSummary: string;
 };
 
-export interface KnowledgeWriteAudit {
-  run(
-    input: KnowledgeWriteAuditInput,
-    operation: () => Promise<KnowledgeWriteResult>,
-  ): Promise<KnowledgeWriteResult>;
+export interface PersistentWriteAudit {
+  run<T>(
+    input: PersistentWriteAuditInput,
+    operation: () => Promise<T>,
+    resultIdentifiers?: (result: T) => Record<string, string> | undefined,
+  ): Promise<T>;
 }
 
 export type GroupHistoryToolContext = {
   reader: ScopedGroupContextReader;
   recordAudit(audit: GroupHistoryAudit): Promise<void>;
 };
+
+export type TeamContextToolContext = {
+  source: TeamContextSource;
+  current: TeamContextLoad;
+  allowMutation: boolean;
+};
+
+export type ScheduleToolContext = {
+  store: Pick<PostgresScheduleStore, 'create' | 'list' | 'get' | 'update' | 'pause' | 'resume' | 'delete'>;
+  calendar: CalendarCalculator;
+  chatDirectory: ChatDirectory;
+  actorOpenId: string;
+  origin: ScheduleTarget;
+  defaultTimezone: string;
+  now(): Date;
+};
+
+const calendarScheduleInputSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('once'),
+    localTimestamp: z.string().trim().min(1).max(100),
+    timezone: z.string().trim().min(1).max(100).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('cron'),
+    expression: z.string().trim().min(1).max(200),
+    timezone: z.string().trim().min(1).max(100).optional(),
+  }).strict(),
+]);
+
+const scheduleTargetInputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('origin') }).strict(),
+  z.object({ kind: z.literal('group'), name: z.string().trim().min(1).max(200) }).strict(),
+]);
+
+const scheduledContextInputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('none') }).strict(),
+  z.object({ kind: z.literal('origin_group') }).strict(),
+  z.object({ kind: z.literal('group'), name: z.string().trim().min(1).max(200) }).strict(),
+]);
+
+async function resolveScheduleTarget(
+  input: z.infer<typeof scheduleTargetInputSchema>,
+  context: ScheduleToolContext,
+  signal?: AbortSignal,
+): Promise<ScheduleTarget> {
+  if (input.kind === 'origin') return context.origin;
+  const result = await context.chatDirectory.resolveExactGroup(input.name, signal);
+  if (result.status !== 'resolved') throw new Error(result.errorCategory);
+  return { chatId: result.chatId, displayName: result.displayName, chatType: 'group' };
+}
+
+async function resolveScheduledContext(
+  input: z.infer<typeof scheduledContextInputSchema> | undefined,
+  context: ScheduleToolContext,
+  signal?: AbortSignal,
+) {
+  if (!input || input.kind === 'none') return undefined;
+  if (input.kind === 'origin_group') {
+    if (context.origin.chatType !== 'group') throw new Error('scheduled_context_group_required');
+    return { chatId: context.origin.chatId, displayName: context.origin.displayName };
+  }
+  const result = await context.chatDirectory.resolveExactGroup(input.name, signal);
+  if (result.status !== 'resolved') throw new Error(result.errorCategory);
+  return { chatId: result.chatId, displayName: result.displayName };
+}
+
+function normalizeToolSchedule(
+  input: z.infer<typeof calendarScheduleInputSchema>,
+  context: ScheduleToolContext,
+) {
+  const timezone = input.timezone ?? context.defaultTimezone;
+  const normalizedInput: CalendarScheduleInput = input.kind === 'once'
+    ? { kind: 'once', localTimestamp: input.localTimestamp, timezone }
+    : { kind: 'cron', expression: input.expression, timezone };
+  return context.calendar.normalize(normalizedInput, context.now());
+}
 
 function splitSections(markdown: string) {
   const sections = markdown.split(/(?=^#{1,6}\s+)/gmu).filter(Boolean);
@@ -114,8 +203,10 @@ export function createKnowledgeTools(
   service: KnowledgeService,
   history: ScopedHistoryReader,
   sources = new SourceRegistry(),
-  writeAudit: KnowledgeWriteAudit,
+  writeAudit: PersistentWriteAudit,
   groupHistory?: GroupHistoryToolContext,
+  teamContext?: TeamContextToolContext,
+  schedules?: ScheduleToolContext,
 ) {
   const documents = new Map<string, Promise<FetchedDocument>>();
   const pageSets = new Map<string, string[]>();
@@ -280,6 +371,200 @@ export function createKnowledgeTools(
         }
       },
     }),
+    ...(teamContext?.allowMutation ? {
+      updateTeamContext: tool({
+        description: 'Apply one exact, conflict-aware update to the configured Team Context document.',
+        inputSchema: z.object({
+          expectedRevision: z.number().int().nonnegative(),
+          pattern: z.string().min(1).max(12_000),
+          replacement: z.string().max(12_000),
+          reason: z.enum([
+            'durable_assertion', 'explicit_retention', 'correction', 'forgetting',
+            'approved_consolidation', 'mechanical_cleanup',
+          ]),
+          semanticChangeApproved: z.boolean(),
+        }).strict(),
+        execute: async ({
+          expectedRevision, pattern, replacement, reason, semanticChangeApproved,
+        }, { abortSignal }) => {
+          if (reason !== 'mechanical_cleanup' && !semanticChangeApproved) {
+            throw new Error('team_context_semantic_approval_required');
+          }
+          const result = await writeAudit.run({
+            toolName: 'updateTeamContext',
+            targetIdentifiers: { documentToken: teamContext.source.documentToken },
+            sanitizedSummary: 'updated Team Context',
+          }, () => teamContext.source.update({
+            expectedRevision,
+            pattern,
+            replacement,
+            reason,
+            semanticChangeApproved,
+          }, abortSignal));
+          return {
+            status: 'updated' as const,
+            documentToken: result.token,
+            revisionId: String(result.revisionId),
+            summary: 'Updated Team Context',
+          };
+        },
+      }),
+    } : {}),
+    ...(schedules ? {
+      createSchedule: tool({
+        description: 'Create a team-global one-time or recurring task only when Current Invocation semantically requests future execution.',
+        inputSchema: z.object({
+          name: z.string().trim().min(1).max(120),
+          instruction: z.string().trim().min(1).max(20_000),
+          schedule: calendarScheduleInputSchema,
+          resultTarget: scheduleTargetInputSchema.default({ kind: 'origin' }),
+          scheduledContext: scheduledContextInputSchema.default({ kind: 'none' }),
+        }).strict(),
+        execute: async (input, { abortSignal }) => {
+          const schedule = normalizeToolSchedule(input.schedule, schedules);
+          const resultTarget = await resolveScheduleTarget(input.resultTarget, schedules, abortSignal);
+          const scheduledContext = await resolveScheduledContext(
+            input.scheduledContext,
+            schedules,
+            abortSignal,
+          );
+          const nextDueAt = schedule.kind === 'once'
+            ? schedule.at
+            : schedules.calendar.next(schedule, schedules.now());
+          if (!nextDueAt) throw new Error('schedule_next_occurrence_unavailable');
+          return writeAudit.run({
+            toolName: 'createSchedule',
+            targetIdentifiers: { resultChatId: resultTarget.chatId },
+            sanitizedSummary: 'created one scheduled task',
+          }, () => schedules.store.create({
+            name: input.name,
+            instruction: input.instruction,
+            creatorOpenId: schedules.actorOpenId,
+            actorOpenId: schedules.actorOpenId,
+            origin: schedules.origin,
+            schedule,
+            resultTarget,
+            ...(scheduledContext ? { scheduledContext } : {}),
+            nextDueAt,
+          }), (result) => result.status === 'created'
+            ? { taskId: result.task.id, version: String(result.task.version) }
+            : { taskId: result.task.id, conflict: 'schedule_name_conflict' });
+        },
+      }),
+      listSchedules: tool({
+        description: 'List the team-global scheduled task registry. Include terminal history only when the member explicitly asks for it.',
+        inputSchema: z.object({ includeHistory: z.boolean().default(false) }).strict(),
+        execute: ({ includeHistory }) => schedules.store.list(includeHistory),
+      }),
+      updateSchedule: tool({
+        description: 'Update one scheduled task using the version just read. Changes affect future occurrences only.',
+        inputSchema: z.object({
+          taskId: z.string().uuid(),
+          expectedVersion: z.number().int().positive(),
+          name: z.string().trim().min(1).max(120).optional(),
+          instruction: z.string().trim().min(1).max(20_000).optional(),
+          schedule: calendarScheduleInputSchema.optional(),
+          resultTarget: scheduleTargetInputSchema.optional(),
+          scheduledContext: scheduledContextInputSchema.optional(),
+        }).strict().refine((value) => Object.keys(value).some(
+          (key) => !['taskId', 'expectedVersion'].includes(key),
+        ), 'schedule_change_required'),
+        execute: async (input, { abortSignal }) => {
+          const changes: Parameters<PostgresScheduleStore['update']>[3] = {};
+          if (input.name !== undefined) changes.name = input.name;
+          if (input.instruction !== undefined) changes.instruction = input.instruction;
+          if (input.schedule !== undefined) {
+            changes.schedule = normalizeToolSchedule(input.schedule, schedules);
+            const due = changes.schedule.kind === 'once'
+              ? changes.schedule.at
+              : schedules.calendar.next(changes.schedule, schedules.now());
+            if (!due) throw new Error('schedule_next_occurrence_unavailable');
+            changes.nextDueAt = due;
+          }
+          if (input.resultTarget !== undefined) {
+            changes.resultTarget = await resolveScheduleTarget(
+              input.resultTarget,
+              schedules,
+              abortSignal,
+            );
+          }
+          if (input.scheduledContext !== undefined) {
+            if (input.scheduledContext.kind === 'none') {
+              changes.scheduledContext = null;
+            } else {
+              const resolved = await resolveScheduledContext(
+                input.scheduledContext,
+                schedules,
+                abortSignal,
+              );
+              if (!resolved) throw new Error('scheduled_context_unavailable');
+              changes.scheduledContext = resolved;
+            }
+          }
+          return writeAudit.run({
+            toolName: 'updateSchedule',
+            targetIdentifiers: { taskId: input.taskId },
+            sanitizedSummary: 'updated one scheduled task',
+          }, () => schedules.store.update(
+            input.taskId,
+            input.expectedVersion,
+            schedules.actorOpenId,
+            changes,
+          ));
+        },
+      }),
+      pauseSchedule: tool({
+        description: 'Pause one scheduled task using the version just read.',
+        inputSchema: z.object({
+          taskId: z.string().uuid(), expectedVersion: z.number().int().positive(),
+        }).strict(),
+        execute: (input) => writeAudit.run({
+          toolName: 'pauseSchedule', targetIdentifiers: { taskId: input.taskId },
+          sanitizedSummary: 'paused one scheduled task',
+        }, () => schedules.store.pause(
+          input.taskId,
+          input.expectedVersion,
+          schedules.actorOpenId,
+        )),
+      }),
+      resumeSchedule: tool({
+        description: 'Resume one paused task from the first normal calendar occurrence after now.',
+        inputSchema: z.object({
+          taskId: z.string().uuid(), expectedVersion: z.number().int().positive(),
+        }).strict(),
+        execute: async (input) => {
+          const task = await schedules.store.get(input.taskId);
+          if (!task) throw new Error('schedule_not_found');
+          const nextDueAt = task.schedule.kind === 'once'
+            ? task.schedule.at
+            : schedules.calendar.next(task.schedule, schedules.now());
+          if (!nextDueAt) throw new Error('schedule_next_occurrence_unavailable');
+          return writeAudit.run({
+            toolName: 'resumeSchedule', targetIdentifiers: { taskId: input.taskId },
+            sanitizedSummary: 'resumed one scheduled task',
+          }, () => schedules.store.resume(
+            input.taskId,
+            input.expectedVersion,
+            schedules.actorOpenId,
+            nextDueAt,
+          ));
+        },
+      }),
+      deleteSchedule: tool({
+        description: 'Permanently delete one scheduled task using the version just read.',
+        inputSchema: z.object({
+          taskId: z.string().uuid(), expectedVersion: z.number().int().positive(),
+        }).strict(),
+        execute: (input) => writeAudit.run({
+          toolName: 'deleteSchedule', targetIdentifiers: { taskId: input.taskId },
+          sanitizedSummary: 'deleted one scheduled task',
+        }, () => schedules.store.delete(
+          input.taskId,
+          input.expectedVersion,
+          schedules.actorOpenId,
+        )),
+      }),
+    } : {}),
     searchConversationHistory: tool({
       description: 'Search older retained messages in this conversation only.',
       inputSchema: z.object({

@@ -1,5 +1,7 @@
-import { asc, eq, sql } from 'drizzle-orm';
+import { asc, eq, sql, type SQL } from 'drizzle-orm';
 import type { AgentRunOutcome, WriteAttemptReceipt } from '../agent/run-outcome.js';
+import type { PersistentWriteName } from '../agent/tools.js';
+import type { TeamContextLoad } from '../team-context/types.js';
 import type { GroupHistoryAudit } from '../feishu/group-context.js';
 import type { Database } from './database.js';
 import { agentRuns, toolRuns } from './schema.js';
@@ -7,24 +9,24 @@ import { agentRuns, toolRuns } from './schema.js';
 const WRITE_RESULT_UNKNOWN = 'write_result_unknown';
 
 export interface AgentRunStore {
-  start(input: { eventId: string; claimAttempt: number; model: string }): Promise<{ id: string }>;
+  start(input: (
+    | { eventId: string; scheduledRunId?: never }
+    | { scheduledRunId: string; eventId?: never }
+  ) & { claimAttempt: number; model: string }): Promise<{ id: string }>;
   beginWrite(agentRunId: string, input: {
-    toolName: 'createDocument' | 'appendDocument' | 'patchDocument';
+    toolName: PersistentWriteName;
     targetIdentifiers: Record<string, string>;
     sanitizedSummary: string;
   }): Promise<{ id: string }>;
   finishWrite(toolRunId: string, input: {
     outcome: 'succeeded' | 'failed' | 'unknown';
     errorCategory?: string;
-    resultIdentifiers?: {
-      token: string;
-      title: string;
-      url: string;
-      revisionId: string;
-    };
+    resultIdentifiers?: Record<string, string>;
   }): Promise<void>;
   listWriteAttempts(eventId: string): Promise<WriteAttemptReceipt[]>;
+  listScheduledWriteAttempts(scheduledRunId: string): Promise<WriteAttemptReceipt[]>;
   recordGroupHistory(agentRunId: string, audit: GroupHistoryAudit): Promise<void>;
+  recordTeamContext(agentRunId: string, context: TeamContextLoad): Promise<void>;
   finish(agentRunId: string, input: {
     inputTokens?: number;
     outputTokens?: number;
@@ -36,13 +38,16 @@ export interface AgentRunStore {
 export class PostgresAgentRunStore implements AgentRunStore {
   constructor(private readonly db: Database) {}
 
-  async start(input: {
-    eventId: string;
+  async start(input: (
+    | { eventId: string; scheduledRunId?: never }
+    | { scheduledRunId: string; eventId?: never }
+  ) & {
     claimAttempt: number;
     model: string;
   }): Promise<{ id: string }> {
     const [created] = await this.db.insert(agentRuns).values({
-      eventId: input.eventId,
+      eventId: input.eventId ?? null,
+      scheduledRunId: input.scheduledRunId ?? null,
       claimAttempt: input.claimAttempt,
       model: input.model,
       outcome: 'running',
@@ -54,7 +59,7 @@ export class PostgresAgentRunStore implements AgentRunStore {
   async beginWrite(
     agentRunId: string,
     input: {
-      toolName: 'createDocument' | 'appendDocument' | 'patchDocument';
+      toolName: PersistentWriteName;
       targetIdentifiers: Record<string, string>;
       sanitizedSummary: string;
     },
@@ -69,15 +74,25 @@ export class PostgresAgentRunStore implements AgentRunStore {
       if (!created) throw new Error('tool_run_not_created');
 
       const marked = await tx.execute(sql`
-        update processed_events event
-        set write_started_at = coalesce(event.write_started_at, now()),
-            updated_at = now()
-        from agent_runs run
-        where run.id = ${agentRunId}
-          and event.event_id = run.event_id
-          and event.status = 'processing'
-          and event.attempts = run.claim_attempt
-        returning event.event_id
+        with message_mark as (
+          update processed_events event
+          set write_started_at = coalesce(event.write_started_at, now()), updated_at = now()
+          from agent_runs run
+          where run.id = ${agentRunId} and run.scheduled_run_id is null
+            and event.event_id = run.event_id and event.status = 'processing'
+            and event.attempts = run.claim_attempt
+          returning event.event_id
+        ), scheduled_mark as (
+          update scheduled_runs scheduled
+          set write_started_at = coalesce(scheduled.write_started_at, now()), updated_at = now()
+          from agent_runs run
+          where run.id = ${agentRunId} and run.event_id is null
+            and scheduled.id = run.scheduled_run_id and scheduled.status = 'processing'
+            and scheduled.claim_attempt = run.claim_attempt
+          returning scheduled.id
+        )
+        select id::text from scheduled_mark
+        union all select event_id as id from message_mark
       `);
       if (marked.rows.length !== 1) throw new Error('write_replay_boundary_not_marked');
       return created;
@@ -105,6 +120,14 @@ export class PostgresAgentRunStore implements AgentRunStore {
   }
 
   async listWriteAttempts(eventId: string): Promise<WriteAttemptReceipt[]> {
+    return this.listWriteAttemptsWhere(sql`${agentRuns.eventId} = ${eventId}`);
+  }
+
+  async listScheduledWriteAttempts(scheduledRunId: string): Promise<WriteAttemptReceipt[]> {
+    return this.listWriteAttemptsWhere(sql`${agentRuns.scheduledRunId} = ${scheduledRunId}`);
+  }
+
+  private async listWriteAttemptsWhere(condition: SQL): Promise<WriteAttemptReceipt[]> {
     const rows = await this.db.select({
       toolName: toolRuns.toolName,
       targetIdentifiers: toolRuns.targetIdentifiers,
@@ -114,14 +137,15 @@ export class PostgresAgentRunStore implements AgentRunStore {
       resultIdentifiers: toolRuns.resultIdentifiers,
     }).from(toolRuns)
       .innerJoin(agentRuns, eq(toolRuns.agentRunId, agentRuns.id))
-      .where(eq(agentRuns.eventId, eventId))
+      .where(condition)
       .orderBy(asc(toolRuns.startedAt));
 
-    const typedToolNames = new Set([
-      'createDocument', 'appendDocument', 'patchDocument',
+    const typedToolNames = new Set<PersistentWriteName>([
+      'createDocument', 'appendDocument', 'patchDocument', 'updateTeamContext',
+      'createSchedule', 'updateSchedule', 'pauseSchedule', 'resumeSchedule', 'deleteSchedule',
     ]);
     return rows.flatMap((row): WriteAttemptReceipt[] => {
-      if (!typedToolNames.has(row.toolName) || !row.sanitizedSummary) return [];
+      if (!typedToolNames.has(row.toolName as PersistentWriteName) || !row.sanitizedSummary) return [];
       return [{
         toolName: row.toolName as WriteAttemptReceipt['toolName'],
         outcome: row.success === true ? 'succeeded' : row.success === false ? 'failed' : 'unknown',
@@ -140,6 +164,17 @@ export class PostgresAgentRunStore implements AgentRunStore {
       groupHistoryPageCount: audit.pageCallCount,
       groupHistoryCutoff: audit.cutoff,
       groupHistoryErrorCategory: audit.errorCategory ?? null,
+    }).where(eq(agentRuns.id, agentRunId)).returning({ id: agentRuns.id });
+    if (!updated) throw new Error('agent_run_not_found');
+  }
+
+  async recordTeamContext(agentRunId: string, context: TeamContextLoad): Promise<void> {
+    const [updated] = await this.db.update(agentRuns).set({
+      teamContextStatus: context.status,
+      teamContextRevision: context.sourceRevision ?? null,
+      teamContextTokenCount: context.estimatedTokens ?? null,
+      teamContextFetchedAt: context.fetchedAt ?? null,
+      teamContextErrorCategory: context.errorCategory ?? null,
     }).where(eq(agentRuns.id, agentRunId)).returning({ id: agentRuns.id });
     if (!updated) throw new Error('agent_run_not_found');
   }

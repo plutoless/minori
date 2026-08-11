@@ -1,0 +1,155 @@
+import { resolve } from 'node:path';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
+import { PostgresScheduleStore } from '../../src/storage/schedule-store.js';
+import { PostgresScheduledRunStore } from '../../src/storage/scheduled-run-store.js';
+
+describe('PostgresScheduleStore', () => {
+  let container: StartedPostgreSqlContainer;
+  let database: DatabaseHandle;
+  let store: PostgresScheduleStore;
+  let runs: PostgresScheduledRunStore;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer('postgres:17-alpine').start();
+    database = createDatabase(container.getConnectionUri());
+    await migrate(database.db, { migrationsFolder: resolve('drizzle') });
+    store = new PostgresScheduleStore(database.db);
+    runs = new PostgresScheduledRunStore(database.db);
+  }, 180_000);
+
+  beforeEach(async () => {
+    await database.pool.query('truncate scheduled_runs, scheduled_task_revisions, scheduled_tasks cascade');
+  });
+
+  afterAll(async () => {
+    await database?.close();
+    await container?.stop();
+  });
+
+  const input = (name = 'Daily brief') => ({
+    name,
+    creatorOpenId: 'ou_creator',
+    actorOpenId: 'ou_creator',
+    origin: { chatId: 'oc_origin', displayName: 'Origin', chatType: 'p2p' as const },
+    instruction: 'Summarize the latest project notes.',
+    schedule: { kind: 'cron' as const, expression: '0 9 * * *', timezone: 'Asia/Shanghai' },
+    resultTarget: { chatId: 'oc_target', displayName: 'Product', chatType: 'group' as const },
+    scheduledContext: { chatId: 'oc_context', displayName: 'Product discussion' },
+    nextDueAt: new Date('2026-08-11T01:00:00Z'),
+  });
+
+  it('creates one immutable version and enforces case-insensitive reserved names', async () => {
+    const created = await store.create(input());
+    expect(created.status).toBe('created');
+    if (created.status !== 'created') return;
+    expect(created.task).toMatchObject({ name: 'Daily brief', version: 1, state: 'active' });
+
+    const conflict = await store.create(input('DAILY BRIEF'));
+    expect(conflict).toMatchObject({ status: 'name_conflict', task: { id: created.task.id } });
+
+    const revisions = await database.pool.query(
+      'select version, instruction, actor_open_id from scheduled_task_revisions where schedule_id = $1',
+      [created.task.id],
+    );
+    expect(revisions.rows).toEqual([{ version: 1, instruction: input().instruction, actor_open_id: 'ou_creator' }]);
+  });
+
+  it('uses expected versions and preserves immutable creator and origin', async () => {
+    const created = await store.create(input());
+    if (created.status !== 'created') throw new Error('fixture_not_created');
+
+    const updated = await store.update(created.task.id, 1, 'ou_editor', {
+      instruction: 'Summarize only decisions.',
+    });
+    expect(updated).toMatchObject({ status: 'updated', task: { version: 2 } });
+
+    const stale = await store.update(created.task.id, 1, 'ou_stale', { name: 'Stale name' });
+    expect(stale).toMatchObject({
+      status: 'version_conflict',
+      task: { version: 2, creatorOpenId: 'ou_creator', origin: input().origin },
+    });
+  });
+
+  it('pauses, resumes, deletes, and releases a terminal name when no run is active', async () => {
+    const created = await store.create(input());
+    if (created.status !== 'created') throw new Error('fixture_not_created');
+
+    expect(await store.pause(created.task.id, 1, 'ou_editor')).toMatchObject({
+      status: 'updated', task: { state: 'paused', version: 2 },
+    });
+    expect(
+      await store.resume(created.task.id, 2, 'ou_editor', new Date('2026-08-12T01:00:00Z')),
+    ).toMatchObject({ status: 'updated', task: { state: 'active', version: 3 } });
+    expect(await store.delete(created.task.id, 3, 'ou_editor')).toMatchObject({
+      status: 'updated', task: { state: 'deleted', nameReserved: false },
+    });
+    await expect(store.create(input())).resolves.toMatchObject({ status: 'created' });
+  });
+
+  it('purges terminal bodies after 30 days but retains structural audit fields', async () => {
+    const created = await store.create(input());
+    if (created.status !== 'created') throw new Error('fixture_not_created');
+    const due = await runs.createDue({
+      scheduleId: created.task.id,
+      expectedDueAt: created.task.nextDueAt!,
+      scheduledFor: created.task.nextDueAt!,
+      nextDueAt: new Date('2026-08-12T01:00:00Z'),
+    });
+    if (due.status !== 'created') throw new Error('run_not_created');
+    await runs.claim(due.run.id, new Date('2026-08-11T01:00:00Z'), 60_000);
+    await runs.prepareDelivery(due.run.id, 1, 'Generated private result');
+    await runs.finish(due.run.id, 1, 'completed');
+    await store.delete(created.task.id, 1, 'ou_editor');
+    await database.pool.query(
+      "update scheduled_tasks set deleted_at = '2026-06-01T00:00:00Z' where id = $1",
+      [created.task.id],
+    );
+    await database.pool.query(
+      "update scheduled_runs set updated_at = '2026-06-01T00:00:00Z' where id = $1",
+      [due.run.id],
+    );
+
+    await store.purgeTerminalBodies(new Date('2026-08-10T00:00:00Z'));
+
+    const task = await store.get(created.task.id);
+    expect(task).toMatchObject({
+      id: created.task.id,
+      name: `purged-${created.task.id}`,
+      state: 'deleted',
+      origin: { displayName: '' },
+      resultTarget: { displayName: '' },
+    });
+    expect(task?.instruction).toBeUndefined();
+    const revision = await database.pool.query(
+      'select instruction, body_purged_at from scheduled_task_revisions where schedule_id = $1',
+      [created.task.id],
+    );
+    expect(revision.rows[0].instruction).toBeNull();
+    expect(revision.rows[0].body_purged_at).toBeInstanceOf(Date);
+    const runRow = await database.pool.query(
+      `select instruction, prepared_result_text, result_display_name, context_display_name
+       from scheduled_runs where id = $1`,
+      [due.run.id],
+    );
+    expect(runRow.rows[0]).toEqual({
+      instruction: '', prepared_result_text: null,
+      result_display_name: '', context_display_name: null,
+    });
+  }, 30_000);
+
+  it('resumes a one-time task paused before its first run', async () => {
+    const once = input('One time');
+    const at = new Date('2026-08-20T01:00:00Z');
+    const created = await store.create({
+      ...once, schedule: { kind: 'once', at, timezone: 'Asia/Shanghai' }, nextDueAt: at,
+    });
+    if (created.status !== 'created') throw new Error('fixture_not_created');
+    await store.pause(created.task.id, 1, 'ou_editor');
+    await expect(store.resume(created.task.id, 2, 'ou_editor', at)).resolves.toMatchObject({
+      status: 'updated', task: { state: 'active', nextDueAt: at },
+    });
+  });
+});

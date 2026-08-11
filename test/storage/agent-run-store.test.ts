@@ -7,7 +7,9 @@ import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import { PostgresAgentRunStore } from '../../src/storage/agent-run-store.js';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
 import { PostgresEventStore } from '../../src/storage/event-store.js';
-import { agentRuns, processedEvents, toolRuns } from '../../src/storage/schema.js';
+import { PostgresScheduleStore } from '../../src/storage/schedule-store.js';
+import { PostgresScheduledRunStore } from '../../src/storage/scheduled-run-store.js';
+import { agentRuns, processedEvents, scheduledRuns, toolRuns } from '../../src/storage/schema.js';
 
 describe('PostgresAgentRunStore', () => {
   let container: StartedPostgreSqlContainer;
@@ -19,10 +21,11 @@ describe('PostgresAgentRunStore', () => {
     database = createDatabase(container.getConnectionUri());
     await migrate(database.db, { migrationsFolder: resolve('drizzle') });
     store = new PostgresAgentRunStore(database.db);
-  }, 60_000);
+  }, 180_000);
 
   beforeEach(async () => {
     await database.pool.query('truncate table processed_events cascade');
+    await database.pool.query('truncate table scheduled_runs, scheduled_task_revisions, scheduled_tasks cascade');
     const payload: NormalizedMessage = {
       eventId: 'evt_1',
       messageId: 'om_1',
@@ -40,6 +43,54 @@ describe('PostgresAgentRunStore', () => {
       conversationKey: payload.conversationKey,
       status: 'processing',
     });
+  });
+
+  it('marks and fences persistent writes against the current scheduled claim', async () => {
+    const schedules = new PostgresScheduleStore(database.db);
+    const runs = new PostgresScheduledRunStore(database.db);
+    const created = await schedules.create({
+      name: 'Once', creatorOpenId: 'ou_creator', actorOpenId: 'ou_creator',
+      origin: { chatId: 'oc_origin', displayName: 'Origin', chatType: 'p2p' },
+      instruction: 'Create a status document',
+      schedule: { kind: 'once', at: new Date('2026-08-11T01:00:00Z'), timezone: 'UTC' },
+      resultTarget: { chatId: 'oc_target', displayName: 'Target', chatType: 'group' },
+      nextDueAt: new Date('2026-08-11T01:00:00Z'),
+    });
+    if (created.status !== 'created') throw new Error('fixture_not_created');
+    const due = await runs.createDue({
+      scheduleId: created.task.id,
+      expectedDueAt: created.task.nextDueAt!,
+      scheduledFor: created.task.nextDueAt!,
+    });
+    if (due.status !== 'created') throw new Error('fixture_run_not_created');
+    const claim = await runs.claim(due.run.id, new Date('2026-08-11T01:00:00Z'), 60_000);
+    if (!claim) throw new Error('fixture_run_not_claimed');
+    const agentRun = await store.start({
+      scheduledRunId: claim.id,
+      claimAttempt: claim.claimAttempt,
+      model: '5.6-terra',
+    });
+    await store.beginWrite(agentRun.id, {
+      toolName: 'createDocument', targetIdentifiers: {},
+      sanitizedSummary: 'created one document',
+    });
+    const [marked] = await database.db.select().from(scheduledRuns)
+      .where(eq(scheduledRuns.id, claim.id));
+    expect(marked?.writeStartedAt).toBeInstanceOf(Date);
+    await expect(store.listScheduledWriteAttempts(claim.id)).resolves.toEqual([{
+      toolName: 'createDocument', outcome: 'unknown', targetIdentifiers: {},
+      sanitizedSummary: 'created one document',
+    }]);
+
+    await database.db.update(scheduledRuns).set({ claimAttempt: claim.claimAttempt + 1 })
+      .where(eq(scheduledRuns.id, claim.id));
+    const staleAgentRun = await store.start({
+      scheduledRunId: claim.id, claimAttempt: claim.claimAttempt, model: '5.6-terra',
+    });
+    await expect(store.beginWrite(staleAgentRun.id, {
+      toolName: 'appendDocument', targetIdentifiers: { doc: 'dox_1' },
+      sanitizedSummary: 'appended content to one document',
+    })).rejects.toThrow('write_replay_boundary_not_marked');
   });
 
   afterAll(async () => {
@@ -178,6 +229,28 @@ describe('PostgresAgentRunStore', () => {
     );
   });
 
+  it('persists only sanitized Team Context load metadata on the Agent run', async () => {
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
+    await store.recordTeamContext(run.id, {
+      status: 'stale',
+      content: '# Team Context\nsecret body\n',
+      sourceRevision: 8,
+      estimatedTokens: 33,
+      fetchedAt: new Date('2026-08-10T12:00:00Z'),
+      errorCategory: 'team_context_stale',
+    });
+
+    const [row] = await database.db.select().from(agentRuns).where(eq(agentRuns.id, run.id));
+    expect(row).toMatchObject({
+      teamContextStatus: 'stale',
+      teamContextRevision: 8,
+      teamContextTokenCount: 33,
+      teamContextFetchedAt: new Date('2026-08-10T12:00:00Z'),
+      teamContextErrorCategory: 'team_context_stale',
+    });
+    expect(JSON.stringify(row)).not.toContain('secret body');
+  });
+
   it('rejects group-history audit for a missing Agent run', async () => {
     await expect(store.recordGroupHistory('00000000-0000-0000-0000-000000000000', {
       status: 'unavailable',
@@ -209,6 +282,30 @@ describe('PostgresAgentRunStore', () => {
       success: false,
       errorCategory: 'knowledge_write_conflict',
     });
+  });
+
+  it('uses the same replay fence and sanitized receipt for a Team Context mutation', async () => {
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
+    const write = await store.beginWrite(run.id, {
+      toolName: 'updateTeamContext',
+      targetIdentifiers: { documentToken: 'dox_team' },
+      sanitizedSummary: 'updated Team Context',
+    });
+    await store.finishWrite(write.id, {
+      outcome: 'succeeded',
+      resultIdentifiers: { documentToken: 'dox_team', revisionId: '8' },
+    });
+
+    await expect(store.listWriteAttempts('evt_1')).resolves.toEqual([{
+      toolName: 'updateTeamContext',
+      outcome: 'succeeded',
+      targetIdentifiers: { documentToken: 'dox_team' },
+      sanitizedSummary: 'updated Team Context',
+      resultIdentifiers: { documentToken: 'dox_team', revisionId: '8' },
+    }]);
+    const [event] = await database.db.select().from(processedEvents)
+      .where(eq(processedEvents.eventId, 'evt_1'));
+    expect(event?.writeStartedAt).toBeInstanceOf(Date);
   });
 
   it('returns an unfinished write as an unknown sanitized receipt', async () => {

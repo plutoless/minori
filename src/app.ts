@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import type { Logger } from 'pino';
 import { createAgentModel } from './agent/model.js';
 import { runKnowledgeAgent } from './agent/run.js';
+import { createAgentInvocationRunner } from './agent/invocation-runner.js';
 import { createOfficialFeishuRuntime } from './feishu/client.js';
 import { createOfficialLongConnection, FeishuGateway } from './feishu/gateway.js';
 import { LarkKnowledgeService } from './lark/knowledge-service.js';
@@ -10,7 +11,13 @@ import type { AppConfig } from './runtime/config.js';
 import { buildHealthServer, type ComponentStatus, type HealthProbes } from './runtime/health.js';
 import { createModelPreflight } from './runtime/model-preflight.js';
 import { createStorageRuntime } from './storage/runtime.js';
+import { createCalendarCalculator } from './schedule/calendar.js';
+import { createScheduleDispatcher, type ScheduleDispatcher } from './schedule/dispatcher.js';
+import { createScheduledTaskWorker, type ScheduledTaskWorker } from './schedule/worker.js';
+import { DefaultTeamContextSource, type TeamContextSource } from './team-context/source.js';
 import { MessageWorker } from './worker/message-worker.js';
+import { createAdmissionCoordinator, type AdmissionCoordinator } from './worker/admission-coordinator.js';
+import { AGENT_ADMISSION_CONCURRENCY } from './worker/admission-policy.js';
 
 export interface MinoriApp {
   start(): Promise<void>;
@@ -34,12 +41,18 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
   });
   let connection: LongConnection | undefined;
   let worker: MessageWorker | undefined;
+  let scheduledWorker: ScheduledTaskWorker | undefined;
+  let dispatcher: ScheduleDispatcher | undefined;
+  let coordinator: AdmissionCoordinator | undefined;
   let larkStatus: ComponentStatus = 'degraded';
   let larkProbe: Promise<ComponentStatus> | undefined;
   let runtimeInitialization: Promise<void> | undefined;
   let runtimeRetryTimer: ReturnType<typeof setInterval> | undefined;
   let shuttingDown = false;
   let workerStatus: ComponentStatus = 'unconfigured';
+  let teamContextStatus: ComponentStatus = config.teamContextDocumentToken
+    ? 'degraded'
+    : 'unconfigured';
   const feishuConfigured = Boolean(
     config.feishuAppId && config.feishuAppSecret && config.feishuBotOpenId,
   );
@@ -54,6 +67,10 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
     model: async () => modelPreflight.status(),
     retention: async () => storage.retentionStatus(),
     worker: async () => workerStatus,
+    teamContext: async () => teamContextStatus,
+    scheduler: async () => config.scheduleEnabled
+      ? (dispatcher?.status() === 'ok' ? 'ok' : 'degraded')
+      : 'ok',
   } satisfies HealthProbes;
   const healthServer = buildHealthServer(probes);
   let started = false;
@@ -102,11 +119,31 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       aiModel: config.aiModel,
     });
     const service = new LarkKnowledgeService(lark);
+    let teamContextSource: TeamContextSource | undefined;
+    if (config.teamContextDocumentToken && storage.teamContextStore) {
+      const source = new DefaultTeamContextSource({
+        documentToken: config.teamContextDocumentToken,
+        tokenBudget: config.teamContextTokenBudget,
+        staleMaxMs: config.teamContextStaleMaxMs,
+        knowledge: service,
+        store: storage.teamContextStore,
+      });
+      teamContextSource = {
+        documentToken: source.documentToken,
+        async load(signal) {
+          const result = await source.load(signal);
+          teamContextStatus = result.status === 'loaded' ? 'ok' : 'degraded';
+          return result;
+        },
+        update: (input, signal) => source.update(input, signal),
+      };
+    }
     const feishu = createOfficialFeishuRuntime({
       appId: config.feishuAppId!,
       appSecret: config.feishuAppSecret!,
     }, logger);
     const { messenger } = feishu;
+    const calendar = createCalendarCalculator();
     const nextWorker = new MessageWorker({
       eventStore: storage.eventStore,
       conversations: storage.conversationStore,
@@ -136,6 +173,16 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
           botOpenId: config.feishuBotOpenId!,
           botAppId: config.feishuAppId!,
           groupContextSource: feishu.groupContext,
+          ...(teamContextSource ? { teamContextSource } : {}),
+          ...(storage.scheduleStore && storage.scheduledRunStore ? {
+            scheduleTools: {
+              store: storage.scheduleStore,
+              calendar,
+              chatDirectory: feishu.chatDirectory,
+              defaultTimezone: config.scheduleDefaultTimezone,
+              now: () => new Date(),
+            },
+          } : {}),
           agentRunStore: storage.agentRunStore!,
           conversationKey: message.conversationKey,
           triggerMessageId: message.messageId,
@@ -144,13 +191,55 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
         }, signal);
       },
     });
+    let nextScheduledWorker: ScheduledTaskWorker | undefined;
+    let nextDispatcher: ScheduleDispatcher | undefined;
+    let nextCoordinator: AdmissionCoordinator | undefined;
+    if (config.scheduleEnabled && storage.scheduleStore && storage.scheduledRunStore) {
+      nextScheduledWorker = createScheduledTaskWorker({
+        runs: storage.scheduledRunStore,
+        schedules: storage.scheduleStore,
+        agent: createAgentInvocationRunner(),
+        agentDependencies: {
+          model,
+          service,
+          modelName: config.aiModel,
+          maxSteps: config.agentMaxSteps,
+          timeoutMs: config.agentTimeoutMs,
+          botOpenId: config.feishuBotOpenId!,
+          botAppId: config.feishuAppId!,
+          groupContextSource: feishu.groupContext,
+          ...(teamContextSource ? { teamContextSource } : {}),
+          agentRunStore: storage.agentRunStore,
+          contextTokenTarget: config.conversationContextTokenTarget,
+        },
+        messenger,
+        leaseMs: config.scheduleLeaseMs,
+      });
+      nextDispatcher = createScheduleDispatcher({
+        store: storage.scheduleStore,
+        runs: storage.scheduledRunStore,
+        calendar,
+        enabled: true,
+        pollMs: config.schedulePollMs,
+      });
+      nextCoordinator = createAdmissionCoordinator({
+        message: nextWorker,
+        scheduled: nextScheduledWorker,
+        concurrency: AGENT_ADMISSION_CONCURRENCY,
+        pollMs: 1_000,
+        onError: (errorCode) => logger.warn({ errorCode }, 'admission iteration failed'),
+      });
+    }
     const gateway = new FeishuGateway({
       botOpenId: config.feishuBotOpenId!,
       botAppId: config.feishuAppId!,
       eventStore: storage.eventStore,
       reactions: messenger,
       messageContext: messenger,
-      signalWorker: () => nextWorker.wake(),
+      signalWorker: () => {
+        nextWorker.wake();
+        nextCoordinator?.wake();
+      },
       logger,
     });
     const nextConnection = createOfficialLongConnection({
@@ -158,22 +247,34 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       appSecret: config.feishuAppSecret!,
     }, gateway);
 
-    await nextWorker.start();
+    await nextWorker.start(nextCoordinator ? false : true);
+    nextScheduledWorker?.start(Math.min(config.scheduleLeaseMs / 2, 30_000));
+    await nextCoordinator?.start();
+    nextDispatcher?.start();
     try {
       await nextConnection.start();
     } catch (error) {
       workerStatus = 'degraded';
+      nextDispatcher?.stop();
+      await nextCoordinator?.stop();
+      await nextScheduledWorker?.stop();
       await nextWorker.stop();
       throw error;
     }
     if (shuttingDown) {
       nextConnection.stop();
+      nextDispatcher?.stop();
+      await nextCoordinator?.stop();
+      await nextScheduledWorker?.stop();
       await nextWorker.stop();
       return;
     }
     connection?.stop();
     connection = nextConnection;
     worker = nextWorker;
+    scheduledWorker = nextScheduledWorker;
+    dispatcher = nextDispatcher;
+    coordinator = nextCoordinator;
     workerStatus = 'ok';
   }
 
@@ -228,10 +329,20 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       await runtimeInitialization;
       connection?.stop();
       connection = undefined;
+      dispatcher?.stop();
+      dispatcher = undefined;
+      if (coordinator) {
+        await coordinator.stop();
+        coordinator = undefined;
+      }
       if (worker) {
         await worker.stop();
         worker = undefined;
       }
+      if (scheduledWorker) {
+        await scheduledWorker.stop();
+      }
+      scheduledWorker = undefined;
       workerStatus = 'degraded';
       if (healthStarted) {
         await healthServer.close();

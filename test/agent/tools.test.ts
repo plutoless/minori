@@ -21,6 +21,42 @@ const BASE_TOOL_NAMES = [
 const FORBIDDEN_TOOL_AUTHORITY =
   /delete|rename|move|trash|overwrite|permission|sharing|shell|http|filesystem|raw/iu;
 
+function scheduleContext() {
+  const task = {
+    id: '00000000-0000-4000-8000-000000000001', name: 'Daily brief', creatorOpenId: 'ou_creator',
+    origin: { chatId: 'oc_origin', displayName: 'Origin', chatType: 'p2p' as const },
+    instruction: 'Summarize decisions', version: 1,
+    schedule: { kind: 'cron' as const, expression: '0 9 * * *', timezone: 'Asia/Shanghai' },
+    resultTarget: { chatId: 'oc_origin', displayName: 'Origin', chatType: 'p2p' as const },
+    state: 'active' as const, nameReserved: true,
+    nextDueAt: new Date('2026-08-11T01:00:00Z'),
+    createdAt: new Date('2026-08-10T00:00:00Z'), updatedAt: new Date('2026-08-10T00:00:00Z'),
+  };
+  return {
+    store: {
+      create: vi.fn().mockResolvedValue({ status: 'created', task }),
+      list: vi.fn().mockResolvedValue([task]),
+      get: vi.fn().mockResolvedValue(task),
+      update: vi.fn().mockResolvedValue({ status: 'updated', task: { ...task, version: 2 } }),
+      pause: vi.fn().mockResolvedValue({ status: 'updated', task: { ...task, state: 'paused', version: 2 } }),
+      resume: vi.fn().mockResolvedValue({ status: 'updated', task: { ...task, version: 2 } }),
+      delete: vi.fn().mockResolvedValue({ status: 'updated', task: { ...task, state: 'deleted', version: 2 } }),
+    },
+    calendar: {
+      normalize: vi.fn().mockReturnValue(task.schedule),
+      next: vi.fn().mockReturnValue(task.nextDueAt),
+      latestAtOrBefore: vi.fn(),
+    },
+    chatDirectory: { resolveExactGroup: vi.fn().mockResolvedValue({
+      status: 'resolved', chatId: 'oc_product', displayName: 'Product',
+    }) },
+    actorOpenId: 'ou_actor',
+    origin: task.origin,
+    defaultTimezone: 'Asia/Shanghai',
+    now: () => new Date('2026-08-10T00:00:00Z'),
+  };
+}
+
 function service(): KnowledgeService {
   return {
     search: vi.fn().mockResolvedValue([]),
@@ -49,6 +85,155 @@ function service(): KnowledgeService {
 }
 
 describe('createKnowledgeTools', () => {
+  it('exposes team-global schedule tools only for member-triggered runs', async () => {
+    const schedule = scheduleContext();
+    const audited: unknown[] = [];
+    const tools = createKnowledgeTools(
+      service(), { search: vi.fn().mockResolvedValue([]) }, new SourceRegistry(),
+      { run: async (input, operation) => { audited.push(input); return operation(); } },
+      undefined, undefined, schedule,
+    );
+    for (const name of [
+      'createSchedule', 'listSchedules', 'updateSchedule',
+      'pauseSchedule', 'resumeSchedule', 'deleteSchedule',
+    ]) expect(tools).toHaveProperty(name);
+
+    await expect(tools.createSchedule!.execute?.({
+      name: 'Daily brief', instruction: 'Summarize decisions',
+      schedule: { kind: 'cron', expression: '0 9 * * *' },
+      resultTarget: { kind: 'group', name: 'Product' },
+      scheduledContext: { kind: 'none' },
+    }, { toolCallId: 'schedule_create', messages: [] })).resolves.toMatchObject({
+      status: 'created', task: { id: '00000000-0000-4000-8000-000000000001' },
+    });
+    expect(schedule.store.create).toHaveBeenCalledWith(expect.objectContaining({
+      creatorOpenId: 'ou_actor', actorOpenId: 'ou_actor',
+      origin: schedule.origin,
+      resultTarget: { chatId: 'oc_product', displayName: 'Product', chatType: 'group' },
+    }));
+    expect(audited).toEqual([expect.objectContaining({
+      toolName: 'createSchedule', sanitizedSummary: 'created one scheduled task',
+    })]);
+
+    const scheduledRunTools = createKnowledgeTools(
+      service(), { search: vi.fn().mockResolvedValue([]) }, new SourceRegistry(),
+      { run: (_input, operation) => operation() },
+    );
+    expect(scheduledRunTools).not.toHaveProperty('createSchedule');
+    expect(scheduledRunTools).not.toHaveProperty('listSchedules');
+  });
+
+  it('requires expected versions for schedule mutations and resolves targets before writes', async () => {
+    const schedule = scheduleContext();
+    const order: string[] = [];
+    schedule.chatDirectory.resolveExactGroup.mockImplementation(async () => {
+      order.push('resolve');
+      return { status: 'resolved' as const, chatId: 'oc_product', displayName: 'Product' };
+    });
+    const tools = createKnowledgeTools(
+      service(), { search: vi.fn().mockResolvedValue([]) }, new SourceRegistry(),
+      { run: async (_input, operation) => { order.push('fence'); return operation(); } },
+      undefined, undefined, schedule,
+    );
+    const schema = tools.updateSchedule!.inputSchema as { safeParse(value: unknown): { success: boolean } };
+    const taskId = '00000000-0000-4000-8000-000000000001';
+    expect(schema.safeParse({ taskId, name: 'Renamed' }).success).toBe(false);
+    expect(schema.safeParse({ taskId, expectedVersion: 1, name: 'Renamed' }).success)
+      .toBe(true);
+
+    await tools.updateSchedule!.execute?.({
+      taskId, expectedVersion: 1,
+      resultTarget: { kind: 'group', name: 'Product' },
+    }, { toolCallId: 'schedule_update', messages: [] });
+    expect(order).toEqual(['resolve', 'fence']);
+    expect(schedule.store.update).toHaveBeenCalledWith(
+      taskId, 1, 'ou_actor',
+      { resultTarget: { chatId: 'oc_product', displayName: 'Product', chatType: 'group' } },
+    );
+  });
+  it('adds only the configured Team Context mutation tool for member-triggered runs', async () => {
+    const update = vi.fn().mockResolvedValue({
+      operation: 'patch' as const,
+      token: 'dox_team', title: 'Team Context',
+      url: 'https://acme.feishu.cn/docx/dox_team', revisionId: 8,
+    });
+    const audited: unknown[] = [];
+    const tools = createKnowledgeTools(
+      service(),
+      { search: vi.fn().mockResolvedValue([]) },
+      new SourceRegistry(),
+      {
+        run: async (input, operation) => {
+          audited.push(input);
+          return operation();
+        },
+      },
+      undefined,
+      {
+        source: { documentToken: 'dox_team', load: vi.fn(), update },
+        current: {
+          status: 'loaded', content: '# Team Context\n', sourceRevision: 7,
+          estimatedTokens: 4, fetchedAt: new Date('2026-08-10T09:00:00Z'),
+        },
+        allowMutation: true,
+      },
+    );
+
+    expect(tools).toHaveProperty('updateTeamContext');
+    const schema = tools.updateTeamContext!.inputSchema as {
+      safeParse(value: unknown): { success: boolean };
+    };
+    const input = {
+      expectedRevision: 7,
+      pattern: 'Old rule',
+      replacement: 'New rule',
+      reason: 'correction' as const,
+      semanticChangeApproved: true,
+    };
+    expect(schema.safeParse(input).success).toBe(true);
+    expect(schema.safeParse({ ...input, documentToken: 'dox_other' }).success).toBe(false);
+
+    await expect(tools.updateTeamContext!.execute?.(
+      input,
+      { toolCallId: 'call_context', messages: [] },
+    )).resolves.toEqual({
+      status: 'updated', documentToken: 'dox_team', revisionId: '8',
+      summary: 'Updated Team Context',
+    });
+    expect(update).toHaveBeenCalledWith({
+      expectedRevision: 7,
+      pattern: 'Old rule',
+      replacement: 'New rule',
+      reason: 'correction',
+      semanticChangeApproved: true,
+    }, undefined);
+    expect(audited).toEqual([{
+      toolName: 'updateTeamContext',
+      targetIdentifiers: { documentToken: 'dox_team' },
+      sanitizedSummary: 'updated Team Context',
+    }]);
+
+    await expect(tools.updateTeamContext!.execute?.({
+      ...input,
+      reason: 'approved_consolidation',
+      semanticChangeApproved: false,
+    }, { toolCallId: 'call_unapproved', messages: [] })).rejects.toThrow(
+      'team_context_semantic_approval_required',
+    );
+    expect(update).toHaveBeenCalledTimes(1);
+
+    const scheduledTools = createKnowledgeTools(
+      service(), { search: vi.fn().mockResolvedValue([]) }, new SourceRegistry(),
+      { run: (_input, operation) => operation() }, undefined,
+      {
+        source: { documentToken: 'dox_team', load: vi.fn(), update },
+        current: { status: 'unavailable', errorCategory: 'team_context_unavailable' },
+        allowMutation: false,
+      },
+    );
+    expect(scheduledTools).not.toHaveProperty('updateTeamContext');
+  });
+
   it('exposes the Initial Typed Write Set, knowledge reads, and retained history in p2p', () => {
     const tools = createKnowledgeTools(
       service(),
