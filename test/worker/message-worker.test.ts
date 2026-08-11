@@ -3,6 +3,7 @@ import type { AgentReply } from '../../src/agent/run.js';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import type { EventStore, StoredEvent } from '../../src/storage/event-store.js';
 import { MessageWorker } from '../../src/worker/message-worker.js';
+import { PROGRESS_REPLY_TEXT } from '../../src/worker/progress-reply.js';
 
 function message(content: NormalizedMessage['content'] = {
   kind: 'text', text: '发布流程是什么？', feishuLinks: [],
@@ -11,6 +12,16 @@ function message(content: NormalizedMessage['content'] = {
     eventId: 'evt_1', messageId: 'om_1', chatId: 'oc_1',
     conversationKey: 'oc_1', senderOpenId: 'ou_1',
     chatType: 'group', content, occurredAt: new Date('2026-08-05T00:00:00Z'),
+  };
+}
+
+function storedEvent(overrides: Partial<StoredEvent> = {}): StoredEvent {
+  return {
+    eventId: 'evt_1',
+    payload: message(),
+    attempts: 1,
+    receivedAt: new Date('2026-08-05T01:00:00.000Z'),
+    ...overrides,
   };
 }
 
@@ -33,6 +44,14 @@ class FakeEventStore implements EventStore {
     _eventId: string, _attempt: number, key: string, attemptedAt: Date, text?: string,
   ) {
     this.calls.push('markReplyStarted'); this.marked = { key, attemptedAt, ...(text ? { text } : {}) };
+  }
+  async markProgressAttempted() {
+    this.calls.push('markProgress');
+    return true;
+  }
+  async confirmProgressSent() {
+    this.calls.push('confirmProgress');
+    return true;
   }
   async markReplyUncertain() {
     this.calls.push('uncertain');
@@ -120,7 +139,7 @@ describe('MessageWorker.process', () => {
       leaseMs: 100,
     });
 
-    await worker.process({ eventId: 'evt_1', payload: message(), attempts: 1 });
+    await worker.process(storedEvent());
 
     expect(setup.eventStore.retried?.errorCode).toBe('processing_deadline_exceeded');
     expect(runAgent).toHaveBeenCalledOnce();
@@ -130,10 +149,9 @@ describe('MessageWorker.process', () => {
     const setup = dependencies();
     setup.eventStore.terminalProcessingReactionId = 'reaction_1';
     const worker = new MessageWorker(setup.options);
-    await worker.process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
+    await worker.process(storedEvent({
       processingReactionId: 'reaction_1',
-    });
+    }));
 
     expect(setup.runAgent).toHaveBeenCalledOnce();
     expect(setup.messenger.addReaction).not.toHaveBeenCalled();
@@ -159,9 +177,9 @@ describe('MessageWorker.process', () => {
     const setup = dependencies();
     const privateMessage = { ...message(), chatType: 'p2p' as const, conversationKey: 'oc_1' };
 
-    await new MessageWorker(setup.options).process({
+    await new MessageWorker(setup.options).process(storedEvent({
       eventId: 'evt_private', payload: privateMessage, attempts: 1,
-    });
+    }));
 
     expect(setup.runAgent).toHaveBeenCalledWith(
       privateMessage, 1, expect.any(AbortSignal),
@@ -176,20 +194,20 @@ describe('MessageWorker.process', () => {
         append: vi.fn(),
       },
     });
-    await new MessageWorker(conversation.options).process({
+    await new MessageWorker(conversation.options).process(storedEvent({
       eventId: 'evt_1', payload: message(), attempts: 3,
-    });
+    }));
     expect(conversation.eventStore.completed).toEqual({ errorCode: 'conversation_store_failed' });
     expect(conversation.runAgent).not.toHaveBeenCalled();
   });
 
   it('explicitly replies to unsupported content without invoking the Agent', async () => {
     const setup = dependencies();
-    await new MessageWorker(setup.options).process({
+    await new MessageWorker(setup.options).process(storedEvent({
       eventId: 'evt_1',
       payload: message({ kind: 'unsupported', sourceMessageType: 'file' }),
       attempts: 1,
-    });
+    }));
     expect(setup.runAgent).not.toHaveBeenCalled();
     expect(setup.messenger.replyText.mock.calls[0]?.[1]).toContain('暂不支持');
     expect(setup.eventStore.completed).toEqual({ replyMessageId: 'om_reply_1' });
@@ -199,25 +217,25 @@ describe('MessageWorker.process', () => {
     const setup = dependencies();
     setup.eventStore.terminalProcessingReactionId = 'reaction_1';
     setup.messenger.removeReaction.mockRejectedValueOnce(new Error('reaction api secret'));
-    await new MessageWorker(setup.options).process({
+    await new MessageWorker(setup.options).process(storedEvent({
       eventId: 'evt_1', payload: message(), attempts: 1, processingReactionId: 'reaction_1',
-    });
+    }));
     expect(setup.messenger.replyText).toHaveBeenCalledOnce();
     expect(setup.eventStore.completed).toEqual({ replyMessageId: 'om_reply_1' });
   });
 
   it('retries transient Agent failures, then emits a truthful temporary-error reply', async () => {
     const first = dependencies({ runAgent: vi.fn(async () => { throw new Error('model key secret'); }) });
-    await new MessageWorker(first.options).process({
+    await new MessageWorker(first.options).process(storedEvent({
       eventId: 'evt_1', payload: message(), attempts: 1,
-    });
+    }));
     expect(first.eventStore.retried?.errorCode).toBe('agent_failed');
     expect(first.messenger.replyText).not.toHaveBeenCalled();
 
     const last = dependencies({ runAgent: vi.fn(async () => { throw new Error('lark auth secret'); }) });
-    await new MessageWorker(last.options).process({
+    await new MessageWorker(last.options).process(storedEvent({
       eventId: 'evt_1', payload: message(), attempts: 3,
-    });
+    }));
     const text = last.messenger.replyText.mock.calls[0]?.[1] ?? '';
     expect(text).toContain('暂时无法完成');
     expect(text).not.toContain('知识库没有');
@@ -234,17 +252,16 @@ describe('MessageWorker.process', () => {
     setup.eventStore.terminalProcessingReactionId = 'reaction_1';
     const worker = new MessageWorker(setup.options);
 
-    await worker.process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
+    await worker.process(storedEvent({
       processingReactionId: 'reaction_1',
-    });
+    }));
     expect(setup.eventStore.retried?.errorCode).toBe('agent_failed');
     expect(setup.messenger.removeReaction).not.toHaveBeenCalled();
 
-    await worker.process({
-      eventId: 'evt_1', payload: message(), attempts: 2,
+    await worker.process(storedEvent({
+      attempts: 2,
       processingReactionId: 'reaction_1',
-    });
+    }));
     expect(setup.messenger.removeReaction).toHaveBeenCalledTimes(1);
     expect(setup.messenger.removeReaction).toHaveBeenCalledWith('om_1', 'reaction_1');
   });
@@ -257,13 +274,79 @@ describe('MessageWorker.process', () => {
     };
     const setup = dependencies({ runAgent: vi.fn(async () => natural) });
 
-    await new MessageWorker(setup.options).process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
-    });
+    await new MessageWorker(setup.options).process(storedEvent());
 
     expect(setup.messenger.replyText.mock.calls[0]?.[1]).toBe([
       '发布是在周五。', '', 'Sources:', '[1] 发布计划 — https://example.com/plan',
     ].join('\n'));
+  });
+
+  it('waits for an in-flight Progress Reply before final reply delivery', async () => {
+    const setup = dependencies();
+    setup.eventStore.terminalProcessingReactionId = 'reaction_1';
+    let resolveProgress!: (messageId: string) => void;
+    setup.messenger.replyText
+      .mockImplementationOnce(() => new Promise<string>((resolve) => {
+        resolveProgress = resolve;
+      }))
+      .mockResolvedValueOnce('om_reply_1');
+    const worker = new MessageWorker(setup.options);
+
+    const processing = worker.process(storedEvent({
+      receivedAt: new Date('2026-08-05T00:59:00.000Z'),
+      processingReactionId: 'reaction_1',
+    }));
+    await vi.waitFor(() => expect(setup.messenger.replyText).toHaveBeenCalledOnce());
+    expect(setup.messenger.replyText).toHaveBeenNthCalledWith(
+      1,
+      'om_1',
+      PROGRESS_REPLY_TEXT,
+      expect.stringMatching(/^minori-progress-[a-f0-9]{32}$/u),
+    );
+    expect(setup.eventStore.marked).toBeUndefined();
+    expect(setup.messenger.removeReaction).not.toHaveBeenCalled();
+
+    resolveProgress('om_progress_1');
+    await processing;
+    expect(setup.messenger.replyText).toHaveBeenCalledTimes(2);
+    expect(setup.messenger.replyText.mock.calls[1]?.[1]).toContain(
+      '发布说明和设计稿都已核对。',
+    );
+    expect(setup.eventStore.calls.indexOf('confirmProgress'))
+      .toBeLessThan(setup.eventStore.calls.indexOf('markReplyStarted'));
+    expect(setup.messenger.removeReaction).toHaveBeenCalledWith('om_1', 'reaction_1');
+  });
+
+  it('continues to one final reply when Progress Reply delivery fails', async () => {
+    const setup = dependencies();
+    setup.messenger.replyText
+      .mockRejectedValueOnce(new Error('provider secret'))
+      .mockResolvedValueOnce('om_reply_1');
+
+    await new MessageWorker(setup.options).process(storedEvent({
+      receivedAt: new Date('2026-08-05T00:59:00.000Z'),
+    }));
+
+    expect(setup.messenger.replyText).toHaveBeenCalledTimes(2);
+    expect(setup.eventStore.completed).toEqual({ replyMessageId: 'om_reply_1' });
+    expect(setup.options.logger.warn).toHaveBeenCalledWith(
+      { eventId: 'evt_1', errorCode: 'progress_reply_failed' },
+      'progress reply failed',
+    );
+    expect(JSON.stringify(setup.options.logger.warn.mock.calls)).not.toContain('provider secret');
+  });
+
+  it('does not append Progress Reply to Retained Conversation History', async () => {
+    const setup = dependencies();
+    await new MessageWorker(setup.options).process(storedEvent({
+      receivedAt: new Date('2026-08-05T00:59:00.000Z'),
+    }));
+
+    expect(setup.appended.map(({ messageId, role }) => ({ messageId, role }))).toEqual([
+      { messageId: 'om_1', role: 'user' },
+      { messageId: 'om_reply_1', role: 'assistant' },
+    ]);
+    expect(setup.appended.map(({ content }) => content)).not.toContain(PROGRESS_REPLY_TEXT);
   });
 
   it.each([
@@ -284,9 +367,7 @@ describe('MessageWorker.process', () => {
       })),
     });
 
-    await new MessageWorker(setup.options).process({
-      eventId: 'evt_1', payload: message(), attempts: 1,
-    });
+    await new MessageWorker(setup.options).process(storedEvent());
 
     expect(setup.messenger.replyText).toHaveBeenCalledOnce();
     expect(setup.messenger.replyText).toHaveBeenCalledWith(

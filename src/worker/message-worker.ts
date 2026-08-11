@@ -5,6 +5,7 @@ import type { NormalizedMessage } from '../contracts/messages.js';
 import type { FeishuMessenger } from '../feishu/client.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
 import type { EventStore, StoredEvent, TerminalEventResult } from '../storage/event-store.js';
+import { startProgressReply, type ProgressReplyHandle } from './progress-reply.js';
 import { formatAgentReply } from './source-format.js';
 
 const UNSUPPORTED_REPLY = '我暂不支持直接读取这种消息类型。请发送文字、富文本，或粘贴飞书文档链接。';
@@ -123,8 +124,14 @@ export class MessageWorker {
   async process(event: StoredEvent): Promise<void> {
     const signal = AbortSignal.timeout(this.processingDeadlineMs);
     const state = { replyStarted: event.replyAttemptedAt !== undefined };
+    const progress = startProgressReply(event, {
+      eventStore: this.options.eventStore,
+      messenger: this.options.messenger,
+      logger: this.options.logger,
+      now: this.now,
+    });
     try {
-      await this.processWithinDeadline(event, signal, state);
+      await this.processWithinDeadline(event, signal, state, progress);
     } catch (error) {
       if (!signal.aborted) throw error;
       if (state.replyStarted) {
@@ -141,6 +148,8 @@ export class MessageWorker {
           DEADLINE_DRAIN_MS,
         );
       }
+    } finally {
+      await progress.settle();
     }
   }
 
@@ -148,6 +157,7 @@ export class MessageWorker {
     event: StoredEvent,
     signal: AbortSignal,
     state: { replyStarted: boolean },
+    progress: ProgressReplyHandle,
   ): Promise<void> {
     const replyAttemptedAt = event.replyAttemptedAt;
     const recoveringReply = replyAttemptedAt !== undefined;
@@ -214,7 +224,7 @@ export class MessageWorker {
           key: event.replyIdempotencyKey!,
           attemptedAt: event.replyAttemptedAt,
         }
-        : await this.prepareReply(event, signal, state);
+        : await this.prepareReply(event, signal, state, progress);
       sentReplyText = prepared.text;
       try {
         replyMessageId = await this.withAbort(this.options.messenger.replyText(
@@ -262,6 +272,7 @@ export class MessageWorker {
     event: StoredEvent,
     signal: AbortSignal,
     state: { replyStarted: boolean },
+    progress: ProgressReplyHandle,
   ) {
     let text: string;
     if (event.payload.content.kind === 'unsupported') {
@@ -290,11 +301,11 @@ export class MessageWorker {
         if (signal.aborted) throw signal.reason;
         if (event.attempts < 3) throw new RetryableProcessingError('agent_failed');
         text = TEMPORARY_ERROR_REPLY;
-        return this.persistPreparedReply(event, text, signal, state);
+        return this.persistPreparedReply(event, text, signal, state, progress);
       }
       text = formatAgentReply(reply);
     }
-    return this.persistPreparedReply(event, text, signal, state);
+    return this.persistPreparedReply(event, text, signal, state, progress);
   }
 
   private async persistPreparedReply(
@@ -302,7 +313,9 @@ export class MessageWorker {
     text: string,
     signal: AbortSignal,
     state: { replyStarted: boolean },
+    progress: ProgressReplyHandle,
   ) {
+    await progress.settle();
     const key = stableReplyKey(event.eventId);
     const attemptedAt = this.now();
     await this.withAbort(this.options.eventStore.markReplyStarted(
