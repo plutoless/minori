@@ -127,13 +127,19 @@ The worker owns a single progress timer/promise for the claimed event.
 - If progress sending has already started, the worker waits for that bounded attempt
   to settle before it begins final reply delivery. Therefore the final reply cannot
   overtake an in-flight progress reply in the same worker process.
+- If the durable attempt marker is still blocked when final delivery becomes ready,
+  settlement prevents a later send and does not wait for that database operation.
+- Persisting the returned progress message ID is best-effort after visible delivery;
+  that confirmation write does not delay the final reply.
 - A progress failure never changes the Agent outcome and never causes Agent or final
   reply retry.
 
 Progress delivery reuses the existing Feishu client's 30-second request timeout. In
 the unusual case where the Agent finishes while that request is stalled, final reply
-delivery may wait up to that bound. This preserves visible message order without
-adding a separate cancellation-aware Feishu transport.
+delivery waits only for that already-started request, up to its bound. A pending
+attempt-marker write cannot start a progress send after settlement, and the
+post-send confirmation write is not part of the visible-order wait. This preserves
+visible message order without adding a separate cancellation-aware Feishu transport.
 
 The progress attempt uses its own fixed idempotency key derived from the event ID,
 separate from the final reply key.

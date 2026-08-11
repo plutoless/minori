@@ -4,7 +4,7 @@
 
 **Goal:** Prevent historical context from being presented as a live result and send one durable, ordinary progress reply when a supported member message is still processing after 20 seconds.
 
-**Architecture:** Keep evidence correctness as one shared Agent-instruction boundary used by both message and Scheduled Runs. Add a small progress-reply controller beside `MessageWorker`; it starts from the event's durable `received_at`, claims an at-most-once progress attempt through two nullable PostgreSQL fields, sends concurrently with Agent work, and settles before final reply delivery. Scheduled Runs and unsupported message types never instantiate this controller.
+**Architecture:** Keep evidence correctness as one shared Agent-instruction boundary used by both message and Scheduled Runs. Add a small progress-reply controller beside `MessageWorker`; it starts from the event's durable `received_at`, claims an at-most-once progress attempt through two nullable PostgreSQL fields, sends concurrently with Agent work, and settles visible delivery before final reply delivery. A still-pending marker cannot send after settlement, and post-send message-ID confirmation does not block the final reply. Scheduled Runs and unsupported message types never instantiate this controller.
 
 **Tech Stack:** TypeScript 7, Node.js 22+, Vercel AI SDK 7, Vitest 4, Drizzle ORM/Kit, PostgreSQL 17 Testcontainers, Feishu Node SDK.
 
@@ -21,7 +21,7 @@
 - Progress Reply text is exactly `我还在处理这条请求，完成后会继续回复。`.
 - Progress Reply is an ordinary non-topic reply to the original trigger message.
 - At most one progress attempt is made per event; no progress retry is allowed after an attempt marker exists.
-- Progress delivery uses the existing Feishu 30-second request timeout and settles before final reply delivery.
+- Progress delivery uses the existing Feishu 30-second request timeout; final delivery waits only for an already-started Feishu send, not a blocked marker or post-send confirmation write.
 - The existing Processing Reaction remains attached until the existing terminal cleanup path.
 - Persist only `progress_attempted_at` and `progress_message_id`; do not persist the fixed body, idempotency key, provider error, or failure category.
 - Do not append Progress Reply to Retained Conversation History. Do not add filtering when it later appears in Live Group History.
@@ -352,7 +352,7 @@ git commit -m "feat: persist delayed progress reply state"
 - Consumes the Task 2 `StoredEvent` progress/received fields and two `EventStore` methods.
 - Produces `PROGRESS_REPLY_DELAY_MS = 20_000` and fixed `PROGRESS_REPLY_TEXT`.
 - Produces `startProgressReply(event, dependencies): ProgressReplyHandle`.
-- Produces `ProgressReplyHandle.settle(): Promise<void>`, which cancels an unstarted timer or waits for an in-flight Feishu attempt.
+- Produces `ProgressReplyHandle.settle(): Promise<void>`, which cancels an unstarted timer, prevents a pending marker from starting delivery, or waits for an already-started Feishu send. Post-send confirmation remains best-effort and non-blocking.
 - Does not alter `FeishuMessenger`, `ScheduledTaskWorker`, `ConversationStore`, or final reply retry semantics.
 
 - [ ] **Step 1: Write the focused controller tests**

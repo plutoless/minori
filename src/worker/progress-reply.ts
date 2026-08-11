@@ -40,23 +40,19 @@ export function startProgressReply(
 
   const now = dependencies.now ?? (() => new Date());
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let inFlight: Promise<void> | undefined;
+  let attemptInFlight: Promise<void> | undefined;
+  let deliveryInFlight: Promise<void> | undefined;
   let settled = false;
 
-  const send = async () => {
+  const logFailure = () => {
+    dependencies.logger.warn(
+      { eventId: event.eventId, errorCode: 'progress_reply_failed' },
+      'progress reply failed',
+    );
+  };
+
+  const confirm = async (messageId: string) => {
     try {
-      const attemptedAt = now();
-      const admitted = await dependencies.eventStore.markProgressAttempted(
-        event.eventId,
-        event.attempts,
-        attemptedAt,
-      );
-      if (!admitted) return;
-      const messageId = await dependencies.messenger.replyText(
-        event.payload.messageId,
-        PROGRESS_REPLY_TEXT,
-        progressReplyKey(event.eventId),
-      );
       const confirmed = await dependencies.eventStore.confirmProgressSent(
         event.eventId,
         event.attempts,
@@ -64,16 +60,42 @@ export function startProgressReply(
       );
       if (!confirmed) throw new Error('progress_confirmation_rejected');
     } catch {
-      dependencies.logger.warn(
-        { eventId: event.eventId, errorCode: 'progress_reply_failed' },
-        'progress reply failed',
-      );
+      logFailure();
     }
   };
 
+  const attempt = async () => {
+    let admitted: boolean;
+    try {
+      admitted = await dependencies.eventStore.markProgressAttempted(
+        event.eventId,
+        event.attempts,
+        now(),
+      );
+    } catch {
+      logFailure();
+      return;
+    }
+    if (!admitted || settled) return;
+
+    deliveryInFlight = (async () => {
+      try {
+        const messageId = await dependencies.messenger.replyText(
+          event.payload.messageId,
+          PROGRESS_REPLY_TEXT,
+          progressReplyKey(event.eventId),
+        );
+        void confirm(messageId);
+      } catch {
+        logFailure();
+      }
+    })();
+    await deliveryInFlight;
+  };
+
   const begin = () => {
-    if (settled || inFlight) return;
-    inFlight = send();
+    if (settled || attemptInFlight) return;
+    attemptInFlight = attempt();
   };
   const delay = Math.max(
     0,
@@ -91,12 +113,15 @@ export function startProgressReply(
 
   return {
     async settle() {
-      settled = true;
       if (timer) {
         clearTimeout(timer);
         timer = undefined;
       }
-      await inFlight;
+      // Let an already-resolved admission marker enter visible delivery, while
+      // refusing to wait for a marker that is still blocked in PostgreSQL.
+      await Promise.resolve();
+      settled = true;
+      await deliveryInFlight;
     },
   };
 }

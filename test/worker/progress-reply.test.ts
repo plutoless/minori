@@ -142,4 +142,40 @@ describe('Progress Reply', () => {
     );
     expect(JSON.stringify(state.logger.warn.mock.calls)).not.toContain('provider secret');
   });
+
+  it('does not let a delayed admission marker hold or start delivery after final settlement', async () => {
+    let resolveAdmission!: (admitted: boolean) => void;
+    const state = setup({ receivedAt: new Date('2026-08-11T09:59:00.000Z') });
+    state.eventStore.markProgressAttempted.mockImplementationOnce(
+      () => new Promise<boolean>((resolve) => { resolveAdmission = resolve; }),
+    );
+    const handle = startProgressReply(state.event, {
+      ...state.dependencies,
+      now: () => new Date('2026-08-11T10:00:00.000Z'),
+    });
+    await vi.waitFor(() => expect(state.eventStore.markProgressAttempted).toHaveBeenCalledOnce());
+
+    await expect(handle.settle()).resolves.toBeUndefined();
+    resolveAdmission(true);
+    await vi.waitFor(() => expect(state.eventStore.markProgressAttempted).toHaveResolved());
+
+    expect(state.messenger.replyText).not.toHaveBeenCalled();
+  });
+
+  it('waits for visible delivery but not a delayed confirmation write', async () => {
+    let resolveConfirmation!: (confirmed: boolean) => void;
+    const state = setup({ receivedAt: new Date('2026-08-11T09:59:00.000Z') });
+    state.eventStore.confirmProgressSent.mockImplementationOnce(
+      () => new Promise<boolean>((resolve) => { resolveConfirmation = resolve; }),
+    );
+    const handle = startProgressReply(state.event, {
+      ...state.dependencies,
+      now: () => new Date('2026-08-11T10:00:00.000Z'),
+    });
+    await vi.waitFor(() => expect(state.messenger.replyText).toHaveBeenCalledOnce());
+
+    await expect(handle.settle()).resolves.toBeUndefined();
+    resolveConfirmation(true);
+    await vi.waitFor(() => expect(state.eventStore.confirmProgressSent).toHaveResolved());
+  });
 });
