@@ -1,7 +1,7 @@
 # Current Evidence and Delayed Progress Reply Design
 
 **Date:** 2026-08-11  
-**Status:** Proposed  
+**Status:** Approved  
 **Audience:** Minori maintainers and operators
 
 ## Summary
@@ -20,7 +20,8 @@ scenario router, staged conversation protocol, progress percentages, or periodic
 status updates. The Agent retains open-ended control over whether and how to use its
 tools.
 
-Scheduled Tasks are unchanged. The progress reply applies only to ordinary private
+The evidence rule applies to every Agent run, including Scheduled Runs. Scheduled
+Tasks otherwise remain unchanged: the progress reply applies only to ordinary private
 and group messages triggered by a member.
 
 ## Goals
@@ -47,32 +48,32 @@ and group messages triggered by a member.
 - Any change to Scheduled Task execution or delivery.
 - Retaining the progress reply in conversation history.
 
-## Evidence semantics
+## Evidence rule
 
-### Historical context is historical
+Add one plain-language rule to the Agent instructions:
 
-`Retained Conversation History`, `Live Group History`, Team Context, retrieved
-documents, and prior tool results remain useful background. They do not prove that a
-fact is current merely because it appeared in an earlier message.
+> Historical content may be cited, but it must not be presented as a live result from
+> the current run. For claims about the current or latest state, permissions, versions,
+> or read failures, either use evidence actually obtained in the current run or say
+> that the claim has not been verified live. Do not upgrade the freshness claimed by
+> the evidence itself: a cached or timestamped result remains valid only as of the
+> freshness it reports.
 
-The Agent instructions will establish these rules by meaning rather than by requiring
-fixed response wording:
+This rule is semantic rather than exact member-facing wording. A dated prior audit may
+still be summarized as a dated prior audit, and a member may explicitly ask Minori to
+recall or transform it without forcing a new read. What Minori must not do is silently
+turn that historical result into a claim about what is true now.
 
-- Claims about the current state of team knowledge, the latest contents of a resource,
-  current permissions/scopes, the current Lark CLI or runtime version, and current
-  read failures require evidence returned by a tool in the current Agent run.
-- If the Agent has not re-read a historical result, it may still discuss it, but must
-  identify it as historical, previously observed, or not currently verified.
-- Only an error actually returned by a current-run tool may be described as a current
-  read or permission failure. The Agent uses the stable error category exposed by the
-  tool and must not guess missing scopes, product permissions, or remediation details.
-- When a request depends on live knowledge, the Agent should use the available tools.
-  If it elects not to or cannot obtain current evidence, it must state that the answer
-  is not currently verified rather than inventing a live result.
+A current member statement may be used as input and may be repeated with attribution,
+such as “based on what you provided.” Until a tool verifies it, Minori must not turn
+the member's statement into an independently confirmed claim. When execution depends
+on the claim and a suitable tool exists, the Agent remains free to verify it directly.
 
-These are epistemic boundaries inside the system instructions, not a hard-coded
-workflow. The runtime does not classify the request, force a particular tool, count
-citations, or reject a response based on text matching.
+This is an instruction boundary, not a hard-coded workflow. The runtime does not add
+a claim taxonomy, classify the request, force a particular tool, count citations, or
+reject a response based on text matching. Current tool errors remain typed and
+sanitized; Minori must not guess missing scopes or provider details that the tool did
+not return.
 
 ### Current-run evidence remains bounded
 
@@ -84,9 +85,14 @@ authority to the model. Existing source-link handling remains unchanged.
 
 ### Member-visible behavior
 
-For an ordinary member-triggered private or group event, Minori sends at most one
-progress reply if the event has not reached final reply delivery 20 seconds after its
-durable queue admission time.
+For a supported ordinary member-triggered private or group event, Minori sends at
+most one progress reply if the event has not reached final reply delivery 20 seconds
+after its durable queue admission time. Unsupported message types continue directly
+to their existing terminal reply and do not use this path.
+
+The 20-second threshold is a fixed product behavior in this release, not a new
+environment variable. The existing configurable Agent execution deadline remains
+independent.
 
 The fixed initial copy is:
 
@@ -97,6 +103,8 @@ existing final-reply surface. It contains no tool name, internal state, reasonin
 percentage, or ETA.
 
 The existing `Typing` reaction remains the immediate durable-receipt acknowledgement.
+It remains attached after a Progress Reply and is removed only by the existing final
+reply, explicit-failure, or stopped-processing terminal path.
 If an event waits unclaimed in the database queue, Minori shows only `Typing`. Once a
 worker claims it:
 
@@ -122,8 +130,16 @@ The worker owns a single progress timer/promise for the claimed event.
 - A progress failure never changes the Agent outcome and never causes Agent or final
   reply retry.
 
+Progress delivery reuses the existing Feishu client's 30-second request timeout. In
+the unusual case where the Agent finishes while that request is stalled, final reply
+delivery may wait up to that bound. This preserves visible message order without
+adding a separate cancellation-aware Feishu transport.
+
 The progress attempt uses its own fixed idempotency key derived from the event ID,
 separate from the final reply key.
+
+Progress metadata belongs to reply transport. It is not a Persistent Agent Write,
+does not cross the Write Replay Boundary, and does not change Agent retry policy.
 
 ### Crash and retry behavior
 
@@ -140,24 +156,28 @@ idempotency window remain unchanged.
 
 ## Persistence model
 
-Add nullable, additive fields to `processed_events`:
+Add two nullable, additive fields to `processed_events`:
 
-- `progress_idempotency_key`
 - `progress_attempted_at`
 - `progress_message_id`
-- `progress_error_code`
 
 Interpretation:
 
 - no `progress_attempted_at`: not attempted;
 - `progress_attempted_at` plus `progress_message_id`: sent and confirmed;
-- `progress_attempted_at` plus a stable `progress_error_code`: failed;
-- `progress_attempted_at` with neither result: delivery outcome unknown after an
-  interruption.
+- `progress_attempted_at` without `progress_message_id`: failed or delivery outcome
+  unknown after an interruption.
+
+The idempotency key is derived deterministically from the event ID and is not stored.
 
 The body is fixed in code and is not stored in `processed_events`. The progress reply
 is not appended to the `messages` table and therefore never enters Retained
-Conversation History. Existing 30-day event retention applies to its metadata.
+Conversation History. The two fields follow the existing structural event-audit
+retention policy; this change does not introduce a separate retention job.
+
+In a group, Feishu may later return the ordinary progress reply as part of Live Group
+History. Minori treats it as ordinary historical background with no authority. The
+reader does not add a database lookup or filtering path solely to remove it.
 
 Store operations must be claim-attempt fenced, as the existing final reply and write
 boundaries are. A late timer from an expired claim cannot mark or send progress for a
@@ -165,8 +185,8 @@ replacement claim.
 
 ## Failure handling and observability
 
-Progress delivery catches provider failures and records only a stable category such
-as `progress_reply_failed`. Raw response bodies, secrets, message content, member
+Progress delivery catches provider failures and logs only the stable category
+`progress_reply_failed`. Raw response bodies, secrets, message content, member
 identity, and provider errors are not logged or persisted.
 
 The worker may log body-free fields already allowed for event diagnostics: event ID,
@@ -180,12 +200,16 @@ existing run/tool audits remain the evidence trail.
 
 ### Agent instruction and behavior contracts
 
-- A retained old permission failure cannot be represented by the prompt as current
-  evidence.
-- A current successful knowledge read is compatible with a current answer and not
-  with a fabricated current read failure.
-- Without a current tool result, current permission, version, scope, latest-state, and
-  live-read claims must be described as unverified or historical.
+- A retained old permission failure cannot be presented as a failure observed in the
+  current run.
+- A dated prior audit can be recalled as historical without forcing a new read.
+- A member-provided current fact may be used with attribution but is not represented
+  as independently verified.
+- A current successful knowledge read cannot be accompanied by a fabricated current
+  read failure.
+- Without a current tool result, claims about the current or latest state,
+  permissions, versions, or read failures must be described as unverified or
+  historical.
 - Existing open-ended tool selection, knowledge writes, group context, private
   retained history, and Scheduled Task instructions remain intact.
 
@@ -202,7 +226,8 @@ fixtures, not require exact member-facing prose.
 - progress and final reply use distinct stable idempotency keys;
 - worker retry/restart never duplicates an attempted progress reply;
 - a stale claim cannot mark or send progress after lease recovery;
-- progress metadata is persisted without the fixed body;
+- the two progress metadata fields are persisted without the fixed body, idempotency
+  key, or failure detail;
 - progress replies are absent from Retained Conversation History;
 - Scheduled Task runs never use this path.
 
