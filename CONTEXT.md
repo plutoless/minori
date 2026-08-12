@@ -48,6 +48,14 @@ _Avoid_: Write audit, search history, query log, retrieved-content mirror
 The normalized results and bounded completeness metadata returned by one knowledge search. It tells the Agent whether rows were omitted without exposing raw provider errors or rejected row content.
 _Avoid_: Raw search response, complete knowledge snapshot, search audit row
 
+**Document Read Snapshot**:
+The copy of one Feishu document that Minori loads and caches inside a single Agent Run for bounded local pagination. All pages in that run come from the same snapshot so concurrent external edits cannot mix document versions. A Minori write to that document invalidates the snapshot immediately, and the snapshot never survives into a later Agent Run.
+_Avoid_: Permanent document cache, current Feishu revision, retrieved-content mirror
+
+**Document Continuation Cursor**:
+An opaque, Agent-Run-local reference to a page in one Document Read Snapshot, bound to the exact document, read mode, and query that produced it. A matching cursor may be reused during that run; an unknown or mismatched cursor recovers by starting the current request from its first page. It is never a Feishu provider cursor or durable conversation state.
+_Avoid_: Feishu page token, cross-run cursor, document revision, authorization token
+
 **Write Replay Boundary**:
 The moment the first Persistent Agent Write begins in an Agent run. Before this boundary, a transient model or read-only-tool failure may safely retry a message run under its existing policy; after it, Minori never automatically replays the whole run, even when the write outcome is unknown. Scheduled Runs never receive a business retry on either side of the boundary. Idempotent retry of reply transport is separate from Agent-run replay.
 _Avoid_: Retry every failure, completed-write boundary, reply retry

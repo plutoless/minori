@@ -640,6 +640,88 @@ describe('createKnowledgeTools', () => {
     expect(knowledge.fetchDocument).toHaveBeenCalledTimes(1);
   });
 
+  it('recovers an invented document cursor by reading the requested first page', async () => {
+    const knowledge = service();
+    knowledge.fetchDocument = vi.fn().mockResolvedValue({
+      title: 'Recovery document',
+      url: 'https://acme.feishu.cn/docx/recovery',
+      markdown: `# Recovery\n${'first-page evidence '.repeat(900)}`,
+    });
+    const tools = createKnowledgeTools(
+      knowledge,
+      { search: vi.fn().mockResolvedValue([]) },
+      new SourceRegistry(),
+      { run: (_input, operation) => operation() },
+    );
+
+    const result = await tools.fetchDocument.execute?.(
+      { doc: 'doxcnRecovery', mode: 'full', cursor: 'invented_cursor' },
+      { toolCallId: 'call_recovery', messages: [] },
+    );
+
+    expect(result?.markdown).toContain('first-page evidence');
+    expect(result?.markdown.length).toBeLessThanOrEqual(12_000);
+    expect(result?.source.nextCursor).toEqual(expect.any(String));
+    expect(result).not.toHaveProperty('cursorRecovered');
+    expect(knowledge.fetchDocument).toHaveBeenCalledTimes(1);
+    expect(tools.fetchDocument.description).toContain('First read must omit cursor');
+    const fetchSchema = tools.fetchDocument.inputSchema as {
+      shape: { cursor: { description?: string } };
+    };
+    expect(fetchSchema.shape.cursor.description).toContain(
+      'Exact nextCursor from the preceding page of the same doc, mode, and query',
+    );
+  });
+
+  it('isolates mismatched cursors while keeping matching cursors reusable', async () => {
+    const knowledge = service();
+    knowledge.fetchDocument = vi.fn(async ({ doc }) => ({
+      title: doc,
+      url: `https://acme.feishu.cn/docx/${doc}`,
+      markdown: doc === 'doxcnA'
+        ? `# A\n${'A'.repeat(13_000)}`
+        : `# B\n${'B-only evidence '.repeat(900)}`,
+    }));
+    const tools = createKnowledgeTools(
+      knowledge,
+      { search: vi.fn().mockResolvedValue([]) },
+      new SourceRegistry(),
+      { run: (_input, operation) => operation() },
+    );
+    const context = { toolCallId: 'call_cursor', messages: [] };
+
+    const firstA = await tools.fetchDocument.execute?.(
+      { doc: 'doxcnA', mode: 'full' }, context,
+    );
+    const cursor = firstA?.source.nextCursor;
+    expect(cursor).toEqual(expect.any(String));
+
+    const firstB = await tools.fetchDocument.execute?.(
+      { doc: 'doxcnB', mode: 'full', cursor }, context,
+    );
+    expect(firstB?.markdown).toContain('B-only evidence');
+    expect(firstB?.markdown).not.toContain('AAAA');
+
+    const changedMode = await tools.fetchDocument.execute?.(
+      { doc: 'doxcnA', mode: 'relevant', query: 'A', cursor }, context,
+    );
+    expect(changedMode?.markdown.length).toBe(12_000);
+
+    const changedQuery = await tools.fetchDocument.execute?.(
+      { doc: 'doxcnA', mode: 'full', query: 'different', cursor }, context,
+    );
+    expect(changedQuery?.markdown.length).toBe(12_000);
+
+    const nextA = await tools.fetchDocument.execute?.(
+      { doc: 'doxcnA', mode: 'full', cursor }, context,
+    );
+    const repeatedA = await tools.fetchDocument.execute?.(
+      { doc: 'doxcnA', mode: 'full', cursor }, context,
+    );
+    expect(repeatedA?.markdown).toBe(nextA?.markdown);
+    expect(knowledge.fetchDocument).toHaveBeenCalledTimes(2);
+  });
+
   it('threads the Agent abort signal into Lark reads', async () => {
     const knowledge = service();
     const controller = new AbortController();
