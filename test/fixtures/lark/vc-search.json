@@ -10,10 +10,11 @@
     },
     {
       "id": "m_2",
-      "display_info": "",
+      "display_info": "   ",
       "meta_data": {}
     },
-    { "display_info": "missing id" }
+    { "display_info": "missing id" },
+    { "id": "   ", "display_info": "blank id" }
   ],
   "has_more": true,
   "page_token": "vc_page_2"

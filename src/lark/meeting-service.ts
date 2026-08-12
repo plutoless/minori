@@ -154,7 +154,7 @@ const detailEnvelopeSchema = z.object({
 }).passthrough();
 
 const meetingRowSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().trim().min(1),
   display_info: z.string().optional(),
   meta_data: z.object({
     app_link: z.unknown().optional(),
@@ -334,7 +334,7 @@ export class LarkMeetingService implements MeetingService {
     const normalized = normalizeRows(envelope.items, (raw): MeetingCandidate | undefined => {
       const row = meetingRowSchema.safeParse(raw);
       if (!row.success) return undefined;
-      const title = optionalString(row.data.display_info) ?? '未命名会议';
+      const title = optionalString(row.data.display_info?.trim()) ?? '未命名会议';
       const url = optionalHttpUrl(row.data.meta_data?.app_link);
       return {
         kind: 'meeting',

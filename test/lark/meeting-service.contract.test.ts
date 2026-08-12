@@ -102,7 +102,7 @@ describe('LarkMeetingService', () => {
         },
         { kind: 'meeting', meetingId: 'm_2', title: '未命名会议' },
       ],
-      rawCount: 3, validCount: 2, omittedCount: 1, nextPageToken: 'vc_page_2',
+      rawCount: 4, validCount: 2, omittedCount: 2, nextPageToken: 'vc_page_2',
     });
     expect(executor.run).toHaveBeenCalledWith({
       id: 'vc.search', start: '2026-08-10T00:00:00Z', end: '2026-08-12T00:00:00Z',
