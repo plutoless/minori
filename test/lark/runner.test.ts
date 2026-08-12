@@ -87,6 +87,23 @@ describe('LarkRunner', () => {
     );
   });
 
+  it('passes only a catalog-produced transcript working directory to spawn', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'openai-secret');
+    const child = fakeProcess({ stdout: JSON.stringify({ ok: true, data: {} }) });
+    const { runner, spawn } = runnerWith(child);
+
+    await runner.run({
+      id: 'note.transcript', noteId: 'note_1', workDir: '/tmp/minori-meeting-1',
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      '/opt/minori/lark-cli',
+      expect.arrayContaining(['note', '+transcript', '--note-id', 'note_1']),
+      expect.objectContaining({ shell: false, cwd: '/tmp/minori-meeting-1' }),
+    );
+    expect(spawn.mock.calls[0]?.[2]?.env).not.toHaveProperty('OPENAI_API_KEY');
+  });
+
   it('turns the CLI stderr error envelope into a sanitized structured error', async () => {
     const child = fakeProcess({
       stderr: JSON.stringify({

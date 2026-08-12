@@ -152,7 +152,11 @@ export type LarkCommand =
     }
   | {
       id: 'minutes.detail'; minuteTokens: string[];
-      artifact: MeetingArtifact; workDir?: string;
+      artifact: Exclude<MeetingArtifact, 'transcript'>;
+    }
+  | {
+      id: 'minutes.detail'; minuteTokens: string[];
+      artifact: 'transcript'; workDir: string;
     };
 
 export type LarkInvocation = { args: string[]; stdin?: string; cwd?: string };

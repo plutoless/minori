@@ -119,6 +119,7 @@ export class LarkRunner implements LarkExecutor {
     try {
       child = this.options.spawn(this.options.binary, invocation.args, {
         shell: false,
+        ...(invocation.cwd ? { cwd: invocation.cwd } : {}),
         env: buildChildEnvironment(this.options.configDir),
         stdio: [invocation.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       }) as unknown as SpawnedProcess;

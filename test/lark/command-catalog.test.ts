@@ -41,6 +41,64 @@ describe('buildInvocation', () => {
       .toEqual(['auth', 'status', '--json', '--verify']);
   });
 
+  it('maps every approved meeting read to a fixed user-identity CLI shortcut', () => {
+    expect(buildInvocation({
+      id: 'contact.searchUser', query: 'Alice; $(touch /tmp/no)', pageSize: 10,
+    }).args).toEqual([
+      'contact', '+search-user', '--query', 'Alice; $(touch /tmp/no)',
+      '--page-size', '10', '--format', 'json', '--as', 'user',
+    ]);
+    expect(buildInvocation({
+      id: 'vc.search', query: 'DevX', start: '2026-07-01T00:00:00Z',
+      end: '2026-07-31T23:59:59Z', participantIds: ['ou_a'], pageSize: 30,
+    }).args).toEqual([
+      'vc', '+search', '--query', 'DevX', '--start', '2026-07-01T00:00:00Z',
+      '--end', '2026-07-31T23:59:59Z', '--participant-ids', 'ou_a',
+      '--page-size', '30', '--format', 'json', '--as', 'user',
+    ]);
+    expect(buildInvocation({ id: 'vc.detail', meetingIds: ['m_1'] }).args)
+      .toEqual([
+        'vc', '+detail', '--meeting-ids', 'm_1', '--format', 'json', '--as', 'user',
+      ]);
+    expect(buildInvocation({ id: 'note.detail', noteId: 'note_1' }).args)
+      .toEqual([
+        'note', '+detail', '--note-id', 'note_1', '--format', 'json', '--as', 'user',
+      ]);
+    expect(buildInvocation({
+      id: 'note.transcript', noteId: 'note_1', workDir: '/tmp/minori-meeting-1',
+    })).toEqual({
+      args: [
+        'note', '+transcript', '--note-id', 'note_1', '--output', 'unified_transcript.md',
+        '--transcript-format', 'markdown', '--format', 'json', '--as', 'user',
+      ],
+      cwd: '/tmp/minori-meeting-1',
+    });
+    expect(buildInvocation({
+      id: 'minutes.search', query: 'DevX', ownerIds: ['ou_owner'],
+      participantIds: ['ou_a'], pageSize: 30, pageToken: 'page_2',
+    }).args).toEqual([
+      'minutes', '+search', '--query', 'DevX', '--owner-ids', 'ou_owner',
+      '--participant-ids', 'ou_a', '--page-size', '30', '--page-token', 'page_2',
+      '--format', 'json', '--as', 'user',
+    ]);
+    expect(buildInvocation({
+      id: 'minutes.detail', minuteTokens: ['obc_1'], artifact: 'summary',
+    }).args).toEqual([
+      'minutes', '+detail', '--minute-tokens', 'obc_1', '--summary',
+      '--format', 'json', '--as', 'user',
+    ]);
+    expect(buildInvocation({
+      id: 'minutes.detail', minuteTokens: ['obc_1'], artifact: 'transcript',
+      workDir: '/tmp/minori-meeting-1',
+    })).toEqual({
+      args: [
+        'minutes', '+detail', '--minute-tokens', 'obc_1', '--transcript',
+        '--output-dir', '.', '--format', 'json', '--as', 'user',
+      ],
+      cwd: '/tmp/minori-meeting-1',
+    });
+  });
+
   it('maps exactly the Initial Typed Write Set through fixed commands and stdin', () => {
     expect(buildInvocation({
       id: 'docs.create', title: 'Weekly update', content: '# Progress', parentToken: 'fld_1',
@@ -100,5 +158,11 @@ describe('buildInvocation', () => {
     buildInvocation({ id: 'http.request', url: 'https://example.com' });
     // @ts-expect-error filesystem commands are intentionally impossible
     buildInvocation({ id: 'fs.write', path: '/tmp/document' });
+    // @ts-expect-error meeting writes are intentionally impossible
+    buildInvocation({ id: 'vc.meeting.update', meetingId: 'm_1' });
+    // @ts-expect-error meeting media export is intentionally impossible
+    buildInvocation({ id: 'minutes.media.export', minuteToken: 'obc_1' });
+    // @ts-expect-error transcript file output always requires a run-owned working directory
+    buildInvocation({ id: 'minutes.detail', minuteTokens: ['obc_1'], artifact: 'transcript' });
   });
 });
