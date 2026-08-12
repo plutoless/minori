@@ -288,6 +288,10 @@ export function createMeetingTools(
         audit.record({
           toolName: 'searchMeetings', success: true, rawCount, validCount, omittedCount,
         });
+        const details = unique.size > 0
+          ? await service.getMeetingDetails([...unique.keys()], abortSignal).catch(() => [])
+          : [];
+        const detailById = new Map(details.map((detail) => [detail.meetingId, detail]));
         const cursor = pendingWindows.length > 0
           ? nextCursor({ kind: 'search', source: 'meeting', key, windows: pendingWindows })
           : undefined;
@@ -299,6 +303,10 @@ export function createMeetingTools(
             meetingRef: referenceFor(item), title: item.title, start: item.start,
             ...(item.end ? { end: item.end } : {}),
             ...(item.url ? { url: item.url } : {}),
+            availableArtifacts: [
+              ...(detailById.get(item.meetingId)?.noteId ? ['smart_note' as const] : []),
+              ...(detailById.get(item.meetingId)?.minuteToken ? ['minute' as const] : []),
+            ],
           })),
           rawCount, validCount, omittedCount,
           ...(cursor ? { nextCursor: cursor } : {}),

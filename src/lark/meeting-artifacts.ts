@@ -65,11 +65,9 @@ export function systemMeetingArtifactStore(
       try {
         return await operation(directory);
       } finally {
-        try {
-          await rm(directory, { recursive: true, force: true });
-        } catch {
-          throw new MeetingArtifactError();
-        }
+        // Cleanup is best-effort and must never replace a successful result or the
+        // Agent's primary cancellation/timeout error.
+        await rm(directory, { recursive: true, force: true }).catch(() => undefined);
       }
     },
 

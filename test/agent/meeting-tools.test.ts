@@ -30,6 +30,9 @@ const TOOL_CONTEXT = { toolCallId: 'meeting_call', messages: [] };
 describe('createMeetingTools', () => {
   it('exposes only the three strict meeting tools and resolves recent participant search', async () => {
     const service = meetingService();
+    service.getMeetingDetails = vi.fn().mockResolvedValue([{
+      meetingId: 'm_1', title: 'DevX weekly', noteId: 'note_1', minuteToken: 'minute_1',
+    }]);
     const tools = createMeetingTools(
       service, new SourceRegistry(), { record: vi.fn() },
       () => new Date('2026-08-12T12:00:00Z'),
@@ -55,6 +58,7 @@ describe('createMeetingTools', () => {
       results: [{
         meetingRef: 'meeting_ref_1', title: 'DevX weekly',
         start: '2026-08-11T09:00:00Z', url: 'https://acme.feishu.cn/video/m_1',
+        availableArtifacts: ['smart_note', 'minute'],
       }],
       rawCount: 1, validCount: 1, omittedCount: 0,
     });
@@ -128,7 +132,7 @@ describe('createMeetingTools', () => {
   it('asks for clarification before searching ambiguous or unresolved people', async () => {
     const service = meetingService();
     service.resolvePeople = vi.fn().mockResolvedValue([
-      { status: 'ambiguous', name: 'Alex', candidates: ['Alex / Design', 'Alex / Platform'] },
+      { status: 'ambiguous', name: 'Alex', candidates: ['Alex'] },
       { status: 'unresolved', name: 'Missing' },
     ]);
     const record = vi.fn();
@@ -138,7 +142,7 @@ describe('createMeetingTools', () => {
       participantNames: ['Alex', 'Missing'], range: { kind: 'recent' },
     }, TOOL_CONTEXT)).resolves.toEqual({
       status: 'needs_clarification',
-      ambiguous: [{ name: 'Alex', candidates: ['Alex / Design', 'Alex / Platform'] }],
+      ambiguous: [{ name: 'Alex', candidates: ['Alex'] }],
       unresolved: ['Missing'],
     });
     expect(service.searchMeetings).not.toHaveBeenCalled();

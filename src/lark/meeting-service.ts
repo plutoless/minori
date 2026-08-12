@@ -141,7 +141,6 @@ const contactEnvelopeSchema = z.object({
 const contactRowSchema = z.object({
   open_id: z.string().min(1),
   localized_name: z.string().min(1),
-  department: z.string().optional(),
 }).passthrough();
 
 const searchEnvelopeSchema = z.object({
@@ -188,6 +187,10 @@ const minuteDetailRowSchema = z.object({
 
 function optionalString(value: unknown) {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function boundedDisplay(value: string, limit = 500) {
+  return value.trim().slice(0, limit);
 }
 
 function optionalHttpUrl(value: unknown) {
@@ -275,11 +278,6 @@ function parseContactCandidates(data: unknown) {
   return candidates;
 }
 
-function candidateLabel(name: string, department: string | undefined) {
-  const suffix = department?.trim();
-  return (suffix ? `${name} / ${suffix}` : name).slice(0, 160);
-}
-
 export class LarkMeetingService implements MeetingService {
   constructor(
     private readonly executor: LarkExecutor,
@@ -306,9 +304,9 @@ export class LarkMeetingService implements MeetingService {
         return {
           status: 'ambiguous',
           name,
-          candidates: matches.slice(0, 5).map((candidate) => (
-            candidateLabel(candidate.localized_name, candidate.department)
-          )),
+          candidates: [...new Set(matches.slice(0, 5).map((candidate) => (
+            boundedDisplay(candidate.localized_name, 100)
+          )))],
         };
       }
       return { status: 'unresolved', name };
@@ -338,7 +336,7 @@ export class LarkMeetingService implements MeetingService {
       return {
         kind: 'meeting',
         meetingId: row.data.meeting_id,
-        title: row.data.topic,
+        title: boundedDisplay(row.data.topic),
         start: row.data.start_time,
         ...(end ? { end } : {}),
         ...(url ? { url } : {}),
@@ -360,7 +358,7 @@ export class LarkMeetingService implements MeetingService {
       const minuteToken = optionalString(row.data.minute_token);
       return {
         meetingId: row.data.meeting_id,
-        title: row.data.topic,
+        title: boundedDisplay(row.data.topic),
         ...(start ? { start } : {}),
         ...(end ? { end } : {}),
         ...(noteId ? { noteId } : {}),
@@ -394,7 +392,7 @@ export class LarkMeetingService implements MeetingService {
       return {
         kind: 'minute',
         minuteToken,
-        title: row.data.title,
+        title: boundedDisplay(row.data.title),
         ...(createdAt ? { createdAt } : {}),
         ...(url ? { url } : {}),
       };

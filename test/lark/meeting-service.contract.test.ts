@@ -70,7 +70,7 @@ describe('LarkMeetingService', () => {
 
     await expect(service.resolvePeople(['Alice', 'Alex', 'Missing'], signal)).resolves.toEqual([
       { status: 'resolved', name: 'Alice', openId: 'ou_alice' },
-      { status: 'ambiguous', name: 'Alex', candidates: ['Alex / Design', 'Alex / Platform'] },
+      { status: 'ambiguous', name: 'Alex', candidates: ['Alex'] },
       { status: 'unresolved', name: 'Missing' },
     ]);
     expect(executor.run.mock.calls).toEqual([
@@ -79,6 +79,7 @@ describe('LarkMeetingService', () => {
       [{ id: 'contact.searchUser', query: 'Missing', pageSize: 30 }, signal],
     ]);
     expect(JSON.stringify(await service.resolvePeople(['Alex']))).not.toContain('ou_alex');
+    expect(JSON.stringify(await service.resolvePeople(['Alex']))).not.toMatch(/Design|Platform/u);
   });
 
   it('normalizes meeting search rows independently and preserves completeness', async () => {
