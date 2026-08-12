@@ -1,19 +1,20 @@
 {
   "items": [
     {
-      "meeting_id": "m_1",
-      "topic": "DevX weekly",
-      "start_time": "2026-08-11T09:00:00Z",
-      "end_time": "2026-08-11T10:00:00Z",
-      "url": "https://example.feishu.cn/video/m_1"
+      "id": "m_1",
+      "display_info": "DevX weekly",
+      "meta_data": {
+        "description": "provider-formatted display text",
+        "app_link": "https://example.feishu.cn/video/m_1"
+      }
     },
     {
-      "meeting_id": "m_2",
-      "topic": "DevX review",
-      "start_time": "2026-08-10T09:00:00Z",
-      "url": 42
+      "id": "m_2",
+      "display_info": "   ",
+      "meta_data": {}
     },
-    { "topic": "Malformed sibling", "start_time": "2026-08-09T09:00:00Z" }
+    { "display_info": "missing id" },
+    { "id": "   ", "display_info": "blank id" }
   ],
   "has_more": true,
   "page_token": "vc_page_2"

@@ -23,7 +23,7 @@ export type MeetingCandidate = {
   kind: 'meeting';
   meetingId: string;
   title: string;
-  start: string;
+  start?: string;
   end?: string;
   url?: string;
 };
@@ -154,9 +154,12 @@ const detailEnvelopeSchema = z.object({
 }).passthrough();
 
 const meetingRowSchema = z.object({
-  meeting_id: z.string().min(1),
-  topic: z.string().min(1),
-  start_time: z.string().min(1),
+  id: z.string().trim().min(1),
+  display_info: z.string().optional(),
+  meta_data: z.object({
+    app_link: z.unknown().optional(),
+    description: z.unknown().optional(),
+  }).passthrough().optional(),
 }).passthrough();
 
 const meetingDetailRowSchema = z.object({
@@ -331,14 +334,12 @@ export class LarkMeetingService implements MeetingService {
     const normalized = normalizeRows(envelope.items, (raw): MeetingCandidate | undefined => {
       const row = meetingRowSchema.safeParse(raw);
       if (!row.success) return undefined;
-      const end = optionalString(row.data.end_time);
-      const url = optionalHttpUrl(row.data.url ?? row.data.meeting_url);
+      const title = optionalString(row.data.display_info?.trim()) ?? '未命名会议';
+      const url = optionalHttpUrl(row.data.meta_data?.app_link);
       return {
         kind: 'meeting',
-        meetingId: row.data.meeting_id,
-        title: boundedDisplay(row.data.topic),
-        start: row.data.start_time,
-        ...(end ? { end } : {}),
+        meetingId: row.data.id,
+        title: boundedDisplay(title),
         ...(url ? { url } : {}),
       };
     });

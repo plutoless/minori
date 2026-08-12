@@ -91,27 +91,26 @@ describe('LarkMeetingService', () => {
     const signal = new AbortController().signal;
 
     await expect(service.searchMeetings({
-      start: '2026-08-01T00:00:00Z', end: '2026-08-12T00:00:00Z',
+      start: '2026-08-10T00:00:00Z', end: '2026-08-12T00:00:00Z',
       participantIds: ['ou_alice'], pageSize: 30,
     }, signal)).resolves.toEqual({
       status: 'partial',
       items: [
         {
           kind: 'meeting', meetingId: 'm_1', title: 'DevX weekly',
-          start: '2026-08-11T09:00:00Z', end: '2026-08-11T10:00:00Z',
           url: 'https://example.feishu.cn/video/m_1',
         },
-        {
-          kind: 'meeting', meetingId: 'm_2', title: 'DevX review',
-          start: '2026-08-10T09:00:00Z',
-        },
+        { kind: 'meeting', meetingId: 'm_2', title: '未命名会议' },
       ],
-      rawCount: 3, validCount: 2, omittedCount: 1, nextPageToken: 'vc_page_2',
+      rawCount: 4, validCount: 2, omittedCount: 2, nextPageToken: 'vc_page_2',
     });
     expect(executor.run).toHaveBeenCalledWith({
-      id: 'vc.search', start: '2026-08-01T00:00:00Z', end: '2026-08-12T00:00:00Z',
+      id: 'vc.search', start: '2026-08-10T00:00:00Z', end: '2026-08-12T00:00:00Z',
       participantIds: ['ou_alice'], pageSize: 30,
     }, signal);
+    expect(JSON.stringify(await service.searchMeetings({
+      start: '2026-08-10T00:00:00Z', end: '2026-08-12T00:00:00Z', pageSize: 30,
+    }))).not.toContain('provider-formatted display text');
   });
 
   it('normalizes independent Minute search and meeting detail responses', async () => {

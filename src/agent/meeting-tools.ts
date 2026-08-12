@@ -285,38 +285,21 @@ export function createMeetingTools(
         const rawCount = results.reduce((sum, result) => sum + result.rawCount, 0);
         const validCount = results.reduce((sum, result) => sum + result.validCount, 0);
         const omittedCount = results.reduce((sum, result) => sum + result.omittedCount, 0);
-        let details: Awaited<ReturnType<MeetingService['getMeetingDetails']>> = [];
-        let artifactAvailability: 'loaded' | 'unavailable' = 'loaded';
-        if (unique.size > 0) {
-          try {
-            details = await service.getMeetingDetails([...unique.keys()], abortSignal);
-          } catch (error) {
-            if (isRunTermination(error)) throw error;
-            artifactAvailability = 'unavailable';
-          }
-        }
         audit.record({
           toolName: 'searchMeetings', success: true, rawCount, validCount, omittedCount,
         });
-        const detailById = new Map(details.map((detail) => [detail.meetingId, detail]));
         const cursor = pendingWindows.length > 0
           ? nextCursor({ kind: 'search', source: 'meeting', key, windows: pendingWindows })
           : undefined;
         return {
-          status: artifactAvailability === 'unavailable'
-            || results.some((result) => result.status === 'partial')
+          status: results.some((result) => result.status === 'partial')
             ? 'partial' as const
             : 'complete' as const,
           results: [...unique.values()].map((item) => ({
-            meetingRef: referenceFor(item), title: item.title, start: item.start,
+            meetingRef: referenceFor(item), title: item.title,
+            ...(item.start ? { start: item.start } : {}),
             ...(item.end ? { end: item.end } : {}),
             ...(item.url ? { url: item.url } : {}),
-            ...(artifactAvailability === 'loaded' ? {
-              availableArtifacts: [
-                ...(detailById.get(item.meetingId)?.noteId ? ['smart_note' as const] : []),
-                ...(detailById.get(item.meetingId)?.minuteToken ? ['minute' as const] : []),
-              ],
-            } : { artifactAvailability: 'unavailable' as const }),
           })),
           rawCount, validCount, omittedCount,
           ...(cursor ? { nextCursor: cursor } : {}),

@@ -30,9 +30,7 @@ const TOOL_CONTEXT = { toolCallId: 'meeting_call', messages: [] };
 describe('createMeetingTools', () => {
   it('exposes only the three strict meeting tools and resolves recent participant search', async () => {
     const service = meetingService();
-    service.getMeetingDetails = vi.fn().mockResolvedValue([{
-      meetingId: 'm_1', title: 'DevX weekly', noteId: 'note_1', minuteToken: 'minute_1',
-    }]);
+    service.getMeetingDetails = vi.fn().mockRejectedValue(new Error('must_not_be_called'));
     const tools = createMeetingTools(
       service, new SourceRegistry(), { record: vi.fn() },
       () => new Date('2026-08-12T12:00:00Z'),
@@ -58,10 +56,10 @@ describe('createMeetingTools', () => {
       results: [{
         meetingRef: 'meeting_ref_1', title: 'DevX weekly',
         start: '2026-08-11T09:00:00Z', url: 'https://acme.feishu.cn/video/m_1',
-        availableArtifacts: ['smart_note', 'minute'],
       }],
       rawCount: 1, validCount: 1, omittedCount: 0,
     });
+    expect(service.getMeetingDetails).not.toHaveBeenCalled();
     expect(service.resolvePeople).toHaveBeenCalledWith(['Alice'], undefined);
     expect(service.searchMeetings).toHaveBeenCalledWith({
       start: '2026-07-13T12:00:00.000Z', end: '2026-08-12T12:00:00.000Z',
@@ -283,27 +281,4 @@ describe('createMeetingTools', () => {
     expect(record).not.toHaveBeenCalled();
   });
 
-  it('does not swallow cancellation while enriching meeting artifact availability', async () => {
-    const service = meetingService();
-    const aborted = new LarkCliError('aborted');
-    service.getMeetingDetails = vi.fn().mockRejectedValue(aborted);
-    const record = vi.fn();
-    const tools = createMeetingTools(service, new SourceRegistry(), { record });
-    await expect(tools.searchMeetings.execute?.(
-      { range: { kind: 'recent' } }, TOOL_CONTEXT,
-    )).rejects.toBe(aborted);
-    expect(record).not.toHaveBeenCalled();
-  });
-
-  it('marks availability as unavailable instead of inventing an empty artifact set', async () => {
-    const service = meetingService();
-    service.getMeetingDetails = vi.fn().mockRejectedValue(new Error('provider failure'));
-    const tools = createMeetingTools(service, new SourceRegistry(), { record: vi.fn() });
-    await expect(tools.searchMeetings.execute?.(
-      { range: { kind: 'recent' } }, TOOL_CONTEXT,
-    )).resolves.toMatchObject({
-      status: 'partial',
-      results: [{ artifactAvailability: 'unavailable' }],
-    });
-  });
 });

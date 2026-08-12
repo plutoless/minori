@@ -101,8 +101,7 @@ describe('Team Agent release packaging contract', () => {
       'contact:user:search',
       'vc:meeting.search:read',
       'vc:meeting.meetingevent:read',
-      'vc:note:read',
-      'vc:meeting.artifact.verbatim:read',
+      'vc:record:readonly',
       'vc:note:read',
       'minutes:minutes.search:read',
       'minutes:minutes.basic:read',
@@ -113,6 +112,7 @@ describe('Team Agent release packaging contract', () => {
       expect(readme).toContain(`\`${scope}\``);
       expect(design).toContain(scope);
     }
+    expect(auth).not.toContain("'vc:meeting.artifact.verbatim:read'");
     for (const toolName of ['searchMeetings', 'searchMeetingMinutes', 'fetchMeetingContent']) {
       expect(readme).toContain(`\`${toolName}\``);
       expect(tools).toContain(toolName);
@@ -284,9 +284,9 @@ describe('Team Agent release packaging contract', () => {
       packages: Record<string, { version?: string }>;
     };
 
-    expect(manifest.version).toBe('0.3.0');
-    expect(lockfile.version).toBe('0.3.0');
-    expect(lockfile.packages[''].version).toBe('0.3.0');
+    expect(manifest.version).toBe('0.3.1');
+    expect(lockfile.version).toBe('0.3.1');
+    expect(lockfile.packages[''].version).toBe('0.3.1');
   });
 
   it('documents the GitHub-only release operator paths without a legacy deploy command', async () => {
