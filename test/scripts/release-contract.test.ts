@@ -135,7 +135,12 @@ describe('Team Agent release packaging contract', () => {
     expect(readme).toContain('Feishu `post`');
     expect(readme).toContain('Markdown images become ordinary links');
     expect(readme).toContain('Lark CLI remains strict-user-only');
-    expect(client).toContain("msg_type: 'post'");
+    expect(client).toContain(
+      "return this.reply(messageId, richPostContent(markdown), 'post', idempotencyKey);",
+    );
+    expect(client).toContain(
+      "return this.send(chatId, richPostContent(markdown), 'post', idempotencyKey);",
+    );
     expect(larkRunner).not.toMatch(
       /sendRichContent|replyRichContent|message\.create|message\.reply/u,
     );
