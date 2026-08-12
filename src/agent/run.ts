@@ -27,6 +27,7 @@ import { SourceRegistry, type AgentSource } from './sources.js';
 import { agentFailureDetail } from './failure-detail.js';
 import {
   createKnowledgeTools,
+  type KnowledgeSearchAudit,
   type GroupHistoryToolContext,
   type PersistentWriteAudit,
   type ScopedHistoryReader,
@@ -70,6 +71,7 @@ export type TeamAgentDependencies = {
   history: ScopedHistoryReader;
   sources: SourceRegistry;
   writeAudit: PersistentWriteAudit;
+  searchAudit: KnowledgeSearchAudit;
   groupHistory?: GroupHistoryToolContext;
   teamContext?: TeamContextToolContext;
   schedules?: ScheduleToolContext;
@@ -104,6 +106,7 @@ function createTeamAgentWithBudget(
       dependencies.groupHistory,
       dependencies.teamContext,
       dependencies.schedules,
+      dependencies.searchAudit,
     ),
     stopWhen: budget.stopWhen,
     providerOptions: { openai: { store: false } },
@@ -133,6 +136,7 @@ export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' 
     | { kind: 'message'; eventId: string; claimAttempt: number }
     | { kind: 'scheduled'; scheduledRunId: string; claimAttempt: number };
   contextTokenTarget?: number;
+  onOperationalError(category: 'search_audit_unavailable'): void;
 };
 
 const WRITE_AUDIT_UNAVAILABLE = 'write_audit_unavailable';
@@ -399,6 +403,17 @@ export async function runKnowledgeAgent(
   let toolCallCount = 0;
   let outcome: Exclude<AgentRunOutcome, 'running'> = 'failed';
   let errorMessage: string | undefined;
+  const searchAudit: KnowledgeSearchAudit = {
+    record(audit) {
+      void dependencies.agentRunStore.recordKnowledgeSearch(run.id, audit).catch(() => {
+        try {
+          dependencies.onOperationalError('search_audit_unavailable');
+        } catch {
+          // Operational reporting must not affect the search result.
+        }
+      });
+    },
+  };
 
   try {
     const storedHistory = await withAbort(
@@ -503,6 +518,7 @@ export async function runKnowledgeAgent(
         writeAttempts,
         replayBoundary,
       ),
+      searchAudit,
       history: {
         search: (query, limit) => dependencies.conversationStore.search(
           dependencies.conversationKey,

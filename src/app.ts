@@ -184,6 +184,9 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
             },
           } : {}),
           agentRunStore: storage.agentRunStore!,
+          onOperationalError: (errorCode) => {
+            logger.warn({ errorCode }, 'agent operational audit unavailable');
+          },
           conversationKey: message.conversationKey,
           triggerMessageId: message.messageId,
           conversationStore: storage.conversationStore!,
@@ -210,6 +213,9 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
           groupContextSource: feishu.groupContext,
           ...(teamContextSource ? { teamContextSource } : {}),
           agentRunStore: storage.agentRunStore,
+          onOperationalError: (errorCode) => {
+            logger.warn({ errorCode }, 'agent operational audit unavailable');
+          },
           contextTokenTarget: config.conversationContextTokenTarget,
         },
         messenger,

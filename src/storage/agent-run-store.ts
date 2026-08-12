@@ -1,6 +1,6 @@
 import { and, asc, eq, isNotNull, lt, sql, type SQL } from 'drizzle-orm';
 import type { AgentRunOutcome, WriteAttemptReceipt } from '../agent/run-outcome.js';
-import type { PersistentWriteName } from '../agent/tools.js';
+import type { KnowledgeSearchAuditInput, PersistentWriteName } from '../agent/tools.js';
 import type { TeamContextLoad } from '../team-context/types.js';
 import type { GroupHistoryAudit } from '../feishu/group-context.js';
 import type { Database } from './database.js';
@@ -23,6 +23,7 @@ export interface AgentRunStore {
     errorCategory?: string;
     resultIdentifiers?: Record<string, string>;
   }): Promise<void>;
+  recordKnowledgeSearch(agentRunId: string, input: KnowledgeSearchAuditInput): Promise<void>;
   listWriteAttempts(eventId: string): Promise<WriteAttemptReceipt[]>;
   listScheduledWriteAttempts(scheduledRunId: string): Promise<WriteAttemptReceipt[]>;
   recordGroupHistory(agentRunId: string, audit: GroupHistoryAudit): Promise<void>;
@@ -119,6 +120,21 @@ export class PostgresAgentRunStore implements AgentRunStore {
       finishedAt: new Date(),
     }).where(eq(toolRuns.id, toolRunId)).returning({ id: toolRuns.id });
     if (!updated) throw new Error('tool_run_not_found');
+  }
+
+  async recordKnowledgeSearch(
+    agentRunId: string,
+    input: KnowledgeSearchAuditInput,
+  ): Promise<void> {
+    await this.db.insert(toolRuns).values({
+      agentRunId,
+      toolName: 'searchKnowledge',
+      success: input.success,
+      errorCategory: input.errorCategory ?? null,
+      sanitizedSummary:
+        `raw=${input.rawCount} valid=${input.validCount} omitted=${input.omittedCount}`,
+      finishedAt: new Date(),
+    });
   }
 
   async listWriteAttempts(eventId: string): Promise<WriteAttemptReceipt[]> {

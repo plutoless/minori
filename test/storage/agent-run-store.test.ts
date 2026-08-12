@@ -98,6 +98,51 @@ describe('PostgresAgentRunStore', () => {
     await container?.stop();
   });
 
+  it('records search completeness without crossing the write replay boundary', async () => {
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
+
+    await store.recordKnowledgeSearch(run.id, {
+      success: true,
+      rawCount: 10,
+      validCount: 8,
+      omittedCount: 2,
+    });
+    await store.recordKnowledgeSearch(run.id, {
+      success: false,
+      errorCategory: 'knowledge_search_contract_error',
+      rawCount: 3,
+      validCount: 0,
+      omittedCount: 3,
+    });
+
+    const rows = await database.db.select().from(toolRuns)
+      .where(eq(toolRuns.agentRunId, run.id));
+    expect(rows).toEqual([
+      expect.objectContaining({
+        toolName: 'searchKnowledge',
+        success: true,
+        errorCategory: null,
+        sanitizedSummary: 'raw=10 valid=8 omitted=2',
+        targetIdentifiers: null,
+        resultIdentifiers: null,
+      }),
+      expect.objectContaining({
+        toolName: 'searchKnowledge',
+        success: false,
+        errorCategory: 'knowledge_search_contract_error',
+        sanitizedSummary: 'raw=3 valid=0 omitted=3',
+        targetIdentifiers: null,
+        resultIdentifiers: null,
+      }),
+    ]);
+    const [event] = await database.db.select().from(processedEvents)
+      .where(eq(processedEvents.eventId, 'evt_1'));
+    expect(event?.writeStartedAt).toBeNull();
+    expect(JSON.stringify(rows)).not.toMatch(
+      /search query|document title|https?:|wiki token|document body|open[_ ]?id|oauth/iu,
+    );
+  });
+
   it('persists a completed write audit without document or credential content', async () => {
     const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     const write = await store.beginWrite(run.id, {
