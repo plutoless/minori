@@ -42,7 +42,10 @@ async function requirePlainPath(root: string, candidate: string) {
 }
 
 export function systemMeetingArtifactStore(
-  options: { temporaryRoot?: string } = {},
+  options: {
+    temporaryRoot?: string;
+    removeDirectory?: (directory: string) => Promise<void>;
+  } = {},
 ): MeetingArtifactStore {
   return {
     async withDirectory<T>(operation: (directory: string) => Promise<T>) {
@@ -62,13 +65,24 @@ export function systemMeetingArtifactStore(
         if (error instanceof MeetingArtifactError) throw error;
         throw new MeetingArtifactError();
       }
+      let result: T | undefined;
+      let operationError: unknown;
+      let operationFailed = false;
       try {
-        return await operation(directory);
-      } finally {
-        // Cleanup is best-effort and must never replace a successful result or the
-        // Agent's primary cancellation/timeout error.
-        await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+        result = await operation(directory);
+      } catch (error) {
+        operationFailed = true;
+        operationError = error;
       }
+      try {
+        await (options.removeDirectory
+          ? options.removeDirectory(directory)
+          : rm(directory, { recursive: true, force: true }));
+      } catch {
+        if (!operationFailed) throw new MeetingArtifactError();
+      }
+      if (operationFailed) throw operationError;
+      return result as T;
     },
 
     async readFile(directory, candidatePath, budget) {

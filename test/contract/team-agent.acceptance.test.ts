@@ -517,6 +517,12 @@ describe('open team Agent release contract', () => {
 
     expect(messenger.replies[0]?.text).toContain('Sources:\n[1]');
     expect(messenger.replies[0]?.text).toContain('[2]');
+    expect(messenger.replies).toHaveLength(1);
+    expect(messenger.replies[0]?.format).toBe('rich');
+    expect(messenger.reactions.size).toBe(0);
+    const [completedEvent] = await database.db.select().from(processedEvents)
+      .where(eq(processedEvents.eventId, 'evt_meeting_evidence'));
+    expect(completedEvent).toMatchObject({ status: 'completed', attempts: 1 });
     expect(meeting.searchMeetings).toHaveBeenCalledTimes(4);
     const [run] = await database.db.select().from(agentRuns)
       .where(eq(agentRuns.eventId, 'evt_meeting_evidence'));
@@ -542,8 +548,8 @@ describe('open team Agent release contract', () => {
       fetchContent: vi.fn(),
     };
     const model = new MockLanguageModelV4({ doGenerate: [
-      generated([{ type: 'tool-call', toolCallId: 'scheduled_minutes',
-        toolName: 'searchMeetingMinutes',
+      generated([{ type: 'tool-call', toolCallId: 'scheduled_meetings',
+        toolName: 'searchMeetings',
         input: JSON.stringify({ query: 'weekly', range: { kind: 'recent' } }) }], 'tool-calls'),
       generated([{ type: 'text', text: 'Found the scheduled meeting evidence.' }], 'stop'),
     ] });
@@ -574,7 +580,7 @@ describe('open team Agent release contract', () => {
       botOpenId: BOT_OPEN_ID, botAppId: 'cli_minori', agentRunStore: store,
       onOperationalError: vi.fn(),
     })).resolves.toMatchObject({ text: 'Found the scheduled meeting evidence.' });
-    expect(meeting.searchMinutes).toHaveBeenCalledOnce();
+    expect(meeting.searchMeetings).toHaveBeenCalledOnce();
     expect(model.doGenerateCalls[0]?.tools?.map(({ name }) => name)).toEqual(
       expect.arrayContaining(['searchMeetings', 'searchMeetingMinutes', 'fetchMeetingContent']),
     );

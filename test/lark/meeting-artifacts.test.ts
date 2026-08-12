@@ -104,4 +104,24 @@ describe('systemMeetingArtifactStore', () => {
     })).rejects.toMatchObject({ code: 'aborted' });
     await expect(lstat(workDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it('fails closed after a successful read when transcript cleanup fails', async () => {
+    const root = await testRoot();
+    const store = systemMeetingArtifactStore({
+      temporaryRoot: root,
+      removeDirectory: async () => { throw new Error('private cleanup path'); },
+    });
+    await expect(store.withDirectory(async () => 'complete transcript'))
+      .rejects.toMatchObject({ code: 'meeting_artifact_unsafe' });
+  });
+
+  it('preserves cancellation even when transcript cleanup also fails', async () => {
+    const root = await testRoot();
+    const aborted = new LarkCliError('aborted');
+    const store = systemMeetingArtifactStore({
+      temporaryRoot: root,
+      removeDirectory: async () => { throw new Error('private cleanup path'); },
+    });
+    await expect(store.withDirectory(async () => { throw aborted; })).rejects.toBe(aborted);
+  });
 });

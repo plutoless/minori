@@ -282,4 +282,26 @@ describe('createMeetingTools', () => {
     }, TOOL_CONTEXT)).rejects.toBe(aborted);
     expect(record).not.toHaveBeenCalled();
   });
+
+  it('does not swallow cancellation while enriching meeting artifact availability', async () => {
+    const service = meetingService();
+    const aborted = new LarkCliError('aborted');
+    service.getMeetingDetails = vi.fn().mockRejectedValue(aborted);
+    const tools = createMeetingTools(service, new SourceRegistry(), { record: vi.fn() });
+    await expect(tools.searchMeetings.execute?.(
+      { range: { kind: 'recent' } }, TOOL_CONTEXT,
+    )).rejects.toBe(aborted);
+  });
+
+  it('marks availability as unavailable instead of inventing an empty artifact set', async () => {
+    const service = meetingService();
+    service.getMeetingDetails = vi.fn().mockRejectedValue(new Error('provider failure'));
+    const tools = createMeetingTools(service, new SourceRegistry(), { record: vi.fn() });
+    await expect(tools.searchMeetings.execute?.(
+      { range: { kind: 'recent' } }, TOOL_CONTEXT,
+    )).resolves.toMatchObject({
+      status: 'partial',
+      results: [{ artifactAvailability: 'unavailable' }],
+    });
+  });
 });
