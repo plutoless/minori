@@ -30,7 +30,11 @@ For each row:
 
 Row normalization remains independent. A malformed row is omitted while valid siblings survive with `status: partial`. A non-empty page with no valid rows remains a fail-closed `meeting_contract_error`. Raw rows, display descriptions, tokens, and provider errors do not enter Neon or model context.
 
-Meeting detail remains the authoritative source for structured start/end times and artifact associations. The OAuth command, operator documentation, and release contract will add only `vc:record:readonly`; no Calendar, recording-media, meeting-control, or write scopes are added.
+The search request's server-side start/end filter remains authoritative for deciding whether a Meeting Record belongs to the member's requested range. The absence of structured time in the search projection therefore does not make an in-range result unusable.
+
+Meeting detail remains the authoritative source for structured start/end times and artifact associations, but discovery does not eagerly load detail for every search result. `searchMeetings` returns the lightweight candidates immediately. When the Agent needs meeting content, `fetchMeetingContent` loads detail for the selected run-local reference and then reads the selected available artifact. A request for a simple meeting list therefore avoids one detail flow per candidate, while a request to summarize meetings still reads the meetings needed for that answer. The existing soft-five behavior and execution budget govern broad requests; five is not a hard product cap.
+
+The OAuth command, operator documentation, and release contract will add only `vc:record:readonly`; no Calendar, recording-media, meeting-control, or write scopes are added.
 
 This fix does not redesign transcript-source selection. When a member requests an original transcript, Minori continues to read an original meeting text source already available through its existing typed tools and reports that the content is unavailable only when none can be read. User-facing replies do not expose Smart Meeting Note display types or OAuth routing details unless those details are needed to explain a concrete access limitation. The currently unavailable advanced Smart Meeting Note transcript scope is a known capability limitation, not a blocker for Meeting Record search, meeting detail, summaries, or readable Minute transcripts.
 
@@ -41,7 +45,8 @@ Implementation is tested through these public seams:
 1. `MeetingService.searchMeetings` accepts a literal official CLI response and returns normalized Meeting candidates.
 2. Mixed valid and malformed rows return partial completeness; an all-invalid non-empty page returns `meeting_contract_error` without retaining raw values.
 3. Optional `meta_data` fields do not make a fetchable row invalid, and display descriptions are not interpreted as structured time.
-4. The OAuth/release contract requires `vc:record:readonly` together with the existing bounded meeting scopes.
+4. Meeting search does not eagerly call `getMeetingDetails`; fetching selected meeting content still obtains authoritative detail on demand.
+5. The OAuth/release contract requires `vc:record:readonly` together with the existing bounded meeting scopes.
 
 The old `meeting_id / topic / start_time` search fixture is replaced rather than preserved as compatibility behavior.
 
