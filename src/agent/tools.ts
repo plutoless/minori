@@ -289,21 +289,23 @@ export function createKnowledgeTools(
       },
     }),
     fetchDocument: tool({
-      description: 'Read an authorized Feishu document as bounded markdown evidence.',
+      description: [
+        'Read an authorized Feishu document as bounded markdown evidence.',
+        'First read must omit cursor.',
+        'Continue only with the exact nextCursor returned for the same doc, mode, and query.',
+      ].join(' '),
       inputSchema: z.object({
         doc: TOKEN_SCHEMA,
         mode: z.enum(['relevant', 'full']),
         query: z.string().min(1).max(500).optional(),
-        cursor: z.string().min(1).max(200).optional(),
+        cursor: z.string().min(1).max(200).optional().describe(
+          'Exact nextCursor from the preceding page of the same doc, mode, and query; omit on first read.',
+        ),
       }).strict(),
       execute: async ({ doc, mode, query, cursor }, { abortSignal }) => {
         const key = JSON.stringify([doc, mode, query ?? '']);
-        let index = 0;
-        if (cursor) {
-          const continuation = cursors.get(cursor);
-          if (!continuation || continuation.key !== key) throw new Error('invalid_document_cursor');
-          index = continuation.index;
-        }
+        const continuation = cursor ? cursors.get(cursor) : undefined;
+        const index = continuation?.key === key ? continuation.index : 0;
         const document = await getDocument(doc, abortSignal);
         let pages = pageSets.get(key);
         if (!pages) {
