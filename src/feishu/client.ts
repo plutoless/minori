@@ -132,15 +132,24 @@ function assertApiSuccess(response: ApiResponse<unknown>, errorCode: string) {
 export class FeishuClientAdapter implements FeishuMessenger, ScheduledResultMessenger {
   constructor(private readonly client: FeishuSdk, private readonly logger: Logger) {}
 
-  async replyText(messageId: string, text: string, idempotencyKey: string): Promise<string> {
+  private validateIdempotencyKey(idempotencyKey: string, errorCode: string): void {
     if (idempotencyKey.length === 0 || idempotencyKey.length > 50) {
-      throw new Error('invalid_reply_idempotency_key');
+      throw new Error(errorCode);
     }
+  }
+
+  private async reply(
+    messageId: string,
+    content: string,
+    msgType: 'text' | 'post',
+    idempotencyKey: string,
+  ): Promise<string> {
+    this.validateIdempotencyKey(idempotencyKey, 'invalid_reply_idempotency_key');
     const response = await this.client.im.v1.message.reply({
       path: { message_id: messageId },
       data: {
-        content: JSON.stringify({ text }),
-        msg_type: 'text',
+        content,
+        msg_type: msgType,
         reply_in_thread: false,
         uuid: idempotencyKey,
       },
@@ -149,6 +158,32 @@ export class FeishuClientAdapter implements FeishuMessenger, ScheduledResultMess
     const replyMessageId = response.data?.message_id;
     if (!replyMessageId) throw new Error('reply_missing_message_id');
     return replyMessageId;
+  }
+
+  private async send(
+    chatId: string,
+    content: string,
+    msgType: 'text' | 'post',
+    idempotencyKey: string,
+  ): Promise<string> {
+    this.validateIdempotencyKey(idempotencyKey, 'invalid_send_idempotency_key');
+    const response = await this.client.im.v1.message.create({
+      data: {
+        receive_id: chatId,
+        msg_type: msgType,
+        content,
+        uuid: idempotencyKey,
+      },
+      params: { receive_id_type: 'chat_id' },
+    });
+    assertApiSuccess(response, 'scheduled_delivery_rejected');
+    const sentMessageId = response.data?.message_id;
+    if (!sentMessageId) throw new Error('scheduled_delivery_uncertain');
+    return sentMessageId;
+  }
+
+  async replyText(messageId: string, text: string, idempotencyKey: string): Promise<string> {
+    return this.reply(messageId, JSON.stringify({ text }), 'text', idempotencyKey);
   }
 
   async replyRichContent(
@@ -156,41 +191,11 @@ export class FeishuClientAdapter implements FeishuMessenger, ScheduledResultMess
     markdown: string,
     idempotencyKey: string,
   ): Promise<string> {
-    if (idempotencyKey.length === 0 || idempotencyKey.length > 50) {
-      throw new Error('invalid_reply_idempotency_key');
-    }
-    const response = await this.client.im.v1.message.reply({
-      path: { message_id: messageId },
-      data: {
-        content: richPostContent(markdown),
-        msg_type: 'post',
-        reply_in_thread: false,
-        uuid: idempotencyKey,
-      },
-    });
-    assertApiSuccess(response, 'reply_failed');
-    const replyMessageId = response.data?.message_id;
-    if (!replyMessageId) throw new Error('reply_missing_message_id');
-    return replyMessageId;
+    return this.reply(messageId, richPostContent(markdown), 'post', idempotencyKey);
   }
 
   async sendText(chatId: string, text: string, idempotencyKey: string): Promise<string> {
-    if (idempotencyKey.length === 0 || idempotencyKey.length > 50) {
-      throw new Error('invalid_send_idempotency_key');
-    }
-    const response = await this.client.im.v1.message.create({
-      data: {
-        receive_id: chatId,
-        msg_type: 'text',
-        content: JSON.stringify({ text }),
-        uuid: idempotencyKey,
-      },
-      params: { receive_id_type: 'chat_id' },
-    });
-    assertApiSuccess(response, 'scheduled_delivery_rejected');
-    const messageId = response.data?.message_id;
-    if (!messageId) throw new Error('scheduled_delivery_uncertain');
-    return messageId;
+    return this.send(chatId, JSON.stringify({ text }), 'text', idempotencyKey);
   }
 
   async sendRichContent(
@@ -198,22 +203,7 @@ export class FeishuClientAdapter implements FeishuMessenger, ScheduledResultMess
     markdown: string,
     idempotencyKey: string,
   ): Promise<string> {
-    if (idempotencyKey.length === 0 || idempotencyKey.length > 50) {
-      throw new Error('invalid_send_idempotency_key');
-    }
-    const response = await this.client.im.v1.message.create({
-      data: {
-        receive_id: chatId,
-        msg_type: 'post',
-        content: richPostContent(markdown),
-        uuid: idempotencyKey,
-      },
-      params: { receive_id_type: 'chat_id' },
-    });
-    assertApiSuccess(response, 'scheduled_delivery_rejected');
-    const messageId = response.data?.message_id;
-    if (!messageId) throw new Error('scheduled_delivery_uncertain');
-    return messageId;
+    return this.send(chatId, richPostContent(markdown), 'post', idempotencyKey);
   }
 
   async isBotMessage(messageId: string, bot: FeishuBotIdentity): Promise<boolean> {

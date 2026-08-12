@@ -26,4 +26,23 @@ describe('Feishu rich content', () => {
     expect(neutralizeMarkdownImages('![](https://img.example/a.png)'))
       .toBe('[图片](https://img.example/a.png)');
   });
+
+  it('turns reference-style images into ordinary labeled links', () => {
+    const markdown = [
+      '请看 ![架构\\]图][asset]。',
+      '',
+      '[asset]: https://img.example/diagram.png "架构"',
+    ].join('\n');
+
+    expect(neutralizeMarkdownImages(markdown)).toBe([
+      '请看 [图片：架构\\]图](https://img.example/diagram.png)。',
+      '',
+      '[asset]: https://img.example/diagram.png "架构"',
+    ].join('\n'));
+  });
+
+  it('de-images unresolved reference syntax without inventing a URL', () => {
+    expect(neutralizeMarkdownImages('![未知图][missing]'))
+      .toBe('[图片：未知图]');
+  });
 });
