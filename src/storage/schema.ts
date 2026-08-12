@@ -18,6 +18,7 @@ export type EventOutcome = {
   replyMessageId?: string;
   errorCode?: string;
   preparedReplyText?: string;
+  preparedReplyKind?: 'rich' | 'control';
 };
 
 export const processedEvents = pgTable('processed_events', {
@@ -221,6 +222,7 @@ export const agentRuns = pgTable('agent_runs', {
   teamContextTokenCount: integer('team_context_token_count'),
   teamContextFetchedAt: timestamp('team_context_fetched_at', { withTimezone: true }),
   teamContextErrorCategory: text('team_context_error_category'),
+  errorMessage: text('error_message'),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 });

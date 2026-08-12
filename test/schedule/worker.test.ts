@@ -33,7 +33,10 @@ function fixture() {
   const agent = { runScheduled: vi.fn().mockResolvedValue({
     text: 'Done', outcome: 'completed', sources: [], usage: {}, writeAttempts: [],
   }) };
-  const messenger = { sendText: vi.fn().mockResolvedValue('om_result') };
+  const messenger = {
+    sendText: vi.fn().mockResolvedValue('om_control'),
+    sendRichContent: vi.fn().mockResolvedValue('om_result'),
+  };
   return { runs, agent, messenger, worker: createScheduledTaskWorker({
     runs, schedules: { get: vi.fn().mockResolvedValue(task) }, agent,
     agentDependencies: {} as never, messenger, leaseMs: 360_000,
@@ -46,21 +49,22 @@ describe('ScheduledTaskWorker', () => {
     const { worker, runs, agent, messenger } = fixture();
     await expect(worker.processOne(new Date())).resolves.toBe(true);
     expect(agent.runScheduled).toHaveBeenCalledOnce();
-    expect(runs.prepareDelivery).toHaveBeenCalledBefore(messenger.sendText);
-    expect(messenger.sendText).toHaveBeenCalledWith(
+    expect(runs.prepareDelivery).toHaveBeenCalledBefore(messenger.sendRichContent);
+    expect(messenger.sendRichContent).toHaveBeenCalledWith(
       'oc_target', 'Done', `s:${run.id}:result`,
     );
+    expect(messenger.sendText).not.toHaveBeenCalled();
     expect(runs.finish).toHaveBeenCalledWith(run.id, 1, 'completed', undefined);
   });
 
   it('records uncertain delivery once and sends one body-free origin fallback', async () => {
     const { worker, runs, messenger } = fixture();
-    messenger.sendText
-      .mockRejectedValueOnce(new Error('socket closed Bearer secret'))
-      .mockResolvedValueOnce('om_fallback');
+    messenger.sendRichContent.mockRejectedValueOnce(new Error('socket closed Bearer secret'));
+    messenger.sendText.mockResolvedValueOnce('om_fallback');
     await worker.processOne(new Date());
-    expect(messenger.sendText).toHaveBeenCalledTimes(2);
-    const fallback = messenger.sendText.mock.calls[1]![1] as string;
+    expect(messenger.sendRichContent).toHaveBeenCalledOnce();
+    expect(messenger.sendText).toHaveBeenCalledOnce();
+    const fallback = messenger.sendText.mock.calls[0]![1] as string;
     expect(fallback).toContain('Daily');
     expect(fallback).toContain('Product');
     expect(fallback).not.toMatch(/Summarize|Bearer|Done|ou_1/iu);
@@ -108,6 +112,7 @@ describe('ScheduledTaskWorker', () => {
     await vi.advanceTimersByTimeAsync(30_100);
     await processing;
     expect(messenger.sendText).not.toHaveBeenCalled();
+    expect(messenger.sendRichContent).not.toHaveBeenCalled();
     expect(runs.prepareDelivery).not.toHaveBeenCalled();
   });
 
@@ -130,11 +135,56 @@ describe('ScheduledTaskWorker', () => {
     finishAgent({ text: 'Done', outcome: 'completed', sources: [], usage: {}, writeAttempts: [] });
     await vi.advanceTimersByTimeAsync(1);
     expect(messenger.sendText).not.toHaveBeenCalled();
+    expect(messenger.sendRichContent).not.toHaveBeenCalled();
     settleRenewal(true);
     await processing;
     expect(runs.extendLease).toHaveBeenLastCalledWith(run.id, 1, 900_000);
     expect(runs.extendLease).toHaveBeenCalledBefore(runs.prepareDelivery);
-    expect(messenger.sendText).toHaveBeenCalledOnce();
+    expect(messenger.sendRichContent).toHaveBeenCalledOnce();
+  });
+
+  it('includes authenticated Sources in a rich Scheduled result', async () => {
+    const { worker, agent, messenger } = fixture();
+    agent.runScheduled.mockResolvedValue({
+      text: '**Done**', outcome: 'completed', usage: {}, writeAttempts: [],
+      sources: [{ id: 1, title: 'Plan', url: 'https://example.com/plan' }],
+    });
+
+    await worker.processOne(new Date());
+
+    expect(messenger.sendRichContent).toHaveBeenCalledWith(
+      'oc_target',
+      '**Done**\n\nSources:\n[1] Plan — https://example.com/plan',
+      `s:${run.id}:result`,
+    );
+  });
+
+  it('keeps a fixed Scheduled Agent failure on the plain Control Reply path', async () => {
+    const { worker, agent, messenger } = fixture();
+    agent.runScheduled.mockRejectedValue(new Error('provider secret'));
+
+    await worker.processOne(new Date());
+
+    expect(messenger.sendText).toHaveBeenCalledWith(
+      'oc_target',
+      '定时任务“Daily”执行失败：scheduled_run_failed',
+      `s:${run.id}:result`,
+    );
+    expect(messenger.sendRichContent).not.toHaveBeenCalled();
+    expect(JSON.stringify(messenger.sendText.mock.calls)).not.toContain('provider secret');
+  });
+
+  it('keeps a returned execution-budget receipt on the rich result path', async () => {
+    const { worker, agent, messenger } = fixture();
+    agent.runScheduled.mockResolvedValue({
+      text: '已达到本次执行时间上限。', outcome: 'timeout_reached',
+      sources: [], usage: {}, writeAttempts: [],
+    });
+
+    await worker.processOne(new Date());
+
+    expect(messenger.sendRichContent).toHaveBeenCalledOnce();
+    expect(messenger.sendText).not.toHaveBeenCalled();
   });
 
 });

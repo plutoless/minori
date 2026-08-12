@@ -145,6 +145,7 @@ function agentRunStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
     recordGroupHistory: vi.fn().mockResolvedValue(undefined),
     recordTeamContext: vi.fn().mockResolvedValue(undefined),
     finish: vi.fn().mockResolvedValue(undefined),
+    purgeFailureDetails: vi.fn().mockResolvedValue(0),
     ...overrides,
   };
 }
@@ -810,6 +811,7 @@ describe('runKnowledgeAgent', () => {
       outputTokens: 4,
       toolCallCount: 1,
       outcome: 'timeout_reached',
+      errorMessage: expect.any(String),
     });
   });
 
@@ -833,6 +835,7 @@ describe('runKnowledgeAgent', () => {
     expect(audit.finish).toHaveBeenCalledWith('run_delayed', {
       toolCallCount: 0,
       outcome: 'aborted',
+      errorMessage: expect.any(String),
     });
   });
 
@@ -889,6 +892,7 @@ describe('runKnowledgeAgent', () => {
     expect(audit.finish).toHaveBeenCalledWith('run_1', expect.objectContaining({
       outcome: 'step_limit_reached',
     }));
+    expect(vi.mocked(audit.finish).mock.calls.at(-1)?.[1]).not.toHaveProperty('errorMessage');
   });
 
   it('does not misclassify natural completion on the final allowed step', async () => {
@@ -1038,6 +1042,7 @@ describe('runKnowledgeAgent', () => {
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       toolCallCount: 0,
       outcome: 'failed',
+      errorMessage: 'model_unavailable',
     });
   });
 
@@ -1076,27 +1081,31 @@ describe('runKnowledgeAgent', () => {
     expect(reply.text).not.toContain('Sensitive body');
     expect(audit.finish).toHaveBeenCalledWith('run_1', expect.objectContaining({
       outcome: 'interrupted_after_write',
+      errorMessage: 'model_unavailable',
     }));
   });
 
   it('reports the configured Agent deadline as a truthful terminal outcome', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: (options) => new Promise((_resolve, reject) => {
-        options.abortSignal?.addEventListener('abort', () => reject(options.abortSignal?.reason));
+        options.abortSignal?.addEventListener('abort', () => reject(new Error('provider timed out')));
       }),
     });
 
     const audit = agentRunStore();
-    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+    const reply = await runKnowledgeAgent(input, dependencies(input.prompt, model, {
       timeoutMs: 5,
       agentRunStore: audit,
-    }))).resolves.toMatchObject({
+    }));
+    expect(reply).toMatchObject({
       outcome: 'timeout_reached',
       writeAttempts: [],
     });
+    expect(reply.text).not.toContain('provider timed out');
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       toolCallCount: 0,
       outcome: 'timeout_reached',
+      errorMessage: 'provider timed out',
     });
   });
 
@@ -1153,6 +1162,7 @@ describe('runKnowledgeAgent', () => {
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       toolCallCount: 0,
       outcome: 'aborted',
+      errorMessage: 'worker_stopped',
     });
   });
 
@@ -1181,6 +1191,7 @@ describe('runKnowledgeAgent', () => {
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       toolCallCount: 0,
       outcome: 'aborted',
+      errorMessage: 'worker_stopped_first',
     });
   });
 
@@ -1208,6 +1219,7 @@ describe('runKnowledgeAgent', () => {
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       toolCallCount: 0,
       outcome: 'timeout_reached',
+      errorMessage: expect.any(String),
     });
   });
 
@@ -1226,6 +1238,24 @@ describe('runKnowledgeAgent', () => {
     expect(audit.finish).toHaveBeenCalledWith('run_1', {
       toolCallCount: 0,
       outcome: 'failed',
+      errorMessage: 'trigger_prompt_mismatch',
+    });
+  });
+
+  it('does not serialize a non-Error model rejection into the Agent Failure Detail', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: vi.fn().mockRejectedValue({ token: 'must-not-persist' }),
+    });
+    const audit = agentRunStore();
+
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      agentRunStore: audit,
+    }))).rejects.toEqual({ token: 'must-not-persist' });
+
+    expect(audit.finish).toHaveBeenCalledWith('run_1', {
+      toolCallCount: 0,
+      outcome: 'failed',
+      errorMessage: 'non_error_rejection',
     });
   });
 });

@@ -18,11 +18,20 @@ export function scheduledFailureNotice(
   ].join('\n');
 }
 
-export async function deliverScheduledText(
+export function deliverScheduledRichContent(
+  messenger: ScheduledResultMessenger,
+  chatId: string,
+  markdown: string,
+  idempotencyKey: string,
+) : Promise<string> {
+  return messenger.sendRichContent(chatId, markdown, idempotencyKey);
+}
+
+export function deliverScheduledControlText(
   messenger: ScheduledResultMessenger,
   chatId: string,
   text: string,
   idempotencyKey: string,
-) {
+): Promise<string> {
   return messenger.sendText(chatId, text, idempotencyKey);
 }

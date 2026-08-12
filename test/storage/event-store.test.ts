@@ -189,7 +189,10 @@ describe('PostgresEventStore', () => {
     await store.claimReady(1, new Date(Date.now() - 1));
     const attemptedAt = new Date('2026-08-05T01:02:03Z');
 
-    await store.markReplyStarted('evt_1', 1, 'reply-key-1', attemptedAt, 'prepared reply');
+    await store.markReplyStarted('evt_1', 1, 'reply-key-1', attemptedAt, {
+      text: 'prepared reply',
+      kind: 'rich',
+    });
     await store.retry('evt_1', 1, 'reply_failed', new Date(Date.now() - 1));
     await new Promise((resolve) => setTimeout(resolve, 300));
 
@@ -200,6 +203,7 @@ describe('PostgresEventStore', () => {
       processingReactionId: 'reaction_1',
       replyIdempotencyKey: 'reply-key-1',
       preparedReplyText: 'prepared reply',
+      preparedReplyKind: 'rich',
     });
     expect(recovered?.replyAttemptedAt).toEqual(attemptedAt);
   });
@@ -234,7 +238,9 @@ describe('PostgresEventStore', () => {
     await store.claimReady(1, new Date(Date.now() + 60_000));
 
     expect(await store.markProgressAttempted('evt_1', 1, new Date())).toBe(false);
-    await store.markReplyStarted('evt_1', 2, 'reply-key', new Date(), 'answer');
+    await store.markReplyStarted('evt_1', 2, 'reply-key', new Date(), {
+      text: 'answer', kind: 'rich',
+    });
     expect(await store.markProgressAttempted('evt_1', 2, new Date())).toBe(false);
   });
 

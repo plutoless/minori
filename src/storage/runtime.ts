@@ -24,6 +24,7 @@ export type StorageRuntime = {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
+const AGENT_FAILURE_RETENTION_DAYS = 30;
 
 export function createStorageRuntime(config: AppConfig, logger: Logger): StorageRuntime {
   if (!config.databaseUrl) {
@@ -40,12 +41,18 @@ export function createStorageRuntime(config: AppConfig, logger: Logger): Storage
     retentionMs: config.messageRetentionDays * DAY_MS,
   });
   const scheduleStore = new PostgresScheduleStore(database.db);
+  const agentRunStore = new PostgresAgentRunStore(database.db);
   let currentRetentionStatus: ComponentStatus = 'degraded';
   const retention: RetentionService = createRetentionService({
     async purgeExpired(before) {
       const messages = await conversationStore.purgeExpired(before);
+      const agentFailureCutoff = new Date(
+        before.getTime()
+          + (config.messageRetentionDays - AGENT_FAILURE_RETENTION_DAYS) * DAY_MS,
+      );
+      const agentFailures = await agentRunStore.purgeFailureDetails(agentFailureCutoff);
       const schedules = await scheduleStore.purgeTerminalBodies(new Date());
-      return messages + schedules;
+      return messages + agentFailures + schedules;
     },
   }, {
     retentionMs: config.messageRetentionDays * DAY_MS,
@@ -61,7 +68,7 @@ export function createStorageRuntime(config: AppConfig, logger: Logger): Storage
   return {
     eventStore: new PostgresEventStore(database.db),
     conversationStore,
-    agentRunStore: new PostgresAgentRunStore(database.db),
+    agentRunStore,
     teamContextStore: new PostgresTeamContextStore(database.db),
     scheduleStore,
     scheduledRunStore: new PostgresScheduledRunStore(database.db),

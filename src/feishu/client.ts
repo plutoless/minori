@@ -2,17 +2,20 @@ import type { Logger } from 'pino';
 import { Client, defaultHttpInstance } from '@larksuiteoapi/node-sdk';
 import { FeishuGroupContextSource } from './group-context.js';
 import { FeishuChatDirectory } from './chat-directory.js';
+import { richPostContent } from './rich-content.js';
 
 type ApiResponse<T> = { code?: number | undefined; data?: T | undefined };
 
 export interface FeishuMessenger {
   replyText(messageId: string, text: string, idempotencyKey: string): Promise<string>;
+  replyRichContent(messageId: string, markdown: string, idempotencyKey: string): Promise<string>;
   addReaction(messageId: string, emojiType: 'Typing'): Promise<string | null>;
   removeReaction(messageId: string, reactionId: string): Promise<void>;
 }
 
 export interface ScheduledResultMessenger {
   sendText(chatId: string, text: string, idempotencyKey: string): Promise<string>;
+  sendRichContent(chatId: string, markdown: string, idempotencyKey: string): Promise<string>;
 }
 
 export type FeishuBotIdentity = { openId: string; appId: string };
@@ -37,13 +40,13 @@ export type FeishuSdk = {
     };
     message: {
       create(payload: {
-        data: { receive_id: string; msg_type: 'text'; content: string; uuid: string };
+        data: { receive_id: string; msg_type: 'text' | 'post'; content: string; uuid: string };
         params: { receive_id_type: 'chat_id' };
       }): Promise<ApiResponse<{ message_id?: string | undefined }>>;
       reply(payload: {
         path: { message_id: string };
         data: {
-          content: string; msg_type: 'text'; reply_in_thread: false; uuid: string;
+          content: string; msg_type: 'text' | 'post'; reply_in_thread: false; uuid: string;
         };
       }): Promise<ApiResponse<{ message_id?: string | undefined }>>;
       get(payload: {
@@ -129,15 +132,24 @@ function assertApiSuccess(response: ApiResponse<unknown>, errorCode: string) {
 export class FeishuClientAdapter implements FeishuMessenger, ScheduledResultMessenger {
   constructor(private readonly client: FeishuSdk, private readonly logger: Logger) {}
 
-  async replyText(messageId: string, text: string, idempotencyKey: string): Promise<string> {
+  private validateIdempotencyKey(idempotencyKey: string, errorCode: string): void {
     if (idempotencyKey.length === 0 || idempotencyKey.length > 50) {
-      throw new Error('invalid_reply_idempotency_key');
+      throw new Error(errorCode);
     }
+  }
+
+  private async reply(
+    messageId: string,
+    content: string,
+    msgType: 'text' | 'post',
+    idempotencyKey: string,
+  ): Promise<string> {
+    this.validateIdempotencyKey(idempotencyKey, 'invalid_reply_idempotency_key');
     const response = await this.client.im.v1.message.reply({
       path: { message_id: messageId },
       data: {
-        content: JSON.stringify({ text }),
-        msg_type: 'text',
+        content,
+        msg_type: msgType,
         reply_in_thread: false,
         uuid: idempotencyKey,
       },
@@ -148,23 +160,50 @@ export class FeishuClientAdapter implements FeishuMessenger, ScheduledResultMess
     return replyMessageId;
   }
 
-  async sendText(chatId: string, text: string, idempotencyKey: string): Promise<string> {
-    if (idempotencyKey.length === 0 || idempotencyKey.length > 50) {
-      throw new Error('invalid_send_idempotency_key');
-    }
+  private async send(
+    chatId: string,
+    content: string,
+    msgType: 'text' | 'post',
+    idempotencyKey: string,
+  ): Promise<string> {
+    this.validateIdempotencyKey(idempotencyKey, 'invalid_send_idempotency_key');
     const response = await this.client.im.v1.message.create({
       data: {
         receive_id: chatId,
-        msg_type: 'text',
-        content: JSON.stringify({ text }),
+        msg_type: msgType,
+        content,
         uuid: idempotencyKey,
       },
       params: { receive_id_type: 'chat_id' },
     });
     assertApiSuccess(response, 'scheduled_delivery_rejected');
-    const messageId = response.data?.message_id;
-    if (!messageId) throw new Error('scheduled_delivery_uncertain');
-    return messageId;
+    const sentMessageId = response.data?.message_id;
+    if (!sentMessageId) throw new Error('scheduled_delivery_uncertain');
+    return sentMessageId;
+  }
+
+  async replyText(messageId: string, text: string, idempotencyKey: string): Promise<string> {
+    return this.reply(messageId, JSON.stringify({ text }), 'text', idempotencyKey);
+  }
+
+  async replyRichContent(
+    messageId: string,
+    markdown: string,
+    idempotencyKey: string,
+  ): Promise<string> {
+    return this.reply(messageId, richPostContent(markdown), 'post', idempotencyKey);
+  }
+
+  async sendText(chatId: string, text: string, idempotencyKey: string): Promise<string> {
+    return this.send(chatId, JSON.stringify({ text }), 'text', idempotencyKey);
+  }
+
+  async sendRichContent(
+    chatId: string,
+    markdown: string,
+    idempotencyKey: string,
+  ): Promise<string> {
+    return this.send(chatId, richPostContent(markdown), 'post', idempotencyKey);
   }
 
   async isBotMessage(messageId: string, bot: FeishuBotIdentity): Promise<boolean> {

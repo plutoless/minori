@@ -43,6 +43,53 @@ describe('FeishuClientAdapter', () => {
       .toThrow('invalid_reply_idempotency_key');
   });
 
+  it('replies with one ordinary non-topic Markdown post and exact idempotency key', async () => {
+    const client = sdk();
+    client.im.v1.message.reply.mockResolvedValue({ data: { message_id: 'om_rich' } });
+    const adapter = new FeishuClientAdapter(client, pino({ level: 'silent' }));
+
+    await expect(adapter.replyRichContent(
+      'om_trigger',
+      '# Result\n\n[1] Source — https://example.com',
+      'evt_1:reply:v1',
+    )).resolves.toBe('om_rich');
+
+    expect(client.im.v1.message.reply).toHaveBeenCalledWith({
+      path: { message_id: 'om_trigger' },
+      data: {
+        content: expect.any(String),
+        msg_type: 'post',
+        reply_in_thread: false,
+        uuid: 'evt_1:reply:v1',
+      },
+    });
+    const payload = JSON.parse(client.im.v1.message.reply.mock.calls[0]![0].data.content);
+    expect(payload.zh_cn.content).toEqual([[{
+      tag: 'md',
+      text: '# Result\n\n[1] Source — https://example.com',
+    }]]);
+  });
+
+  it('sends a Scheduled result as a top-level Markdown post', async () => {
+    const client = sdk();
+    client.im.v1.message.create.mockResolvedValue({ data: { message_id: 'om_scheduled' } });
+    const adapter = new FeishuClientAdapter(client, pino({ level: 'silent' }));
+
+    await expect(adapter.sendRichContent('oc_target', '**Done**', 'sched_1:result'))
+      .resolves.toBe('om_scheduled');
+    expect(client.im.v1.message.create).toHaveBeenCalledWith({
+      params: { receive_id_type: 'chat_id' },
+      data: {
+        receive_id: 'oc_target',
+        msg_type: 'post',
+        content: expect.any(String),
+        uuid: 'sched_1:result',
+      },
+    });
+    expect(JSON.parse(client.im.v1.message.create.mock.calls[0]![0].data.content))
+      .toEqual({ zh_cn: { title: '', content: [[{ tag: 'md', text: '**Done**' }]] } });
+  });
+
   it('identifies whether a replied-to message was sent by the bot', async () => {
     const client = sdk();
     client.im.v1.message.get

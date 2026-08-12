@@ -24,6 +24,7 @@ import {
   type WriteAttemptReceipt,
 } from './run-outcome.js';
 import { SourceRegistry, type AgentSource } from './sources.js';
+import { agentFailureDetail } from './failure-detail.js';
 import {
   createKnowledgeTools,
   type GroupHistoryToolContext,
@@ -385,6 +386,7 @@ export async function runKnowledgeAgent(
       (lateRun) => withAuditFinalization(() => dependencies.agentRunStore.finish(lateRun.id, {
         toolCallCount: 0,
         outcome: 'aborted',
+        errorMessage: agentFailureDetail(runSignal.reason),
       })),
     );
   } catch {
@@ -396,6 +398,7 @@ export async function runKnowledgeAgent(
   let outputTokens: number | undefined;
   let toolCallCount = 0;
   let outcome: Exclude<AgentRunOutcome, 'running'> = 'failed';
+  let errorMessage: string | undefined;
 
   try {
     const storedHistory = await withAbort(
@@ -589,6 +592,7 @@ export async function runKnowledgeAgent(
       writeAttempts,
     };
   } catch (error) {
+    errorMessage = agentFailureDetail(error);
     if (abortSignals.firstAbortSource() === 'timeout') {
       outcome = 'timeout_reached';
       return {
@@ -620,6 +624,7 @@ export async function runKnowledgeAgent(
       await withAuditFinalization(() => dependencies.agentRunStore.finish(run.id, {
         ...(inputTokens !== undefined ? { inputTokens } : {}),
         ...(outputTokens !== undefined ? { outputTokens } : {}),
+        ...(errorMessage !== undefined ? { errorMessage } : {}),
         toolCallCount,
         outcome,
       }));

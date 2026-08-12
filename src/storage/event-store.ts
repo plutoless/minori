@@ -7,6 +7,8 @@ import {
   AGENT_ADMISSION_LOCK_KEY,
 } from '../worker/admission-policy.js';
 
+export type PreparedReplyKind = 'rich' | 'control';
+
 export type StoredEvent = {
   eventId: string;
   payload: NormalizedMessage;
@@ -19,6 +21,7 @@ export type StoredEvent = {
   replyIdempotencyKey?: string;
   replyAttemptedAt?: Date;
   preparedReplyText?: string;
+  preparedReplyKind?: PreparedReplyKind;
 };
 
 export type TerminalEventResult = { processingReactionId?: string };
@@ -36,7 +39,7 @@ export interface EventStore {
     claimAttempt: number,
     key: string,
     attemptedAt: Date,
-    preparedReplyText?: string,
+    preparedReply?: { text: string; kind: PreparedReplyKind },
   ): Promise<void>;
   markProgressAttempted(
     eventId: string,
@@ -155,7 +158,8 @@ export class PostgresEventStore implements EventStore {
         event.write_started_at as "writeStartedAt",
         event.reply_idempotency_key as "replyIdempotencyKey",
         event.reply_attempted_at as "replyAttemptedAt",
-        event.outcome ->> 'preparedReplyText' as "preparedReplyText"
+        event.outcome ->> 'preparedReplyText' as "preparedReplyText",
+        event.outcome ->> 'preparedReplyKind' as "preparedReplyKind"
       `);
     });
 
@@ -171,6 +175,7 @@ export class PostgresEventStore implements EventStore {
       replyIdempotencyKey: string | null;
       replyAttemptedAt: Date | null;
       preparedReplyText: string | null;
+      preparedReplyKind: string | null;
     }>).map((row) => ({
       eventId: row.eventId,
       attempts: row.attempts,
@@ -185,6 +190,9 @@ export class PostgresEventStore implements EventStore {
       ...(row.replyIdempotencyKey ? { replyIdempotencyKey: row.replyIdempotencyKey } : {}),
       ...(row.replyAttemptedAt ? { replyAttemptedAt: new Date(row.replyAttemptedAt) } : {}),
       ...(row.preparedReplyText ? { preparedReplyText: row.preparedReplyText } : {}),
+      ...((row.preparedReplyKind === 'rich' || row.preparedReplyKind === 'control')
+        ? { preparedReplyKind: row.preparedReplyKind }
+        : {}),
     }));
   }
 
@@ -235,14 +243,17 @@ export class PostgresEventStore implements EventStore {
     claimAttempt: number,
     key: string,
     attemptedAt: Date,
-    preparedReplyText?: string,
+    preparedReply?: { text: string; kind: PreparedReplyKind },
   ): Promise<void> {
     const updated = await this.db.update(processedEvents).set({
       replyIdempotencyKey: key,
       replyAttemptedAt: attemptedAt,
-      ...(preparedReplyText === undefined
+      ...(preparedReply === undefined
         ? {}
-        : { outcome: { preparedReplyText } }),
+        : { outcome: {
+          preparedReplyText: preparedReply.text,
+          preparedReplyKind: preparedReply.kind,
+        } }),
       updatedAt: new Date(),
     }).where(and(
       eq(processedEvents.eventId, eventId),

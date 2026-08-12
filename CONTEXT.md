@@ -116,6 +116,14 @@ _Avoid_: Queue position, progress message, reasoning trace, status card
 The single fixed ordinary reply Minori may send when a supported member-triggered event is still processing after 20 seconds. It is not retained in Minori's conversation history and has no authority, though Feishu may later return it as ordinary Live Group History.
 _Avoid_: Processing Reaction, periodic update, progress percentage, reasoning trace
 
+**Rich Content Reply**:
+A normal Agent answer, Source-linked Answer, Scheduled Task result, or operation receipt delivered as Feishu rich content generated from Markdown. Its formatting path does not own retry or Agent execution semantics.
+_Avoid_: Control Reply, interactive card, Agent rerun, reply thread
+
+**Control Reply**:
+A short fixed progress, failure, or delivery notice sent through the simplest plain-text messaging path so it does not depend on rich-content conversion. It carries no retrieved body or detailed Agent answer.
+_Avoid_: Rich Content Reply, system prompt, operational log, status card
+
 **Execution Budget Exhaustion**:
 The deliberate end of one Agent run after its configured model/tool step limit or wall-clock deadline is reached. Minori preserves completed writes, blocks further tools and writes, does not automatically rerun the task, records whether the step limit or timeout was reached, and tells the member they may explicitly continue in a new run.
 _Avoid_: Successful completion, generic Agent failure, automatic retry
@@ -132,8 +140,12 @@ _Avoid_: Hard-coded reconciliation flow, mandatory confirmation, silent worker r
 The configured OpenAI-compatible model endpoint, which receives the conversation context, relevant knowledge content, and tool results needed for an Agent run. Minori treats its operator as a trusted data processor for the entire Knowledge Boundary; `store: false` is a request constraint, not independent proof of a third-party retention policy.
 _Avoid_: Secretless model call, locally isolated inference, guaranteed deletion
 
+**Agent Failure Detail**:
+The bounded diagnostic message retained internally for 30 days on one Agent Run that ended after a caught exception. It supports operator investigation but is not a member-facing explanation, model context, or permanent audit fact.
+_Avoid_: Failure reply, permanent error log, raw prompt, error category
+
 **Persistence Data Boundary**:
-The trusted Neon PostgreSQL database that stores plaintext conversation bodies for 30 days, active, paused, or in-flight Scheduled Task definitions, and completed or deleted task bodies for 30 days. It retains structural message, task, Agent, and tool audit metadata afterward. Minori does not persist complete retrieved document bodies as a separate knowledge copy and does not add application-level encryption that would prevent conversation search.
+The trusted Neon PostgreSQL database that stores plaintext conversation bodies and Agent Failure Details for 30 days, active, paused, or in-flight Scheduled Task definitions, and completed or deleted task bodies for 30 days. It retains structural message, task, Agent, and tool audit metadata afterward. Minori does not persist complete retrieved document bodies as a separate knowledge copy and does not add application-level encryption that would prevent conversation search.
 _Avoid_: Encrypted search index, permanent message body, document mirror
 
 **Source-linked Answer**:
