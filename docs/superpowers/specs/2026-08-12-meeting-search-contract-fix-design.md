@@ -54,10 +54,13 @@ The old `meeting_id / topic / start_time` search fixture is replaced rather than
 
 After code verification:
 
-1. publish `vc:record:readonly` for the existing Minori Feishu app;
-2. rerun OAuth for the Dedicated Knowledge User;
-3. verify `vc +search` and `vc +detail` with content-free probes;
-4. release through the existing protected PR, tag, Production Approval, and immutable-digest deployment path;
-5. verify one real recent-meeting query and ensure valid rows are no longer reported as an unavailable search.
+1. retain the deployed `@larksuite/cli` 1.0.84 lock so the contract fix is verified independently of a CLI upgrade;
+2. publish `vc:record:readonly` for the existing Minori Feishu app;
+3. rerun OAuth for the Dedicated Knowledge User;
+4. verify `vc +search` and `vc +detail` with content-free probes;
+5. release through the existing protected PR, tag, Production Approval, and immutable-digest deployment path;
+6. verify one real recent-meeting query and ensure valid rows are no longer reported as an unavailable search.
+
+Updating Lark CLI to 1.0.86 or later is a separate dependency change and is not part of this fix.
 
 If permission publication or OAuth is incomplete, the existing production release remains in service; code deployment does not bypass the permission gate.
