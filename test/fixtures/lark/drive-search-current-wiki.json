@@ -1,0 +1,37 @@
+{
+  "data": {
+    "results": [
+      {
+        "entity_type": "WIKI",
+        "entity_id": "legacy_ignored",
+        "result_meta": {
+          "token": "wikcnCurrent",
+          "url": "https://acme.feishu.cn/wiki/wikcnCurrent"
+        },
+        "title_highlighted": "Current <h>Wiki</h>"
+      },
+      {
+        "entity_type": "DOCX",
+        "entity_id": "doxcnLegacy",
+        "result_meta": {
+          "url": "https://acme.feishu.cn/docx/doxcnLegacy"
+        },
+        "title": "Legacy document"
+      },
+      {
+        "entity_type": "WIKI",
+        "result_meta": {
+          "token": "wikcnNoUrl",
+          "url": "not a url"
+        },
+        "title": "Fetchable without URL"
+      },
+      {
+        "entity_type": "WIKI",
+        "result_meta": {
+          "url": "https://acme.feishu.cn/wiki/missing"
+        }
+      }
+    ]
+  }
+}
