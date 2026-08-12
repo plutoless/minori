@@ -54,12 +54,28 @@ function rawEvent(overrides: Record<string, unknown> = {}) {
 }
 
 class FakeMessenger implements FeishuMessenger {
-  readonly replies: Array<{ messageId: string; text: string; key: string }> = [];
+  readonly replies: Array<{
+    messageId: string;
+    text: string;
+    key: string;
+    format: 'rich' | 'control';
+  }> = [];
   readonly reactions = new Set<string>();
   readonly accepted = new Map<string, string>();
 
   async replyText(messageId: string, text: string, key: string) {
-    this.replies.push({ messageId, text, key });
+    return this.reply(messageId, text, key, 'control');
+  }
+  async replyRichContent(messageId: string, text: string, key: string) {
+    return this.reply(messageId, text, key, 'rich');
+  }
+  private async reply(
+    messageId: string,
+    text: string,
+    key: string,
+    format: 'rich' | 'control',
+  ) {
+    this.replies.push({ messageId, text, key, format });
     const prior = this.accepted.get(key);
     if (prior) return prior;
     const replyId = `reply_${this.accepted.size + 1}`;
@@ -245,10 +261,14 @@ describe('open team Agent release contract', () => {
     expect(executor.run).toHaveBeenCalledWith(expect.objectContaining({ id: 'docs.fetch' }));
     expect(messenger.replies).toHaveLength(4);
     expect(messenger.replies.filter((reply) => reply.text.includes('Sources:'))).toHaveLength(3);
+    expect(messenger.replies.filter((reply) => reply.text.includes('Sources:'))
+      .every((reply) => reply.format === 'rich')).toBe(true);
     expect(messenger.replies.some(
       (reply) => reply.text.includes('https://acme.feishu.cn/docx/doxcnRoadmap'),
     )).toBe(true);
-    expect(messenger.replies.some((reply) => reply.text.includes('暂不支持'))).toBe(true);
+    expect(messenger.replies.some(
+      (reply) => reply.text.includes('暂不支持') && reply.format === 'control',
+    )).toBe(true);
     expect(messenger.replies.some((reply) => reply.messageId === 'om_group_1')).toBe(true);
     expect(messenger.replies.some((reply) => reply.messageId === 'om_private')).toBe(true);
     expect(messenger.reactions.size).toBe(0);
@@ -534,6 +554,7 @@ describe('open team Agent release contract', () => {
     await restartedWorker.process(recovered!);
 
     expect(messenger.replies).toHaveLength(1);
+    expect(messenger.replies[0]?.format).toBe('rich');
     expect(messenger.reactions.size).toBe(0);
     expect(await restartedEvents.claimReady(1, new Date(Date.now() + 60_000))).toEqual([]);
   });
@@ -769,9 +790,9 @@ describe('open team Agent release contract', () => {
 
   it('expires old message bodies and replays a recent uncertain transport result only once', async () => {
     const messenger = new FakeMessenger();
-    const originalReply = messenger.replyText.bind(messenger);
+    const originalReply = messenger.replyRichContent.bind(messenger);
     let loseConfirmation = true;
-    messenger.replyText = vi.fn(async (messageId, text, key) => {
+    messenger.replyRichContent = vi.fn(async (messageId, text, key) => {
       const replyId = await originalReply(messageId, text, key);
       if (loseConfirmation) {
         loseConfirmation = false;
@@ -810,6 +831,7 @@ describe('open team Agent release contract', () => {
     await restartedWorker.process(recovered!);
 
     expect(messenger.replies).toHaveLength(2);
+    expect(messenger.replies.every((reply) => reply.format === 'rich')).toBe(true);
     expect(messenger.replies[0]!.key).toBe(messenger.replies[1]!.key);
     expect(messenger.accepted.size).toBe(1);
 

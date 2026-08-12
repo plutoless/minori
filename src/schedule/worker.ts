@@ -1,8 +1,13 @@
 import type { AgentInvocationRunner, ScheduledInvocationDependencies } from '../agent/invocation-runner.js';
 import type { ScheduledResultMessenger } from '../feishu/client.js';
+import { formatAgentReply } from '../worker/source-format.js';
 import type { PostgresScheduleStore } from '../storage/schedule-store.js';
 import type { PostgresScheduledRunStore } from '../storage/scheduled-run-store.js';
-import { deliverScheduledText, scheduledFailureNotice } from './delivery.js';
+import {
+  deliverScheduledControlText,
+  deliverScheduledRichContent,
+  scheduledFailureNotice,
+} from './delivery.js';
 
 const DELIVERY_LEASE_MS = 900_000;
 
@@ -74,6 +79,7 @@ export function createScheduledTaskWorker(
         if (leaseController.signal.aborted) return true;
 
         let text: string;
+        let deliveryKind: 'rich' | 'control' = 'rich';
         let runOutcome: 'completed' | 'failed' = 'completed';
         try {
           const reply = await dependencies.agent.runScheduled(
@@ -81,11 +87,12 @@ export function createScheduledTaskWorker(
             dependencies.agentDependencies,
             leaseController.signal,
           );
-          text = reply.text;
+          text = formatAgentReply(reply);
           if (reply.outcome !== 'completed') runOutcome = 'failed';
         } catch {
           if (leaseController.signal.aborted) return true;
           text = `定时任务“${task.name}”执行失败：scheduled_run_failed`;
+          deliveryKind = 'control';
           runOutcome = 'failed';
         }
         if (leaseController.signal.aborted) return true;
@@ -105,12 +112,24 @@ export function createScheduledTaskWorker(
         }
 
         try {
-          const messageId = await deliverScheduledText(
-            dependencies.messenger,
-            run.resultTarget.chatId,
+          const deliveryKey = await dependencies.runs.prepareDelivery(
+            run.id,
+            run.claimAttempt,
             text,
-            await dependencies.runs.prepareDelivery(run.id, run.claimAttempt, text),
           );
+          const messageId = deliveryKind === 'rich'
+            ? await deliverScheduledRichContent(
+              dependencies.messenger,
+              run.resultTarget.chatId,
+              text,
+              deliveryKey,
+            )
+            : await deliverScheduledControlText(
+              dependencies.messenger,
+              run.resultTarget.chatId,
+              text,
+              deliveryKey,
+            );
           await dependencies.runs.markDelivered(run.id, run.claimAttempt, messageId);
           await dependencies.runs.finish(
             run.id,
@@ -122,7 +141,7 @@ export function createScheduledTaskWorker(
           const category = deliveryCategory(error);
           try {
             const fallbackKey = await dependencies.runs.beginFallback(run.id, run.claimAttempt);
-            const messageId = await deliverScheduledText(
+            const messageId = await deliverScheduledControlText(
               dependencies.messenger,
               task.origin.chatId,
               scheduledFailureNotice(task, run, category),
