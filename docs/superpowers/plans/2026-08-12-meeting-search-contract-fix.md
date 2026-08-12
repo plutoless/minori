@@ -331,4 +331,3 @@ git log --oneline github/main..HEAD
 ```
 
 Expected: clean worktree with the approved design commits and implementation commits. Report the exact PR-ready SHA and these remaining external steps: publish `vc:record:readonly`, complete OAuth, run content-free search/detail probes, merge PR, create the next release tag, grant Production Approval, and verify the immutable production digest.
-
