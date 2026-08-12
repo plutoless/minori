@@ -88,6 +88,52 @@ describe('Team Agent release packaging contract', () => {
     expect(readme).toContain('im:chat:read');
   });
 
+  it('locks the strict-user meeting evidence capability and exact read-only OAuth scopes', async () => {
+    const readme = await text('README.md');
+    const design = await text(
+      'docs/superpowers/specs/2026-08-12-meeting-minutes-search-design.md',
+    );
+    const auth = await text('scripts/lark-auth.ts');
+    const commands = await text('src/lark/command-catalog.ts');
+    const instructions = await text('src/agent/instructions.ts');
+    const tools = await text('src/agent/meeting-tools.ts');
+    const expectedScopes = [
+      'contact:user:search',
+      'vc:meeting.search:read',
+      'vc:meeting:readonly',
+      'vc:meeting.artifact.note:read',
+      'vc:meeting.artifact.verbatim:read',
+      'vc:note:read',
+      'minutes:minutes.search:read',
+      'minutes:minutes.basic:read',
+      'minutes:minutes.transcript:export',
+    ];
+    for (const scope of expectedScopes) {
+      expect(auth).toContain(`'${scope}'`);
+      expect(readme).toContain(`\`${scope}\``);
+      expect(design).toContain(scope);
+    }
+    for (const toolName of ['searchMeetings', 'searchMeetingMinutes', 'fetchMeetingContent']) {
+      expect(readme).toContain(`\`${toolName}\``);
+      expect(tools).toContain(toolName);
+    }
+    expect(auth).toContain("'config', 'strict-mode', 'user'");
+    expect(commands).toContain("const USER_JSON_ARGS = ['--format', 'json', '--as', 'user'] as const;");
+    expect(commands).not.toMatch(/--as', 'bot'|--as", "bot/gu);
+    expect(instructions).toContain('prefer a readable Smart Meeting Note AI summary');
+    expect(readme).toContain('soft default rather than a hard cap');
+    expect(readme).toContain('Meeting content is never cached in Neon');
+    expect(readme).toContain('This does not provide Calendar');
+    expect(auth).not.toMatch(
+      /contact:contact|vc:meeting:(?:write|update)|minutes:(?:media|upload)|calendar|permission|:write/iu,
+    );
+    expect(commands).not.toMatch(/api\.raw|http\.request|shell\.exec/iu);
+    const migrations = (await import('node:fs/promises')).readdir('drizzle');
+    expect((await migrations).filter((name) => name.endsWith('.sql'))).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/meeting|minute/iu)]),
+    );
+  });
+
   it('keeps active product guidance on ordinary replies and Group Context', async () => {
     const readme = await text('README.md');
     const activeDesign = await text(

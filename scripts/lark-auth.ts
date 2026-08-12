@@ -20,6 +20,17 @@ export interface AuthCommandRunner {
 
 const URL_PATTERN = /https:\/\/[^\s"'<>]+/gu;
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+const MEETING_READ_SCOPES = Object.freeze([
+  'contact:user:search',
+  'vc:meeting.search:read',
+  'vc:meeting:readonly',
+  'vc:meeting.artifact.note:read',
+  'vc:meeting.artifact.verbatim:read',
+  'vc:note:read',
+  'minutes:minutes.search:read',
+  'minutes:minutes.basic:read',
+  'minutes:minutes.transcript:export',
+] as const);
 const STABLE_RUNNER_ERRORS = new Set([
   'lark_auth_spawn_failed',
   'lark_auth_output_limit',
@@ -163,7 +174,8 @@ export async function runLarkAuth(
   await stableCommandFailure(() => runner.runText(['config', 'strict-mode', 'user']));
 
   const login = await stableCommandFailure(() => runner.runJson([
-    'auth', 'login', '--domain', 'docs,drive,wiki', '--no-wait', '--json',
+    'auth', 'login', '--domain', 'docs,drive,wiki',
+    '--scope', MEETING_READ_SCOPES.join(','), '--no-wait', '--json',
   ]));
   const verificationUrl = findString(login, new Set([
     'verification_url', 'verification_uri_complete', 'verification_uri',

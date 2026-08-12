@@ -35,6 +35,12 @@ Feishu remains the source of truth for ordinary group history: Minori does not m
 
 The same existing app is also bound to Lark CLI; Minori never creates a second app. Its user OAuth capabilities must cover the Docs, Drive, and Wiki domains. The Dedicated Knowledge User's native Feishu content permissions are the content boundary: share only the intended spaces, folders, and documents with that account. Every delivered member, including an external collaborator, receives answers and operations from this same Dedicated Knowledge User's Knowledge Boundary—not permissions scoped to the requesting member. Minori does not add a second content allowlist or elevate that user's access.
 
+Minori can search completed **Feishu Meeting Records** and independent **Minutes**, then read their meeting-content artifacts under the same team-wide Knowledge Boundary. A Meeting Record is metadata and an association point, a **Smart Meeting Note** is a collaborative note attached to a meeting, and a **Minute** is a separate recording-derived artifact. Discovery results are not treated as evidence until Minori fetches content. Ordinary requests search the recent 30 days, splitting longer ranges into calendar-month windows, and begin with up to five relevant meetings as a soft default rather than a hard cap. Content defaults to a Smart Meeting Note AI summary, falls back to a Minute AI summary, and reads the original transcript only when no summary exists; an explicit request for a transcript, todos, chapters, Smart Meeting Note, or Minute is honored. Generated summaries and original transcripts are labeled distinctly.
+
+Member invocations and Scheduled Runs receive the same three run-scoped tools: `searchMeetings`, `searchMeetingMinutes`, and `fetchMeetingContent`. Their opaque references, cursors, fetched content, and temporary files exist only inside one Agent run. Meeting content is never cached in Neon; audit rows contain only counts, the allowlisted content kind, success, and a stable category such as `meeting_search_unavailable`, `meeting_content_unavailable`, or `meeting_artifact_unsafe`. Raw provider output is never copied into logs or incident records. The soft five default still sits inside the existing hard `AGENT_MAX_STEPS=40` and `AGENT_TIMEOUT_MS=300000` budgets. This does not provide Calendar, tenant-wide discovery, meeting writes, recording/media access, or requester-level permission filtering.
+
+Before enabling meeting evidence, publish an app version with these additive user read scopes, then rerun `npm run lark:auth` for the Dedicated Knowledge User: `contact:user:search`, `vc:meeting.search:read`, `vc:meeting:readonly`, `vc:meeting.artifact.note:read`, `vc:meeting.artifact.verbatim:read`, `vc:note:read`, `minutes:minutes.search:read`, `minutes:minutes.basic:read`, and `minutes:minutes.transcript:export`. Because all delivered members can receive content visible to that user, review the Dedicated Knowledge User's native access before publishing the scopes. Do not add Calendar, contact-directory export, meeting/media write, permission, sharing, or upload scopes.
+
 ## Local configuration
 
 ```bash
@@ -48,7 +54,7 @@ npm run lark:auth
 npm run runtime:verify
 ```
 
-The operator commands load `.env` when it exists; variables already supplied by the container or shell take precedence. `npm run lark:auth` validates both Lark directories, binds the existing app using its secret over stdin, and starts Docs/Drive/Wiki device authorization. The operator opens the verification URL shown only on that interactive terminal (`/dev/tty`) and authorizes the intended Dedicated Knowledge User. The URL never enters stdout, stderr, logs, or persistent files; the device code is never displayed; and the command fails closed if no operator TTY is available. After authorization it prints only a sanitized user-identity status. Both directories must already be writable by the operator.
+The operator commands load `.env` when it exists; variables already supplied by the container or shell take precedence. `npm run lark:auth` validates both Lark directories, binds the existing app using its secret over stdin, and starts Docs/Drive/Wiki device authorization with the explicit meeting read scopes above. The operator opens the verification URL shown only on that interactive terminal (`/dev/tty`) and authorizes the intended Dedicated Knowledge User. The URL never enters stdout, stderr, logs, or persistent files; the device code is never displayed; and the command fails closed if no operator TTY is available. After authorization it prints only a sanitized user-identity status. Both directories must already be writable by the operator.
 
 Required environment values:
 
@@ -153,6 +159,7 @@ Troubleshooting:
 - `database`: verify the Neon connection string, TLS, migrations, and host egress.
 - `model`: verify `OPENAI_API_KEY`, `AI_MODEL`, and that `OPENAI_BASE_URL` supports Responses plus structured tool calls.
 - `lark`: rerun `npm run lark:auth` with the persistent credential mount and verify the Dedicated Knowledge User still has access.
+- meeting evidence: use only the stable `meeting_contract_error`, `meeting_search_unavailable`, `meeting_content_unavailable`, `meeting_artifact_unsafe`, `meeting_participant_ambiguous`, and `meeting_participant_unresolved` categories; verify published scopes and the user's native access without copying provider responses.
 - `feishu`: verify app credentials, bot open ID, long connection, event subscription, bot availability, and app permissions.
 - `worker`: inspect redacted logs for stable error codes; do not copy raw secrets into tickets.
 - `scheduler`: verify the kill switch, schedule migrations, dispatcher status, and lease greater than the Agent timeout; scheduler degradation must not stop ordinary messages.

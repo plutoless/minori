@@ -42,6 +42,18 @@ afterEach(() => {
 });
 
 describe('runLarkAuth', () => {
+  const meetingScopes = [
+    'contact:user:search',
+    'vc:meeting.search:read',
+    'vc:meeting:readonly',
+    'vc:meeting.artifact.note:read',
+    'vc:meeting.artifact.verbatim:read',
+    'vc:note:read',
+    'minutes:minutes.search:read',
+    'minutes:minutes.basic:read',
+    'minutes:minutes.transcript:export',
+  ].join(',');
+
   it('hands the CLI 1.0.84 verification_url to the operator terminal and completes device auth', async () => {
     vi.mocked(openSync).mockReturnValue(18 as never);
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -123,7 +135,7 @@ describe('runLarkAuth', () => {
     expect(calls.map(({ args }) => args)).toEqual([
       ['config', 'init', '--app-id', 'cli_existing', '--app-secret-stdin', '--brand', 'feishu'],
       ['config', 'strict-mode', 'user'],
-      ['auth', 'login', '--domain', 'docs,drive,wiki', '--no-wait', '--json'],
+      ['auth', 'login', '--domain', 'docs,drive,wiki', '--scope', meetingScopes, '--no-wait', '--json'],
       ['auth', 'login', '--device-code', 'device-secret', '--json'],
       ['auth', 'status', '--json', '--verify'],
     ]);
@@ -134,6 +146,10 @@ describe('runLarkAuth', () => {
     ]);
     expect(JSON.stringify({ args: calls.map(({ args }) => args), printed })).not.toContain('secret-from-env');
     expect(JSON.stringify(printed)).not.toContain('device-secret');
+    const login = calls.find(({ args }) => args.includes('--no-wait'))?.args.join(' ') ?? '';
+    expect(login).not.toMatch(
+      /contact:contact|vc:meeting:(?:write|update)|minutes:(?:media|upload)|calendar|permission|:write/iu,
+    );
   });
 
   it.each([
