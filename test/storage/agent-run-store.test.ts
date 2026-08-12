@@ -284,6 +284,68 @@ describe('PostgresAgentRunStore', () => {
     });
   });
 
+  it('atomically stores the terminal outcome and failure detail', async () => {
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
+
+    await store.finish(run.id, {
+      toolCallCount: 2,
+      outcome: 'failed',
+      errorMessage: 'provider request failed',
+    });
+
+    const result = await database.pool.query<{
+      outcome: string;
+      errorMessage: string | null;
+    }>(`select outcome, error_message as "errorMessage" from agent_runs where id = $1`, [run.id]);
+    expect(result.rows).toEqual([{
+      outcome: 'failed',
+      errorMessage: 'provider request failed',
+    }]);
+  });
+
+  it('clears only expired failure details while retaining Agent Run audits', async () => {
+    await database.pool.query(`
+      insert into processed_events (
+        event_id, message_id, payload, conversation_key, status
+      ) values (
+        'evt_2', 'om_2',
+        '{"eventId":"evt_2","messageId":"om_2","chatId":"oc_2","conversationKey":"oc_2","senderOpenId":"ou_2","chatType":"p2p","content":{"kind":"text","text":"hello","feishuLinks":[]},"occurredAt":"2026-08-01T00:00:00.000Z"}'::jsonb,
+        'oc_2', 'processing'
+      )
+    `);
+    const expired = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: 'old' });
+    const retained = await store.start({ eventId: 'evt_2', claimAttempt: 0, model: 'new' });
+    await store.finish(expired.id, {
+      toolCallCount: 1, outcome: 'failed', errorMessage: 'old detail',
+    });
+    await store.finish(retained.id, {
+      toolCallCount: 1, outcome: 'failed', errorMessage: 'new detail',
+    });
+    await database.pool.query(
+      `update agent_runs
+       set finished_at = case when id = $1 then $3::timestamptz else $4::timestamptz end
+       where id in ($1, $2)`,
+      [
+        expired.id,
+        retained.id,
+        new Date('2026-07-01T00:00:00Z'),
+        new Date('2026-08-01T00:00:00Z'),
+      ],
+    );
+
+    await expect(store.purgeFailureDetails(new Date('2026-07-15T00:00:00Z'))).resolves.toBe(1);
+    const result = await database.pool.query<{
+      id: string;
+      outcome: string;
+      errorMessage: string | null;
+    }>(`select id, outcome, error_message as "errorMessage"
+        from agent_runs where id in ($1, $2)`, [expired.id, retained.id]);
+    expect(result.rows).toEqual(expect.arrayContaining([
+      { id: expired.id, outcome: 'failed', errorMessage: null },
+      { id: retained.id, outcome: 'failed', errorMessage: 'new detail' },
+    ]));
+  });
+
   it('uses the same replay fence and sanitized receipt for a Team Context mutation', async () => {
     const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     const write = await store.beginWrite(run.id, {

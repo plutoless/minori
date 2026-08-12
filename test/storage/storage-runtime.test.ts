@@ -47,6 +47,30 @@ describe('createStorageRuntime', () => {
     expect(await runtime.databaseStatus()).toBe('degraded');
   });
 
+  it('clears expired Agent Failure Details through startup retention', async () => {
+    await migrationDatabase.pool.query(`
+      insert into agent_runs (model, outcome, error_message, finished_at)
+      values ('retention-probe', 'failed', 'expired provider detail', '2000-01-01T00:00:00Z')
+    `);
+    const runtime = createStorageRuntime(loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: container.getConnectionUri(),
+      MESSAGE_RETENTION_DAYS: '14',
+    }), pino({ level: 'silent' }));
+
+    await runtime.start();
+
+    const retained = await migrationDatabase.pool.query<{
+      outcome: string;
+      errorMessage: string | null;
+    }>(`
+      select outcome, error_message as "errorMessage"
+      from agent_runs where model = 'retention-probe'
+    `);
+    expect(retained.rows).toEqual([{ outcome: 'failed', errorMessage: null }]);
+    await runtime.stop();
+  });
+
   it('is a healthy no-op when PostgreSQL is intentionally unconfigured', async () => {
     const runtime = createStorageRuntime(
       loadConfig({ NODE_ENV: 'test' }),

@@ -1,4 +1,4 @@
-import { asc, eq, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, lt, sql, type SQL } from 'drizzle-orm';
 import type { AgentRunOutcome, WriteAttemptReceipt } from '../agent/run-outcome.js';
 import type { PersistentWriteName } from '../agent/tools.js';
 import type { TeamContextLoad } from '../team-context/types.js';
@@ -32,7 +32,9 @@ export interface AgentRunStore {
     outputTokens?: number;
     toolCallCount: number;
     outcome: Exclude<AgentRunOutcome, 'running'>;
+    errorMessage?: string;
   }): Promise<void>;
+  purgeFailureDetails(before: Date): Promise<number>;
 }
 
 export class PostgresAgentRunStore implements AgentRunStore {
@@ -186,6 +188,7 @@ export class PostgresAgentRunStore implements AgentRunStore {
       outputTokens?: number;
       toolCallCount: number;
       outcome: Exclude<AgentRunOutcome, 'running'>;
+      errorMessage?: string;
     },
   ): Promise<void> {
     const [updated] = await this.db.update(agentRuns).set({
@@ -193,8 +196,19 @@ export class PostgresAgentRunStore implements AgentRunStore {
       outputTokens: input.outputTokens,
       toolCallCount: input.toolCallCount,
       outcome: input.outcome,
+      errorMessage: input.errorMessage ?? null,
       finishedAt: new Date(),
     }).where(eq(agentRuns.id, agentRunId)).returning({ id: agentRuns.id });
     if (!updated) throw new Error('agent_run_not_found');
+  }
+
+  async purgeFailureDetails(before: Date): Promise<number> {
+    const cleared = await this.db.update(agentRuns).set({
+      errorMessage: null,
+    }).where(and(
+      lt(agentRuns.finishedAt, before),
+      isNotNull(agentRuns.errorMessage),
+    )).returning({ id: agentRuns.id });
+    return cleared.length;
   }
 }

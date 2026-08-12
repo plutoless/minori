@@ -152,6 +152,12 @@ describe('open team Agent release contract', () => {
       ) returning progress_attempted_at as "attemptedAt", progress_message_id as "messageId"
     `);
     expect(legacyEvent.rows).toEqual([{ attemptedAt: null, messageId: null }]);
+
+    const failureDetail = await database.pool.query<{ errorMessage: string | null }>(`
+      select error_message as "errorMessage"
+      from agent_runs where model = 'rollback-probe'
+    `);
+    expect(failureDetail.rows).toEqual([{ errorMessage: null }]);
   });
 
   it('answers delivered external group and private messages with fixture-backed sources', async () => {

@@ -85,6 +85,13 @@
       "when": 1786445984242,
       "tag": "0011_progress_reply",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786513619228,
+      "tag": "0012_agent_failure_detail",
+      "breakpoints": true
     }
   ]
 }
