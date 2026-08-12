@@ -22,8 +22,8 @@ Minori will parse only the official VC search projection. It will not retain a c
 
 For each row:
 
-- a non-empty `id` is required and becomes the run-local Meeting Record identifier;
-- a non-empty `display_info` is required and becomes the bounded title;
+- a non-empty `id` is the only required row field and becomes the run-local Meeting Record identifier;
+- a non-empty `display_info` becomes the bounded title; an otherwise valid row without it uses the fixed title `未命名会议`;
 - a valid HTTP(S) `meta_data.app_link` is optional and becomes the candidate URL;
 - `meta_data.description` is provider-formatted display text, not a structured timestamp, so Minori will not infer a start or end time from it;
 - missing optional metadata does not invalidate an otherwise fetchable row.
@@ -42,7 +42,7 @@ This fix does not redesign transcript-source selection. When a member requests a
 
 Implementation is tested through these public seams:
 
-1. `MeetingService.searchMeetings` accepts a literal official CLI response and returns normalized Meeting candidates.
+1. `MeetingService.searchMeetings` accepts a literal official CLI response and returns normalized Meeting candidates, including an ID-only row with the fixed missing-title fallback.
 2. Mixed valid and malformed rows return partial completeness; an all-invalid non-empty page returns `meeting_contract_error` without retaining raw values.
 3. Optional `meta_data` fields do not make a fetchable row invalid, and display descriptions are not interpreted as structured time.
 4. Meeting search does not eagerly call `getMeetingDetails`; fetching selected meeting content still obtains authoritative detail on demand.
