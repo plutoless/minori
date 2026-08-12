@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { SourceRegistry } from '../../src/agent/sources.js';
 import { createKnowledgeTools } from '../../src/agent/tools.js';
 import { runKnowledgeAgent, type AgentReply } from '../../src/agent/run.js';
+import { createAgentInvocationRunner } from '../../src/agent/invocation-runner.js';
 import { budgetExhaustedText } from '../../src/agent/run-outcome.js';
 import type { NormalizedMessage } from '../../src/contracts/messages.js';
 import type { FeishuMessenger } from '../../src/feishu/client.js';
@@ -17,12 +18,16 @@ import { FeishuGateway } from '../../src/feishu/gateway.js';
 import type { GroupContextSource } from '../../src/feishu/group-context.js';
 import { normalizeMessageEvent } from '../../src/feishu/normalize-event.js';
 import { LarkKnowledgeService, type KnowledgeService } from '../../src/lark/knowledge-service.js';
+import { MeetingContentError } from '../../src/lark/errors.js';
+import type { MeetingService } from '../../src/lark/meeting-service.js';
 import { PostgresAgentRunStore } from '../../src/storage/agent-run-store.js';
+import type { AgentRunStore } from '../../src/storage/agent-run-store.js';
 import { PostgresConversationStore } from '../../src/storage/conversation-store.js';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
 import { PostgresEventStore } from '../../src/storage/event-store.js';
 import { agentRuns, processedEvents, toolRuns } from '../../src/storage/schema.js';
 import { MessageWorker } from '../../src/worker/message-worker.js';
+import type { ScheduledRun } from '../../src/schedule/types.js';
 
 const BOT_OPEN_ID = 'ou_minori';
 const noWriteAttempts = async () => [];
@@ -422,6 +427,163 @@ describe('open team Agent release contract', () => {
     expect(event?.writeStartedAt).toBeNull();
     await expect(runStore.listWriteAttempts(incoming.eventId)).resolves.toEqual([]);
     expect(operationalError).not.toHaveBeenCalled();
+  });
+
+  it('uses mixed meeting evidence through the real Agent and stores content-free audits', async () => {
+    const meeting: MeetingService = {
+      resolvePeople: vi.fn().mockResolvedValue([
+        { status: 'resolved', name: 'Alice', openId: 'ou_alice' },
+      ]),
+      searchMeetings: vi.fn().mockResolvedValue({
+        status: 'complete', rawCount: 1, validCount: 1, omittedCount: 0,
+        items: [{
+          kind: 'meeting', meetingId: 'm_private_1', title: 'Roadmap review',
+          start: '2026-06-01T09:00:00Z',
+        }],
+      }),
+      getMeetingDetails: vi.fn().mockResolvedValue([{
+        meetingId: 'm_private_1', title: 'Roadmap review', noteId: 'note_private_1',
+      }]),
+      searchMinutes: vi.fn().mockResolvedValue({
+        status: 'complete', rawCount: 2, validCount: 2, omittedCount: 0,
+        items: [
+          { kind: 'minute', minuteToken: 'minute_denied', title: 'Restricted recording' },
+          { kind: 'minute', minuteToken: 'minute_ok', title: 'Uploaded interview' },
+        ],
+      }),
+      fetchContent: vi.fn().mockImplementation(async (reference) => {
+        if (reference.kind === 'minute' && reference.minuteToken === 'minute_denied') {
+          throw new MeetingContentError('meeting_content_unavailable');
+        }
+        if (reference.kind === 'minute') {
+          return {
+            status: 'loaded' as const, kind: 'minute_ai_summary' as const,
+            title: 'Uploaded interview', url: 'https://acme.feishu.cn/minutes/minute-ok',
+            text: 'Customers need export controls.',
+          };
+        }
+        return {
+          status: 'loaded' as const, kind: 'smart_note_ai_summary' as const,
+          title: 'Roadmap review', meetingTime: '2026-06-01T09:00:00Z',
+          url: 'https://acme.feishu.cn/docx/note-private-1',
+          text: 'The roadmap review approved the rollout.',
+        };
+      }),
+    };
+    const model = new MockLanguageModelV4({ doGenerate: [
+      generated([{ type: 'tool-call', toolCallId: 'meeting_search', toolName: 'searchMeetings',
+        input: JSON.stringify({ participantNames: ['Alice'], range: {
+          kind: 'explicit', start: '2026-05-01T00:00:00Z', end: '2026-08-10T00:00:00Z',
+        } }) }], 'tool-calls'),
+      generated([{ type: 'tool-call', toolCallId: 'meeting_fetch', toolName: 'fetchMeetingContent',
+        input: JSON.stringify({ meetingRef: 'meeting_ref_1', contentKind: 'auto', artifactPreference: 'auto' }) }], 'tool-calls'),
+      generated([{ type: 'tool-call', toolCallId: 'minute_search', toolName: 'searchMeetingMinutes',
+        input: JSON.stringify({ query: 'interview', range: { kind: 'recent' } }) }], 'tool-calls'),
+      generated([{ type: 'tool-call', toolCallId: 'minute_denied', toolName: 'fetchMeetingContent',
+        input: JSON.stringify({ meetingRef: 'meeting_ref_2', contentKind: 'auto', artifactPreference: 'minute' }) }], 'tool-calls'),
+      generated([{ type: 'tool-call', toolCallId: 'minute_fetch', toolName: 'fetchMeetingContent',
+        input: JSON.stringify({ meetingRef: 'meeting_ref_3', contentKind: 'auto', artifactPreference: 'minute' }) }], 'tool-calls'),
+      generated([{ type: 'text', text: 'The rollout is approved and customers need export controls [1] [2].' }], 'stop'),
+    ] });
+    const runStore = new PostgresAgentRunStore(database.db);
+    const messenger = new FakeMessenger();
+    const worker = new MessageWorker({
+      eventStore: events, conversations, messenger,
+      loadWriteAttempts: (eventId) => runStore.listWriteAttempts(eventId),
+      logger: { warn: vi.fn(), info: vi.fn() },
+      runAgent: (message, claimAttempt, signal) => runKnowledgeAgent({
+        prompt: message.content.kind === 'text' ? message.content.text : '', history: [],
+        trigger: { kind: 'feishu_member', senderOpenId: message.senderOpenId,
+          chatId: message.chatId, chatType: message.chatType, occurredAt: message.occurredAt },
+      }, {
+        model, service: new LarkKnowledgeService({ run: vi.fn() }), meetingService: meeting,
+        eventId: message.eventId, claimAttempt, modelName: '5.6-terra', maxSteps: 40,
+        timeoutMs: 300_000, botOpenId: BOT_OPEN_ID, botAppId: 'cli_minori',
+        agentRunStore: runStore, onOperationalError: vi.fn(),
+        conversationKey: message.conversationKey, triggerMessageId: message.messageId,
+        conversationStore: conversations,
+      }, signal),
+    });
+    const incoming = normalizeMessageEvent(rawEvent({
+      event_id: 'evt_meeting_evidence',
+      message: { message_id: 'om_meeting_evidence', chat_id: 'oc_team', chat_type: 'group',
+        message_type: 'text', create_time: '1785888002500',
+        content: JSON.stringify({ text: '@_user_1 summarize meetings with Alice' }),
+        mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }] },
+    }), { botOpenId: BOT_OPEN_ID })!;
+    await events.enqueue(incoming);
+    const [claimed] = await events.claimReady(1, new Date(Date.now() + 60_000));
+    await worker.process(claimed!);
+
+    expect(messenger.replies[0]?.text).toContain('Sources:\n[1]');
+    expect(messenger.replies[0]?.text).toContain('[2]');
+    expect(messenger.replies).toHaveLength(1);
+    expect(messenger.replies[0]?.format).toBe('rich');
+    expect(messenger.reactions.size).toBe(0);
+    const [completedEvent] = await database.db.select().from(processedEvents)
+      .where(eq(processedEvents.eventId, 'evt_meeting_evidence'));
+    expect(completedEvent).toMatchObject({ status: 'completed', attempts: 1 });
+    expect(meeting.searchMeetings).toHaveBeenCalledTimes(4);
+    const [run] = await database.db.select().from(agentRuns)
+      .where(eq(agentRuns.eventId, 'evt_meeting_evidence'));
+    const audits = await database.db.select().from(toolRuns)
+      .where(eq(toolRuns.agentRunId, run!.id));
+    expect(audits).toHaveLength(5);
+    expect(JSON.stringify(audits)).not.toMatch(
+      /Roadmap review|Uploaded interview|Restricted recording|ou_alice|minute_ok|approved the rollout/iu,
+    );
+  });
+
+  it('exposes the same meeting discovery boundary to a Scheduled Run', async () => {
+    const meeting: MeetingService = {
+      resolvePeople: vi.fn().mockResolvedValue([]),
+      searchMeetings: vi.fn().mockResolvedValue({
+        status: 'complete', items: [], rawCount: 0, validCount: 0, omittedCount: 0,
+      }),
+      getMeetingDetails: vi.fn().mockResolvedValue([]),
+      searchMinutes: vi.fn().mockResolvedValue({
+        status: 'complete', rawCount: 1, validCount: 1, omittedCount: 0,
+        items: [{ kind: 'minute', minuteToken: 'minute_scheduled', title: 'Weekly recording' }],
+      }),
+      fetchContent: vi.fn(),
+    };
+    const model = new MockLanguageModelV4({ doGenerate: [
+      generated([{ type: 'tool-call', toolCallId: 'scheduled_meetings',
+        toolName: 'searchMeetings',
+        input: JSON.stringify({ query: 'weekly', range: { kind: 'recent' } }) }], 'tool-calls'),
+      generated([{ type: 'text', text: 'Found the scheduled meeting evidence.' }], 'stop'),
+    ] });
+    const store: AgentRunStore = {
+      start: vi.fn().mockResolvedValue({ id: 'agent_scheduled' }),
+      beginWrite: vi.fn(), finishWrite: vi.fn().mockResolvedValue(undefined),
+      recordKnowledgeSearch: vi.fn().mockResolvedValue(undefined),
+      recordMeetingRead: vi.fn().mockResolvedValue(undefined),
+      listWriteAttempts: vi.fn().mockResolvedValue([]),
+      listScheduledWriteAttempts: vi.fn().mockResolvedValue([]),
+      recordGroupHistory: vi.fn().mockResolvedValue(undefined),
+      recordTeamContext: vi.fn().mockResolvedValue(undefined),
+      finish: vi.fn().mockResolvedValue(undefined), purgeFailureDetails: vi.fn().mockResolvedValue(0),
+    };
+    const scheduled: ScheduledRun = {
+      id: 'scheduled_run_1', scheduleId: 'schedule_1', taskVersion: 1,
+      instruction: 'Check the latest weekly meeting evidence',
+      scheduledFor: new Date('2026-08-12T08:00:00Z'),
+      resultTarget: { chatId: 'oc_target', displayName: 'Target', chatType: 'group' },
+      status: 'processing', claimAttempt: 1,
+      createdAt: new Date('2026-08-12T08:00:00Z'),
+      updatedAt: new Date('2026-08-12T08:00:00Z'),
+    };
+
+    await expect(createAgentInvocationRunner().runScheduled(scheduled, {
+      model, service: new LarkKnowledgeService({ run: vi.fn() }), meetingService: meeting,
+      modelName: '5.6-terra', maxSteps: 40, timeoutMs: 300_000,
+      botOpenId: BOT_OPEN_ID, botAppId: 'cli_minori', agentRunStore: store,
+      onOperationalError: vi.fn(),
+    })).resolves.toMatchObject({ text: 'Found the scheduled meeting evidence.' });
+    expect(meeting.searchMeetings).toHaveBeenCalledOnce();
+    expect(model.doGenerateCalls[0]?.tools?.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(['searchMeetings', 'searchMeetingMinutes', 'fetchMeetingContent']),
+    );
   });
 
   it('uses transient paginated Group Context while persisting only invocations and replies', async () => {
@@ -850,9 +1012,9 @@ describe('open team Agent release contract', () => {
     expect(model.doGenerateCalls).toHaveLength(5);
     const toolNames = model.doGenerateCalls[0]?.tools?.map((tool) => tool.name) ?? [];
     expect(toolNames.sort()).toEqual([
-      'appendDocument', 'createDocument', 'fetchDocument', 'getKnowledgeNode',
-      'listKnowledgeNodes', 'listKnowledgeSpaces', 'patchDocument',
-      'searchConversationHistory', 'searchKnowledge',
+      'appendDocument', 'createDocument', 'fetchDocument', 'fetchMeetingContent',
+      'getKnowledgeNode', 'listKnowledgeNodes', 'listKnowledgeSpaces', 'patchDocument',
+      'searchConversationHistory', 'searchKnowledge', 'searchMeetingMinutes', 'searchMeetings',
     ]);
     expect(toolNames.join(' ')).not.toMatch(
       /delete|move|overwrite|permission|sharing|raw|shell|http|filesystem/iu,

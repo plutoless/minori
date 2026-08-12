@@ -3,6 +3,7 @@ import { MockLanguageModelV4 } from 'ai/test';
 import { describe, expect, it, vi } from 'vitest';
 import { KnowledgeWriteConflict } from '../../src/lark/errors.js';
 import type { KnowledgeService } from '../../src/lark/knowledge-service.js';
+import type { MeetingService } from '../../src/lark/meeting-service.js';
 import {
   runKnowledgeAgent,
   type AgentRunInput,
@@ -58,6 +59,29 @@ function service(): KnowledgeService {
     patchDocument: vi.fn().mockResolvedValue({
       operation: 'patch', token: 'doxcnLaunch', title: 'Launch plan',
       url: 'https://acme.feishu.cn/docx/launch', revisionId: 2,
+    }),
+  };
+}
+
+function meetingService(): MeetingService {
+  return {
+    resolvePeople: vi.fn().mockResolvedValue([]),
+    searchMeetings: vi.fn().mockResolvedValue({
+      status: 'complete',
+      items: [{
+        kind: 'meeting', meetingId: 'm_1', title: 'DevX weekly',
+        start: '2026-08-11T09:00:00Z',
+      }],
+      rawCount: 1, validCount: 1, omittedCount: 0,
+    }),
+    getMeetingDetails: vi.fn().mockResolvedValue([]),
+    searchMinutes: vi.fn().mockResolvedValue({
+      status: 'complete', items: [], rawCount: 0, validCount: 0, omittedCount: 0,
+    }),
+    fetchContent: vi.fn().mockResolvedValue({
+      status: 'loaded', kind: 'smart_note_ai_summary', title: 'DevX weekly',
+      meetingTime: '2026-08-11T09:00:00Z',
+      url: 'https://acme.feishu.cn/docx/devx-weekly', text: 'Decision: ship Friday.',
     }),
   };
 }
@@ -148,6 +172,7 @@ function agentRunStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
     beginWrite: vi.fn().mockResolvedValue({ id: 'write_1' }),
     finishWrite: vi.fn().mockResolvedValue(undefined),
     recordKnowledgeSearch: vi.fn().mockResolvedValue(undefined),
+    recordMeetingRead: vi.fn().mockResolvedValue(undefined),
     listWriteAttempts: vi.fn().mockResolvedValue([]),
     recordGroupHistory: vi.fn().mockResolvedValue(undefined),
     recordTeamContext: vi.fn().mockResolvedValue(undefined),
@@ -165,6 +190,7 @@ function dependencies(
   return {
     model,
     service: service(),
+    meetingService: meetingService(),
     conversationKey: 'oc_team',
     triggerMessageId: 'om_trigger',
     conversationStore: conversationStore(prompt),
@@ -182,6 +208,72 @@ function dependencies(
 }
 
 describe('runKnowledgeAgent', () => {
+  it('lets the open Agent fetch current meeting evidence and returns its authentic source', async () => {
+    const meetings = meetingService();
+    const doGenerate = vi.fn()
+      .mockResolvedValueOnce(generated([{
+        type: 'tool-call', toolCallId: 'call_meetings', toolName: 'searchMeetings',
+        input: JSON.stringify({ range: { kind: 'recent' } }),
+      }], 'tool-calls'))
+      .mockResolvedValueOnce(generated([{
+        type: 'tool-call', toolCallId: 'call_content', toolName: 'fetchMeetingContent',
+        input: JSON.stringify({
+          meetingRef: 'meeting_ref_1', contentKind: 'auto', artifactPreference: 'auto',
+        }),
+      }], 'tool-calls'))
+      .mockResolvedValueOnce(generated([{
+        type: 'text', text: 'The team decided to ship Friday [1].',
+      }], 'stop'));
+    const model = new MockLanguageModelV4({ doGenerate });
+    const store = agentRunStore();
+
+    const reply = await runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      meetingService: meetings,
+      agentRunStore: store,
+    }));
+
+    expect(reply).toMatchObject({
+      text: 'The team decided to ship Friday [1].',
+      sources: [{
+        id: 1,
+        title: '[Smart Meeting Note AI summary] DevX weekly — 2026-08-11T09:00:00Z',
+        url: 'https://acme.feishu.cn/docx/devx-weekly',
+      }],
+      outcome: 'completed',
+    });
+    expect(model.doGenerateCalls[0]?.tools?.map(({ name }) => name)).toEqual(
+      expect.arrayContaining([
+        'searchMeetings', 'searchMeetingMinutes', 'fetchMeetingContent',
+      ]),
+    );
+    await vi.waitFor(() => expect(store.recordMeetingRead).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not delay or replace meeting results when their audit is unavailable', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_meetings', toolName: 'searchMeetings',
+          input: JSON.stringify({ range: { kind: 'recent' } }),
+        }], 'tool-calls'),
+        generated([{ type: 'text', text: 'I found the recent meeting.' }], 'stop'),
+      ],
+    });
+    const audit = agentRunStore({
+      recordMeetingRead: vi.fn().mockRejectedValue(new Error('postgres://secret-host')),
+    });
+    const onOperationalError = vi.fn();
+
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      agentRunStore: audit,
+      onOperationalError,
+    }))).resolves.toMatchObject({
+      text: 'I found the recent meeting.',
+      outcome: 'completed',
+    });
+    await vi.waitFor(() => expect(onOperationalError).toHaveBeenCalledOnce());
+    expect(onOperationalError).toHaveBeenCalledWith('meeting_audit_unavailable');
+  });
   it('loads Team Context independently and places it before retained private context', async () => {
     const model = new MockLanguageModelV4({
       doGenerate: generated([{ type: 'text', text: 'Private answer.' }], 'stop'),

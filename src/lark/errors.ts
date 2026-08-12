@@ -62,6 +62,37 @@ export class KnowledgeSearchContractError extends Error {
   }
 }
 
+export class MeetingContractError extends Error {
+  readonly code = 'meeting_contract_error' as const;
+
+  constructor(readonly completeness: {
+    rawCount: number;
+    validCount: number;
+    omittedCount: number;
+  }) {
+    super('meeting_contract_error');
+    this.name = 'MeetingContractError';
+  }
+}
+
+export class MeetingArtifactError extends Error {
+  readonly code = 'meeting_artifact_unsafe' as const;
+
+  constructor() {
+    super('meeting_artifact_unsafe');
+    this.name = 'MeetingArtifactError';
+  }
+}
+
+export class MeetingContentError extends Error {
+  constructor(
+    readonly code: 'meeting_content_unavailable' | 'meeting_transcript_unavailable',
+  ) {
+    super(code);
+    this.name = 'MeetingContentError';
+  }
+}
+
 export class KnowledgeWriteConflict extends Error {
   readonly code = 'knowledge_write_conflict' as const;
 

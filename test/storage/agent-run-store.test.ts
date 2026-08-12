@@ -143,6 +143,49 @@ describe('PostgresAgentRunStore', () => {
     );
   });
 
+  it('records only bounded meeting read outcomes without crossing the write boundary', async () => {
+    const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
+
+    await store.recordMeetingRead(run.id, {
+      toolName: 'searchMeetings', success: true,
+      rawCount: 8, validCount: 6, omittedCount: 2,
+    });
+    await store.recordMeetingRead(run.id, {
+      toolName: 'fetchMeetingContent', success: true,
+      fetchedCount: 1, contentKind: 'smart_note_ai_summary',
+    });
+    await store.recordMeetingRead(run.id, {
+      toolName: 'fetchMeetingContent', success: false,
+      fetchedCount: 0, errorCategory: 'meeting_content_unavailable',
+    });
+
+    const rows = await database.db.select().from(toolRuns)
+      .where(eq(toolRuns.agentRunId, run.id));
+    expect(rows).toEqual([
+      expect.objectContaining({
+        toolName: 'searchMeetings', success: true, errorCategory: null,
+        sanitizedSummary: 'raw=8 valid=6 omitted=2',
+        targetIdentifiers: null, resultIdentifiers: null,
+      }),
+      expect.objectContaining({
+        toolName: 'fetchMeetingContent', success: true, errorCategory: null,
+        sanitizedSummary: 'fetched=1 kind=smart_note_ai_summary',
+        targetIdentifiers: null, resultIdentifiers: null,
+      }),
+      expect.objectContaining({
+        toolName: 'fetchMeetingContent', success: false,
+        errorCategory: 'meeting_content_unavailable', sanitizedSummary: 'fetched=0',
+        targetIdentifiers: null, resultIdentifiers: null,
+      }),
+    ]);
+    const [event] = await database.db.select().from(processedEvents)
+      .where(eq(processedEvents.eventId, 'evt_1'));
+    expect(event?.writeStartedAt).toBeNull();
+    expect(JSON.stringify(rows)).not.toMatch(
+      /meeting title|search query|https?:|open[_ ]?id|provider token|transcript body|local path|oauth/iu,
+    );
+  });
+
   it('persists a completed write audit without document or credential content', async () => {
     const run = await store.start({ eventId: 'evt_1', claimAttempt: 0, model: '5.6-terra' });
     const write = await store.beginWrite(run.id, {

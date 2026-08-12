@@ -25,7 +25,7 @@ The persistent, operator-protected directory containing Lark CLI configuration, 
 _Avoid_: Public config, secretless cache, knowledge database
 
 **Knowledge Boundary**:
-The complete set of Feishu content currently accessible to the Dedicated Knowledge User and therefore publishable through Minori to every Feishu Delivered Member. Minori does not maintain a second application-level allowlist or re-filter results using the requesting member's own document permissions.
+The complete set of Feishu content currently accessible to the Dedicated Knowledge User, including cloud documents, Wiki content, and Minutes, and therefore publishable through Minori to every Feishu Delivered Member. Minori does not maintain a second application-level allowlist or re-filter results using the requesting member's own content permissions.
 _Avoid_: Requester permission boundary, allowed-space list, configured knowledge scope
 
 **Typed Knowledge Write**:
@@ -55,6 +55,18 @@ _Avoid_: Permanent document cache, current Feishu revision, retrieved-content mi
 **Document Continuation Cursor**:
 An opaque, Agent-Run-local reference to a page in one Document Read Snapshot, bound to the exact document, read mode, and query that produced it. A matching cursor may be reused during that run; an unknown or mismatched cursor recovers by starting the current request from its first page. It is never a Feishu provider cursor or durable conversation state.
 _Avoid_: Feishu page token, cross-run cursor, document revision, authorization token
+
+**Feishu Meeting Record**:
+The metadata for one completed Feishu video meeting and the stable association point for its independently produced meeting-content artifacts. It identifies when and with whom a meeting occurred but is not itself a transcript, Smart Meeting Note, Minute, or calendar event.
+_Avoid_: Calendar event, meeting transcript, Minute, meeting content
+
+**Smart Meeting Note**:
+The AI-summary meeting artifact produced when a Feishu meeting uses AI Summary, including a summary document and an original transcript that may be a document or a unified Note transcript. It is independent of meeting recording and is Minori's preferred meeting-content source when the member does not request a specific artifact.
+_Avoid_: Minute, user-authored meeting note, VC meeting record, calendar event
+
+**Minute**:
+The recording-derived Feishu artifact produced from a recorded meeting or uploaded media, with its own transcript and optional summary, todos, and chapters. It is independent of Smart Meeting Note production and may require separate content permission even for a meeting participant.
+_Avoid_: Smart Meeting Note, VC meeting record, calendar event, every meeting transcript
 
 **Write Replay Boundary**:
 The moment the first Persistent Agent Write begins in an Agent run. Before this boundary, a transient model or read-only-tool failure may safely retry a message run under its existing policy; after it, Minori never automatically replays the whole run, even when the write outcome is unknown. Scheduled Runs never receive a business retry on either side of the boundary. Idempotent retry of reply transport is separate from Agent-run replay.

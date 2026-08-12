@@ -1,0 +1,10 @@
+{
+  "minutes": [
+    {
+      "minute_token": "obc_1",
+      "title": "DevX weekly recording",
+      "note_id": "note_1",
+      "artifacts": { "summary": "Minute AI summary" }
+    }
+  ]
+}

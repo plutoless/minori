@@ -4,6 +4,7 @@ import {
 } from 'ai';
 import { KnowledgeWriteConflict } from '../lark/errors.js';
 import type { KnowledgeService, KnowledgeWriteResult } from '../lark/knowledge-service.js';
+import type { MeetingService } from '../lark/meeting-service.js';
 import type {
   GroupContextSource,
   GroupHistoryAudit,
@@ -25,6 +26,7 @@ import {
 } from './run-outcome.js';
 import { SourceRegistry, type AgentSource } from './sources.js';
 import { agentFailureDetail } from './failure-detail.js';
+import { createMeetingTools, type MeetingReadAudit } from './meeting-tools.js';
 import {
   createKnowledgeTools,
   type KnowledgeSearchAudit,
@@ -68,10 +70,12 @@ export interface KnowledgeAgent {
 export type TeamAgentDependencies = {
   model: LanguageModel;
   service: KnowledgeService;
+  meetingService: MeetingService;
   history: ScopedHistoryReader;
   sources: SourceRegistry;
   writeAudit: PersistentWriteAudit;
   searchAudit: KnowledgeSearchAudit;
+  meetingAudit: MeetingReadAudit;
   groupHistory?: GroupHistoryToolContext;
   teamContext?: TeamContextToolContext;
   schedules?: ScheduleToolContext;
@@ -98,16 +102,23 @@ function createTeamAgentWithBudget(
     id: 'minori-team-agent',
     model: dependencies.model,
     instructions: TEAM_AGENT_INSTRUCTIONS,
-    tools: createKnowledgeTools(
-      dependencies.service,
-      dependencies.history,
-      dependencies.sources,
-      dependencies.writeAudit,
-      dependencies.groupHistory,
-      dependencies.teamContext,
-      dependencies.schedules,
-      dependencies.searchAudit,
-    ),
+    tools: {
+      ...createKnowledgeTools(
+        dependencies.service,
+        dependencies.history,
+        dependencies.sources,
+        dependencies.writeAudit,
+        dependencies.groupHistory,
+        dependencies.teamContext,
+        dependencies.schedules,
+        dependencies.searchAudit,
+      ),
+      ...createMeetingTools(
+        dependencies.meetingService,
+        dependencies.sources,
+        dependencies.meetingAudit,
+      ),
+    },
     stopWhen: budget.stopWhen,
     providerOptions: { openai: { store: false } },
   });
@@ -117,7 +128,10 @@ export function createTeamAgent(dependencies: TeamAgentDependencies, maxSteps: n
   return createTeamAgentWithBudget(dependencies, createStepBudget(maxSteps));
 }
 
-export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' | 'service'> & {
+export type RunKnowledgeAgentDependencies = Pick<
+  TeamAgentDependencies,
+  'model' | 'service' | 'meetingService'
+> & {
   eventId: string;
   claimAttempt: number;
   modelName: string;
@@ -136,7 +150,9 @@ export type RunKnowledgeAgentDependencies = Pick<TeamAgentDependencies, 'model' 
     | { kind: 'message'; eventId: string; claimAttempt: number }
     | { kind: 'scheduled'; scheduledRunId: string; claimAttempt: number };
   contextTokenTarget?: number;
-  onOperationalError(category: 'search_audit_unavailable'): void;
+  onOperationalError(
+    category: 'search_audit_unavailable' | 'meeting_audit_unavailable'
+  ): void;
 };
 
 const WRITE_AUDIT_UNAVAILABLE = 'write_audit_unavailable';
@@ -414,6 +430,17 @@ export async function runKnowledgeAgent(
       });
     },
   };
+  const meetingAudit: MeetingReadAudit = {
+    record(audit) {
+      void dependencies.agentRunStore.recordMeetingRead(run.id, audit).catch(() => {
+        try {
+          dependencies.onOperationalError('meeting_audit_unavailable');
+        } catch {
+          // Operational reporting must not affect the meeting result.
+        }
+      });
+    },
+  };
 
   try {
     const storedHistory = await withAbort(
@@ -510,6 +537,7 @@ export async function runKnowledgeAgent(
     const agent = createTeamAgentWithBudget({
       model: dependencies.model,
       service: dependencies.service,
+      meetingService: dependencies.meetingService,
       sources,
       writeAudit: createWriteAudit(
         dependencies.agentRunStore,
@@ -519,6 +547,7 @@ export async function runKnowledgeAgent(
         replayBoundary,
       ),
       searchAudit,
+      meetingAudit,
       history: {
         search: (query, limit) => dependencies.conversationStore.search(
           dependencies.conversationKey,

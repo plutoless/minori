@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "minute_token": "obc_2",
+      "title": "Uploaded customer interview",
+      "create_time": "2026-08-09T08:00:00Z",
+      "url": "https://example.feishu.cn/minutes/obc_2"
+    },
+    { "title": "Malformed sibling" }
+  ],
+  "has_more": false
+}
