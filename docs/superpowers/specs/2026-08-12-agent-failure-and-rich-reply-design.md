@@ -11,7 +11,7 @@ normal Agent replies as Feishu `text` messages, so Markdown syntax is displayed
 literally.
 
 This change adds the smallest useful failure detail and renders ordinary replies
-through the Markdown support already provided by `lark-cli`.
+through Feishu's rich-text `post` message with an `md` element.
 
 ## 2. Scope
 
@@ -24,15 +24,21 @@ The change has two independent behaviors:
 It does not redesign the Agent prompt, conversation history, Team Context,
 retry policy, progress messages, cards, or the knowledge tools.
 
+In particular, this change does not promise shorter answers or prevent the model
+from restating irrelevant context. Prompt and Context architecture are a
+separate follow-up so rich rendering and failure diagnostics can be evaluated
+without a simultaneous model-behavior change.
+
 ## 3. Agent failure detail
 
 Add one nullable, additive `agent_runs.error_message` text column.
 
-When an Agent Run finishes unsuccessfully, the run finalizer stores the caught
-`Error.message`, truncated to 2,000 Unicode code points. A non-`Error` rejection
-is converted to a stable short string without serializing the rejected object.
-Successful, budget-limited, cancelled, and otherwise deliberately terminal
-runs leave `error_message` null unless they are reached through a caught failure.
+When an Agent Run catches an exception that contributes to its terminal result,
+the run finalizer stores the caught `Error.message`, truncated to 2,000 Unicode
+code points. A non-`Error` rejection is converted to a stable short string
+without serializing the rejected object. This includes caught failures that end
+as `failed`, `timeout_reached`, `aborted`, or `interrupted_after_write`. Natural
+completion and natural step-limit exhaustion leave `error_message` null.
 
 Each retry already creates a separate Agent Run, so no new attempt table or
 error-category model is introduced. Operators can inspect each failed attempt's
@@ -44,77 +50,91 @@ The database may therefore contain provider-supplied diagnostic text and remains
 restricted production data. API keys, OAuth tokens, prompts, and tool results
 must not be deliberately concatenated into this field by Minori.
 
+The existing daily retention pass clears `error_message` after 30 days while
+preserving the Agent Run's structural audit fields. The diagnostic text is not
+permanent audit data.
+
 The migration is nullable and additive so the supported previous image can
 continue to insert and update Agent Runs during rollback.
 
 ## 4. Markdown replies
 
-The Agent continues to produce Markdown. Minori does not implement its own
-Markdown parser. Instead it uses the installed `lark-cli` message shortcuts:
+The Agent continues to produce Markdown. Minori does not implement a general
+Markdown parser. The existing bot SDK wraps the bounded reply in a Feishu
+`post` payload containing one `md` element. Feishu renders supported headings,
+lists, emphasis, links, code, and the appended Sources section instead of
+displaying their Markdown markers literally.
 
-- `im +messages-reply --markdown` for ordinary member-triggered replies; and
-- `im +messages-send --markdown` for Scheduled Task delivery.
+Feishu's `md` element is a Markdown subset, not a full CommonMark or GFM
+implementation. Unsupported structures such as complex tables, embedded HTML,
+and footnotes are passed through for best-effort rendering. Minori does not
+implement a compatibility converter or downgrade the entire reply because one
+construct is unsupported.
 
-Both commands use bot identity, preserve the existing ordinary non-topic reply
-behavior, and receive the existing idempotency key. The CLI converts Markdown
-to Feishu `post` content and performs style optimization. Headings, lists,
-emphasis, links, code, tables, and the appended Sources section therefore render
-as rich content rather than visible Markdown markers.
+Before building the `post`, the messaging adapter neutralizes Markdown image
+syntax into an ordinary labeled link. Rich Content Replies never download or
+upload an image URL originating from Agent output. Actual image delivery remains
+a separate, explicit media operation outside this change.
 
 The existing SDK remains responsible for Typing reactions, message inspection,
-group-history reads, and the short plain-text progress reply. Fixed failure and
-budget messages may continue through the same completed-reply Markdown path;
-plain text is valid Markdown and renders normally.
+group-history reads, and Control Replies. Control Replies are the short
+plain-text progress message, fixed Agent failure message, and delivery-failure
+notice; they do not depend on Feishu rich-content rendering.
 
-If the Markdown CLI path fails, Minori retries the send once through the existing
-SDK `text` method using the same idempotency key. This is a rendering fallback,
-not an Agent rerun. If neither path yields a confirmed message ID, the existing
-Uncertain Reply or Scheduled Delivery behavior remains authoritative; Minori
-does not invent a successful delivery.
+Normal Agent answers, authenticated Sources, Scheduled Task results, and
+budget/interruption receipts that contain operation status or links are Rich
+Content Replies and use the SDK `post` path. The same Bot Authority, ordinary
+non-topic reply behavior, idempotency key, response validation, and uncertain
+delivery rules already used by SDK text messages remain in force.
 
-The Lark message executor uses the existing trusted CLI binary, config/data
-directories, bounded child environment, output limit, timeout, JSON envelope
-validation, and stable errors. Message bodies and raw CLI output are not logged.
+Lark CLI remains strict-user-only and is not a messaging dependency. Its
+Delegated Knowledge Authority does not gain Bot Authority.
 
 ## 5. Interfaces and wiring
 
 The messaging boundary exposes semantic operations rather than format-specific
 implementation details:
 
-- reply to one message with completed Markdown;
-- send completed Markdown to one chat; and
-- send the existing short plain-text progress reply.
+- reply to one message with Rich Content;
+- send Rich Content to one chat; and
+- send a Control Reply as plain text.
 
 The worker formats the final Agent text and authenticated Sources exactly once,
 then passes that Markdown to the completed-reply operation. Scheduled delivery
-does the same with its frozen prepared result. The messaging adapter owns CLI
-conversion, bot identity, idempotency, and the SDK text fallback.
+does the same with its frozen prepared result. The messaging adapter owns the
+`post` envelope, Bot Authority, idempotency, and SDK response validation.
 
 ## 6. Error handling
 
-- Failure-message persistence is best effort only within the existing bounded
-  Agent Run finalization. A database failure must not replace the original
-  member-facing failure behavior or expose the error message.
-- Markdown conversion or delivery never causes the Agent to run again.
-- The same idempotency key is reused across Markdown and text delivery attempts.
+- Failure-message persistence shares the existing bounded, fail-closed Agent
+  Run finalization. Outcome and `error_message` are written atomically in the
+  same update; this change adds no second audit write or weaker failure mode.
+- Rich-content rendering or delivery never causes the Agent to run again.
 - A confirmed message ID is required before a delivery is treated as sent.
-- Progress replies remain short plain text and are unaffected.
+- An ambiguous Rich Content Reply never triggers a plain-text delivery attempt.
+- Progress and fixed failure notifications remain Control Replies through the
+  SDK plain-text path.
 
 ## 7. Verification
 
 Focused tests must prove:
 
 - each failed retry stores its own truncated error message;
+- caught timeout, cancellation, and post-write interruption retain their error
+  message, while natural step exhaustion does not invent one;
 - successful runs retain a null error message;
+- error messages are cleared after 30 days without deleting the Agent Run;
 - the additive migration preserves previous-image inserts;
-- ordinary replies invoke `lark-cli` as bot with `--markdown`, no topic reply,
+- ordinary replies send SDK `post` content with one `md` element, no topic reply,
   and the exact idempotency key;
-- Scheduled Task results use Markdown send with the exact target chat;
+- Scheduled Task results use SDK rich-content send with the exact target chat;
 - authenticated Sources remain clickable after conversion;
-- Markdown failure falls back once to SDK text with the same key;
-- dual failure retains existing uncertain-delivery behavior;
-- progress replies remain SDK plain text; and
-- no message body, raw CLI response, credential, or OAuth value enters logs.
+- Markdown images become ordinary links and cause no image fetch or upload;
+- an ambiguous rich-content completion does not fall back to text and retains
+  the existing uncertain-delivery behavior;
+- progress and fixed failure replies remain SDK plain text; and
+- Lark CLI remains strict-user-only and is never invoked for messaging; and
+- no message body, raw SDK response, credential, or OAuth value enters logs.
 
 The full unit, PostgreSQL integration, release-contract, typecheck, build, and
 existing message/schedule acceptance gates remain required before release.
