@@ -24,6 +24,7 @@ export type StorageRuntime = {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
+const AGENT_FAILURE_RETENTION_DAYS = 30;
 
 export function createStorageRuntime(config: AppConfig, logger: Logger): StorageRuntime {
   if (!config.databaseUrl) {
@@ -45,7 +46,11 @@ export function createStorageRuntime(config: AppConfig, logger: Logger): Storage
   const retention: RetentionService = createRetentionService({
     async purgeExpired(before) {
       const messages = await conversationStore.purgeExpired(before);
-      const agentFailures = await agentRunStore.purgeFailureDetails(before);
+      const agentFailureCutoff = new Date(
+        before.getTime()
+          + (config.messageRetentionDays - AGENT_FAILURE_RETENTION_DAYS) * DAY_MS,
+      );
+      const agentFailures = await agentRunStore.purgeFailureDetails(agentFailureCutoff);
       const schedules = await scheduleStore.purgeTerminalBodies(new Date());
       return messages + agentFailures + schedules;
     },
