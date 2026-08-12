@@ -55,6 +55,10 @@ mark the Write Replay Boundary. No schema migration is required. The audit uses:
 - `sanitized_summary = raw=<n> valid=<n> omitted=<n>`;
 - the timestamps already present on `tool_runs`.
 
+This row records completed response-normalization outcomes. Failures before a
+result envelope exists, such as CLI transport failures, retain their existing
+sanitized runner diagnostics and do not invent zero result counts.
+
 It must not persist the search query, result titles, URLs, tokens, document bodies,
 Open IDs, or raw provider errors. A partially valid search is successful and
 records its omission count. A completely invalid non-empty response fails with
