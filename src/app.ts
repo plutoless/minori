@@ -6,6 +6,7 @@ import { createAgentInvocationRunner } from './agent/invocation-runner.js';
 import { createOfficialFeishuRuntime } from './feishu/client.js';
 import { createOfficialLongConnection, FeishuGateway } from './feishu/gateway.js';
 import { LarkKnowledgeService } from './lark/knowledge-service.js';
+import { LarkMeetingService } from './lark/meeting-service.js';
 import { LarkRunner } from './lark/runner.js';
 import type { AppConfig } from './runtime/config.js';
 import { buildHealthServer, type ComponentStatus, type HealthProbes } from './runtime/health.js';
@@ -119,6 +120,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
       aiModel: config.aiModel,
     });
     const service = new LarkKnowledgeService(lark);
+    const meetingService = new LarkMeetingService(lark, service);
     let teamContextSource: TeamContextSource | undefined;
     if (config.teamContextDocumentToken && storage.teamContextStore) {
       const source = new DefaultTeamContextSource({
@@ -144,7 +146,9 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
     }, logger);
     const { messenger } = feishu;
     const calendar = createCalendarCalculator();
-    const onAgentOperationalError = (errorCode: 'search_audit_unavailable') => {
+    const onAgentOperationalError = (
+      errorCode: 'search_audit_unavailable' | 'meeting_audit_unavailable',
+    ) => {
       logger.warn({ errorCode }, 'agent operational audit unavailable');
     };
     const nextWorker = new MessageWorker({
@@ -168,6 +172,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
         }, {
           model,
           service,
+          meetingService,
           eventId: message.eventId,
           claimAttempt,
           modelName: config.aiModel,
@@ -206,6 +211,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
         agentDependencies: {
           model,
           service,
+          meetingService,
           modelName: config.aiModel,
           maxSteps: config.agentMaxSteps,
           timeoutMs: config.agentTimeoutMs,

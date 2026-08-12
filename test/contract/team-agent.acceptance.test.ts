@@ -850,9 +850,9 @@ describe('open team Agent release contract', () => {
     expect(model.doGenerateCalls).toHaveLength(5);
     const toolNames = model.doGenerateCalls[0]?.tools?.map((tool) => tool.name) ?? [];
     expect(toolNames.sort()).toEqual([
-      'appendDocument', 'createDocument', 'fetchDocument', 'getKnowledgeNode',
-      'listKnowledgeNodes', 'listKnowledgeSpaces', 'patchDocument',
-      'searchConversationHistory', 'searchKnowledge',
+      'appendDocument', 'createDocument', 'fetchDocument', 'fetchMeetingContent',
+      'getKnowledgeNode', 'listKnowledgeNodes', 'listKnowledgeSpaces', 'patchDocument',
+      'searchConversationHistory', 'searchKnowledge', 'searchMeetingMinutes', 'searchMeetings',
     ]);
     expect(toolNames.join(' ')).not.toMatch(
       /delete|move|overwrite|permission|sharing|raw|shell|http|filesystem/iu,
