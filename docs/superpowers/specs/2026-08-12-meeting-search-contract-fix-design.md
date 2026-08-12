@@ -32,6 +32,8 @@ Row normalization remains independent. A malformed row is omitted while valid si
 
 Meeting detail remains the authoritative source for structured start/end times and artifact associations. The OAuth command, operator documentation, and release contract will add only `vc:record:readonly`; no Calendar, recording-media, meeting-control, or write scopes are added.
 
+This fix does not redesign transcript-source selection. When a member requests an original transcript, Minori continues to read an original meeting text source already available through its existing typed tools and reports that the content is unavailable only when none can be read. User-facing replies do not expose Smart Meeting Note display types or OAuth routing details unless those details are needed to explain a concrete access limitation. The currently unavailable advanced Smart Meeting Note transcript scope is a known capability limitation, not a blocker for Meeting Record search, meeting detail, summaries, or readable Minute transcripts.
+
 ## Public seams and tests
 
 Implementation is tested through these public seams:
