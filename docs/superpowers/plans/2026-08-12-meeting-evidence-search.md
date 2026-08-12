@@ -528,7 +528,9 @@ export type MeetingReadAuditInput = {
     | 'meeting_contract_error'
     | 'meeting_search_unavailable'
     | 'meeting_content_unavailable'
-    | 'meeting_artifact_unsafe';
+    | 'meeting_artifact_unsafe'
+    | 'meeting_participant_ambiguous'
+    | 'meeting_participant_unresolved';
 };
 
 export interface MeetingReadAudit {
