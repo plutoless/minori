@@ -47,7 +47,7 @@ Natural participant names are resolved internally through the official user-iden
 - Calendar event search, meeting attendance management, or meeting-bot participation.
 - Future meeting discovery or user-authored Meeting Notes attached only to a calendar event.
 - A second OAuth implementation, direct access-token management, generic HTTP tool, or raw OpenAPI escape hatch.
-- A general employee directory, contact browsing tool, or access to external-tenant and departed users.
+- A general employee directory, contact browsing tool, organization enumeration, or access beyond people returned by the Dedicated Knowledge User's typed search.
 - Persisting AI summaries, todos, chapters, transcripts, excerpts, raw search results, participant identities, or local artifact paths in Neon.
 - Building a separate meeting-content index.
 
@@ -69,7 +69,7 @@ The application requests only the additional user scopes required by the typed c
 - `minutes:minutes.basic:read`
 - `minutes:minutes.transcript:export`
 
-The OAuth command keeps the existing Docs, Drive, and Wiki domains and adds these explicit scopes. `contact:user:search` is used only with user identity to resolve a participant name to a meeting-search identifier; it cannot find external-tenant or departed users. The application does not request complete Contact, VC, or Minutes domains because they contain write, media, meeting-control, and other capabilities outside this feature.
+The OAuth command keeps the existing Docs, Drive, and Wiki domains and adds these explicit scopes. `contact:user:search` is used only with user identity to resolve a participant name to a meeting-search identifier; Minori accepts only candidates the Dedicated Knowledge User's typed search actually returns and does not enumerate the organization. The application does not request complete Contact, VC, or Minutes domains because they contain write, media, meeting-control, and other capabilities outside this feature.
 
 The app permissions must be added and published in the Feishu developer console before the production user reauthorizes. Production uses the existing persistent Lark credential store; there is no second token store.
 
@@ -149,8 +149,9 @@ The first request omits `cursor`. Provider identifiers and page tokens never ent
 
 Input:
 
-- `meetingRef`: an Agent-Run-local reference returned by `searchMeetings` or `searchMeetingMinutes`, or derived from a validated Feishu meeting-content URL;
+- `meetingRef`: an Agent-Run-local reference returned by `searchMeetings` or `searchMeetingMinutes`;
 - `contentKind`: `auto`, `summary`, `todos`, `chapters`, or `transcript`;
+- `artifactPreference`: `auto`, `smart_note`, or `minute`;
 - `cursor`: optional opaque cursor returned by the preceding page for the same content snapshot.
 
 Output:
@@ -161,7 +162,7 @@ Output:
 - the actual content type and artifact type used;
 - an opaque `nextCursor` when more content remains.
 
-`auto` selects a readable Smart Meeting Note AI summary, then a readable Minute AI summary, then an original transcript only when neither summary is readable. Explicit `transcript` bypasses summary selection; explicit `summary`, `todos`, or `chapters` never silently claims another content type. The first successful fetch creates a Document-like Meeting Content Snapshot scoped to one Agent Run. Repeated reads use the cached snapshot and do not mix pages from different artifacts. A valid continuation cursor remains reusable inside that run. An unknown or mismatched cursor restarts at the first page of the requested content. No meeting-content cursor survives the Agent Run.
+`auto` content with `auto` artifact preference selects a readable Smart Meeting Note AI summary, then a readable Minute AI summary, then an original transcript only when neither summary is readable. Explicit `transcript` bypasses summary selection; explicit `summary`, `todos`, or `chapters` never silently claims another content type. `smart_note` and `minute` artifact preferences constrain selection to that chain and never substitute the other artifact type. The first successful fetch creates a Document-like Meeting Content Snapshot scoped to one Agent Run. Repeated reads use the cached snapshot and do not mix pages from different artifacts. A valid continuation cursor remains reusable inside that run. An unknown or mismatched cursor restarts at the first page of the requested content. No meeting-content cursor survives the Agent Run.
 
 ## Unified Meeting Evidence
 
@@ -229,7 +230,7 @@ Audit failure is best-effort and must not replace a successful search or content
 - exact typed contact, VC, Smart Meeting Note, Minutes, and existing document-read invocations;
 - forced `--as user` and JSON output;
 - no raw API, write, permission-application, upload, or media commands;
-- default AI-summary selection, Smart Meeting Note to Minute-summary fallback, no-summary transcript fallback, explicit transcript selection, and explicit artifact-type non-substitution;
+- default AI-summary selection, Smart Meeting Note to Minute-summary fallback, no-summary transcript fallback, explicit transcript selection, and `smart_note` / `minute` artifact-preference non-substitution;
 - tolerant normalization of optional search metadata without forwarding raw rows;
 - opaque run-local search cursors and transparent invalid-cursor restart;
 - default 30-day recent search, explicit multi-month window splitting, chronological boundary coverage, and cross-window deduplication;
