@@ -124,7 +124,7 @@ Expected: TypeScript/test collection reports missing command variants and `cwd`;
 Add these variants and keep all optional argument assembly inside `buildInvocation`:
 
 ```ts
-type MeetingArtifact = 'summary' | 'todo' | 'chapter' | 'transcript';
+type MeetingArtifact = 'basic' | 'summary' | 'todo' | 'chapter' | 'transcript';
 
 export type LarkCommand =
   | { id: 'auth.status' }
@@ -162,7 +162,7 @@ export type LarkCommand =
 export type LarkInvocation = { args: string[]; stdin?: string; cwd?: string };
 ```
 
-For `minutes.detail`, map `todo` to `--todo`, `chapter` to `--chapter`, add `--output-dir .`, and set `cwd` only for `transcript`; do not add `--overwrite`. For transcript output, a newly created empty directory guarantees no existing destination.
+For `minutes.detail`, map `basic` to no artifact flag, `todo` to `--todo`, `chapter` to `--chapter`, add `--output-dir .`, and set `cwd` only for `transcript`; do not add `--overwrite`. The basic form is used only to resolve a direct Minute result's associated `note_id` before applying Smart Meeting Note preference. For transcript output, a newly created empty directory guarantees no existing destination.
 
 - [ ] **Step 5: Pass `cwd` through the runner without widening authority**
 

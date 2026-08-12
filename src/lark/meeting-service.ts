@@ -1,5 +1,17 @@
 import { z } from 'zod';
-import { MeetingContractError } from './errors.js';
+import {
+  LarkCliError,
+  LarkContractError,
+  MeetingArtifactError,
+  MeetingContentError,
+  MeetingContractError,
+} from './errors.js';
+import {
+  systemMeetingArtifactStore,
+  type MeetingArtifactStore,
+  type MeetingByteBudget,
+} from './meeting-artifacts.js';
+import type { KnowledgeReader } from './knowledge-service.js';
 import type { LarkExecutor } from './runner.js';
 
 export type PersonResolution =
@@ -42,6 +54,44 @@ export type MeetingDetail = {
   minuteToken?: string;
 };
 
+export type MeetingArtifactReference =
+  | {
+      kind: 'meeting'; meetingId: string; title: string;
+      start?: string; url?: string;
+    }
+  | {
+      kind: 'minute'; minuteToken: string; title: string;
+      start?: string; url?: string;
+    };
+
+export type MeetingContentRequest = 'auto' | 'summary' | 'todos' | 'chapters' | 'transcript';
+export type MeetingArtifactPreference = 'auto' | 'smart_note' | 'minute';
+export type MeetingContentKind =
+  | 'smart_note_ai_summary'
+  | 'minute_ai_summary'
+  | 'smart_note_todos'
+  | 'minute_todos'
+  | 'minute_chapters'
+  | 'smart_note_transcript'
+  | 'minute_transcript';
+
+export type MeetingContentLoad = {
+  status: 'loaded';
+  kind: MeetingContentKind;
+  title: string;
+  meetingTime?: string;
+  url?: string;
+  text: string;
+};
+
+type MeetingAssociations = {
+  title: string;
+  meetingTime?: string;
+  url?: string;
+  noteId?: string;
+  minuteToken?: string;
+};
+
 export type MeetingSearchInput = {
   query?: string;
   start?: string;
@@ -73,6 +123,15 @@ export interface MeetingService {
     input: MinuteSearchInput,
     signal?: AbortSignal,
   ): Promise<DiscoveryPage<MinuteCandidate>>;
+  fetchContent(
+    reference: MeetingArtifactReference,
+    input: {
+      contentKind: MeetingContentRequest;
+      artifactPreference: MeetingArtifactPreference;
+    },
+    budget: MeetingByteBudget,
+    signal?: AbortSignal,
+  ): Promise<MeetingContentLoad>;
 }
 
 const contactEnvelopeSchema = z.object({
@@ -108,6 +167,23 @@ const meetingDetailRowSchema = z.object({
 
 const minuteRowSchema = z.object({
   title: z.string().min(1),
+}).passthrough();
+
+const noteDetailSchema = z.object({
+  note_display_type: z.enum(['normal', 'unified', 'unknown']),
+  note_doc_token: z.string().optional(),
+  verbatim_doc_token: z.string().optional(),
+}).passthrough();
+
+const minuteDetailEnvelopeSchema = z.object({
+  minutes: z.array(z.unknown()),
+}).passthrough();
+
+const minuteDetailRowSchema = z.object({
+  minute_token: z.string().min(1),
+  title: z.string().optional(),
+  note_id: z.string().optional(),
+  artifacts: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();
 
 function optionalString(value: unknown) {
@@ -152,6 +228,34 @@ function normalizeRows<T>(rows: unknown[], normalize: (row: unknown) => T | unde
   };
 }
 
+function isArtifactLocalFailure(error: unknown) {
+  if (
+    error instanceof MeetingContentError
+    || error instanceof MeetingContractError
+    || error instanceof MeetingArtifactError
+    || error instanceof LarkContractError
+  ) return true;
+  return error instanceof LarkCliError && error.code === 'cli_error';
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function renderListArtifact(value: unknown, fields: string[]) {
+  if (!Array.isArray(value)) return undefined;
+  const lines = value.flatMap((item) => {
+    if (typeof item === 'string' && item.trim()) return [`- ${item.trim()}`];
+    const object = recordValue(item);
+    if (!object) return [];
+    const text = fields.map((field) => optionalString(object[field])).find(Boolean);
+    return text ? [`- ${text}`] : [];
+  });
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
 function parseContactCandidates(data: unknown) {
   const envelope = contactEnvelopeSchema.safeParse(data);
   if (!envelope.success) {
@@ -177,7 +281,11 @@ function candidateLabel(name: string, department: string | undefined) {
 }
 
 export class LarkMeetingService implements MeetingService {
-  constructor(private readonly executor: LarkExecutor) {}
+  constructor(
+    private readonly executor: LarkExecutor,
+    private readonly knowledge: KnowledgeReader,
+    private readonly artifacts: MeetingArtifactStore = systemMeetingArtifactStore(),
+  ) {}
 
   private run<T>(command: Parameters<LarkExecutor['run']>[0], signal?: AbortSignal) {
     return signal ? this.executor.run<T>(command, signal) : this.executor.run<T>(command);
@@ -293,5 +401,261 @@ export class LarkMeetingService implements MeetingService {
     });
     const nextPageToken = envelope.has_more ? optionalString(envelope.page_token) : undefined;
     return { ...normalized, ...(nextPageToken ? { nextPageToken } : {}) };
+  }
+
+  private async minuteDetail(
+    minuteToken: string,
+    artifact: 'basic' | 'summary' | 'todo' | 'chapter',
+    signal?: AbortSignal,
+  ) {
+    const data = await this.run<unknown>({
+      id: 'minutes.detail', minuteTokens: [minuteToken], artifact,
+    }, signal);
+    const envelope = parseEnvelope(minuteDetailEnvelopeSchema, data);
+    const row = envelope.minutes
+      .map((value) => minuteDetailRowSchema.safeParse(value))
+      .find((result) => result.success && result.data.minute_token === minuteToken);
+    if (!row?.success) throw new MeetingContentError('meeting_content_unavailable');
+    return row.data;
+  }
+
+  private async associations(
+    reference: MeetingArtifactReference,
+    signal?: AbortSignal,
+  ): Promise<MeetingAssociations> {
+    if (reference.kind === 'meeting') {
+      const detail = (await this.getMeetingDetails([reference.meetingId], signal))
+        .find((value) => value.meetingId === reference.meetingId);
+      if (!detail) throw new MeetingContentError('meeting_content_unavailable');
+      const meetingTime = reference.start ?? detail.start;
+      return {
+        title: reference.title || detail.title,
+        ...(meetingTime ? { meetingTime } : {}),
+        ...(reference.url ? { url: reference.url } : {}),
+        ...(detail.noteId ? { noteId: detail.noteId } : {}),
+        ...(detail.minuteToken ? { minuteToken: detail.minuteToken } : {}),
+      };
+    }
+    const detail = await this.minuteDetail(reference.minuteToken, 'basic', signal);
+    return {
+      title: reference.title || detail.title || 'Minute',
+      ...(reference.start ? { meetingTime: reference.start } : {}),
+      ...(reference.url ? { url: reference.url } : {}),
+      ...(optionalString(detail.note_id) ? { noteId: detail.note_id! } : {}),
+      minuteToken: reference.minuteToken,
+    };
+  }
+
+  private result(
+    metadata: { title: string; meetingTime?: string; url?: string },
+    kind: MeetingContentKind,
+    text: string,
+    url?: string,
+  ): MeetingContentLoad {
+    if (!text.trim()) throw new MeetingContentError('meeting_content_unavailable');
+    return {
+      status: 'loaded', kind, title: metadata.title,
+      ...(metadata.meetingTime ? { meetingTime: metadata.meetingTime } : {}),
+      ...((url ?? metadata.url) ? { url: url ?? metadata.url } : {}),
+      text,
+    };
+  }
+
+  private async noteDetail(noteId: string, signal?: AbortSignal) {
+    const data = await this.run<unknown>({ id: 'note.detail', noteId }, signal);
+    return parseEnvelope(noteDetailSchema, data);
+  }
+
+  private async smartNoteDocument(
+    metadata: { title: string; meetingTime?: string; url?: string },
+    noteId: string,
+    kind: 'smart_note_ai_summary' | 'smart_note_todos',
+    signal?: AbortSignal,
+  ) {
+    const note = await this.noteDetail(noteId, signal);
+    const token = optionalString(note.note_doc_token);
+    if (!token) throw new MeetingContentError('meeting_content_unavailable');
+    const document = await this.knowledge.fetchDocument({ doc: token }, signal);
+    return this.result(metadata, kind, document.markdown, document.url);
+  }
+
+  private async smartNoteTranscript(
+    metadata: { title: string; meetingTime?: string; url?: string },
+    noteId: string,
+    budget: MeetingByteBudget,
+    signal?: AbortSignal,
+  ) {
+    const note = await this.noteDetail(noteId, signal);
+    if (
+      (note.note_display_type === 'normal' || note.note_display_type === 'unknown')
+      && optionalString(note.verbatim_doc_token)
+    ) {
+      const document = await this.knowledge.fetchDocument({
+        doc: note.verbatim_doc_token!,
+      }, signal);
+      return this.result(metadata, 'smart_note_transcript', document.markdown, document.url);
+    }
+    if (note.note_display_type !== 'unified') {
+      throw new MeetingContentError('meeting_transcript_unavailable');
+    }
+    return this.artifacts.withDirectory(async (workDir) => {
+      const data = await this.run<unknown>({
+        id: 'note.transcript', noteId, workDir,
+      }, signal);
+      const response = z.object({ transcript_file: z.string().min(1) }).passthrough()
+        .safeParse(data);
+      if (!response.success) throw new MeetingContentError('meeting_transcript_unavailable');
+      const text = await this.artifacts.readFile(workDir, response.data.transcript_file, budget);
+      return this.result(metadata, 'smart_note_transcript', text);
+    });
+  }
+
+  private async minuteContent(
+    metadata: { title: string; meetingTime?: string; url?: string },
+    minuteToken: string,
+    contentKind: Exclude<MeetingContentRequest, 'auto' | 'transcript'>,
+    signal?: AbortSignal,
+  ) {
+    const artifact = contentKind === 'todos' ? 'todo' : contentKind === 'chapters'
+      ? 'chapter'
+      : 'summary';
+    const detail = await this.minuteDetail(minuteToken, artifact, signal);
+    const artifacts = detail.artifacts ?? {};
+    if (contentKind === 'summary') {
+      const text = optionalString(artifacts.summary);
+      if (!text) throw new MeetingContentError('meeting_content_unavailable');
+      return this.result(metadata, 'minute_ai_summary', text);
+    }
+    if (contentKind === 'todos') {
+      const text = renderListArtifact(artifacts.todos, ['content', 'title', 'text']);
+      if (!text) throw new MeetingContentError('meeting_content_unavailable');
+      return this.result(metadata, 'minute_todos', text);
+    }
+    const text = renderListArtifact(artifacts.chapters, ['title', 'content', 'text']);
+    if (!text) throw new MeetingContentError('meeting_content_unavailable');
+    return this.result(metadata, 'minute_chapters', text);
+  }
+
+  private async minuteTranscript(
+    metadata: { title: string; meetingTime?: string; url?: string },
+    minuteToken: string,
+    budget: MeetingByteBudget,
+    signal?: AbortSignal,
+  ) {
+    return this.artifacts.withDirectory(async (workDir) => {
+      const data = await this.run<unknown>({
+        id: 'minutes.detail', minuteTokens: [minuteToken], artifact: 'transcript', workDir,
+      }, signal);
+      const envelope = parseEnvelope(minuteDetailEnvelopeSchema, data);
+      const row = envelope.minutes
+        .map((value) => minuteDetailRowSchema.safeParse(value))
+        .find((result) => result.success && result.data.minute_token === minuteToken);
+      const transcriptFile = row?.success
+        ? optionalString(row.data.artifacts?.transcript_file)
+        : undefined;
+      if (!transcriptFile) throw new MeetingContentError('meeting_transcript_unavailable');
+      const text = await this.artifacts.readFile(workDir, transcriptFile, budget);
+      return this.result(metadata, 'minute_transcript', text);
+    });
+  }
+
+  async fetchContent(
+    reference: MeetingArtifactReference,
+    input: {
+      contentKind: MeetingContentRequest;
+      artifactPreference: MeetingArtifactPreference;
+    },
+    budget: MeetingByteBudget,
+    signal?: AbortSignal,
+  ): Promise<MeetingContentLoad> {
+    let metadata: {
+      title: string; meetingTime?: string; url?: string;
+      noteId?: string; minuteToken?: string;
+    };
+    if (reference.kind === 'minute' && input.artifactPreference === 'minute') {
+      metadata = {
+        title: reference.title,
+        ...(reference.start ? { meetingTime: reference.start } : {}),
+        ...(reference.url ? { url: reference.url } : {}),
+        minuteToken: reference.minuteToken,
+      };
+    } else {
+      let association: MeetingAssociations;
+      try {
+        association = await this.associations(reference, signal);
+      } catch (error) {
+        if (
+          reference.kind !== 'minute'
+          || input.artifactPreference !== 'auto'
+          || !isArtifactLocalFailure(error)
+        ) throw error;
+        association = {
+          title: reference.title,
+          ...(reference.start ? { meetingTime: reference.start } : {}),
+          ...(reference.url ? { url: reference.url } : {}),
+          minuteToken: reference.minuteToken,
+        };
+      }
+      metadata = {
+        title: association.title,
+        ...(association.meetingTime ? { meetingTime: association.meetingTime } : {}),
+        ...(association.url ? { url: association.url } : {}),
+        ...(association.noteId ? { noteId: association.noteId } : {}),
+        ...(association.minuteToken ? { minuteToken: association.minuteToken } : {}),
+      };
+    }
+
+    const attempts: Array<() => Promise<MeetingContentLoad>> = [];
+    const allowSmart = input.artifactPreference !== 'minute';
+    const allowMinute = input.artifactPreference !== 'smart_note';
+    if (input.contentKind === 'auto' || input.contentKind === 'summary') {
+      if (allowSmart && metadata.noteId) {
+        attempts.push(() => this.smartNoteDocument(
+          metadata, metadata.noteId!, 'smart_note_ai_summary', signal,
+        ));
+      }
+      if (allowMinute && metadata.minuteToken) {
+        attempts.push(() => this.minuteContent(metadata, metadata.minuteToken!, 'summary', signal));
+      }
+      if (input.contentKind === 'auto') {
+        if (allowSmart && metadata.noteId) {
+          attempts.push(() => this.smartNoteTranscript(metadata, metadata.noteId!, budget, signal));
+        }
+        if (allowMinute && metadata.minuteToken) {
+          attempts.push(() => this.minuteTranscript(metadata, metadata.minuteToken!, budget, signal));
+        }
+      }
+    } else if (input.contentKind === 'transcript') {
+      if (allowSmart && metadata.noteId) {
+        attempts.push(() => this.smartNoteTranscript(metadata, metadata.noteId!, budget, signal));
+      }
+      if (allowMinute && metadata.minuteToken) {
+        attempts.push(() => this.minuteTranscript(metadata, metadata.minuteToken!, budget, signal));
+      }
+    } else if (input.contentKind === 'todos') {
+      if (allowSmart && metadata.noteId) {
+        attempts.push(() => this.smartNoteDocument(
+          metadata, metadata.noteId!, 'smart_note_todos', signal,
+        ));
+      }
+      if (allowMinute && metadata.minuteToken) {
+        attempts.push(() => this.minuteContent(metadata, metadata.minuteToken!, 'todos', signal));
+      }
+    } else if (allowMinute && metadata.minuteToken) {
+      attempts.push(() => this.minuteContent(metadata, metadata.minuteToken!, 'chapters', signal));
+    }
+
+    for (const attempt of attempts) {
+      try {
+        return await attempt();
+      } catch (error) {
+        if (!isArtifactLocalFailure(error)) throw error;
+      }
+    }
+    throw new MeetingContentError(
+      input.contentKind === 'transcript'
+        ? 'meeting_transcript_unavailable'
+        : 'meeting_content_unavailable',
+    );
   }
 }

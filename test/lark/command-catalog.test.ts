@@ -88,6 +88,12 @@ describe('buildInvocation', () => {
       '--format', 'json', '--as', 'user',
     ]);
     expect(buildInvocation({
+      id: 'minutes.detail', minuteTokens: ['obc_1'], artifact: 'basic',
+    }).args).toEqual([
+      'minutes', '+detail', '--minute-tokens', 'obc_1',
+      '--format', 'json', '--as', 'user',
+    ]);
+    expect(buildInvocation({
       id: 'minutes.detail', minuteTokens: ['obc_1'], artifact: 'transcript',
       workDir: '/tmp/minori-meeting-1',
     })).toEqual({

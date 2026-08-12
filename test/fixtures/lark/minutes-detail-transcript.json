@@ -1,0 +1,9 @@
+{
+  "minutes": [
+    {
+      "minute_token": "obc_1",
+      "title": "DevX weekly recording",
+      "artifacts": { "transcript_file": "artifact-devx-obc_1/transcript.txt" }
+    }
+  ]
+}

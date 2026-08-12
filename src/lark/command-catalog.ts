@@ -27,7 +27,7 @@ export type LarkCommand =
   | {
       id: 'minutes.detail';
       minuteTokens: string[];
-      artifact: 'summary' | 'todo' | 'chapter';
+      artifact: 'basic' | 'summary' | 'todo' | 'chapter';
     }
   | {
       id: 'minutes.detail';
@@ -117,10 +117,10 @@ export function buildInvocation(command: LarkCommand): LarkInvocation {
         ],
       };
     case 'minutes.detail': {
-      const artifactFlag = `--${command.artifact}`;
       return {
         args: [
-          'minutes', '+detail', '--minute-tokens', command.minuteTokens.join(','), artifactFlag,
+          'minutes', '+detail', '--minute-tokens', command.minuteTokens.join(','),
+          ...(command.artifact === 'basic' ? [] : [`--${command.artifact}`]),
           ...(command.artifact === 'transcript' ? ['--output-dir', '.'] : []),
           ...USER_JSON_ARGS,
         ],
