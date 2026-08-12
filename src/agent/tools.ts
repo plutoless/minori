@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type {
   KnowledgeService, KnowledgeWriteResult,
 } from '../lark/knowledge-service.js';
+import { KnowledgeSearchContractError } from '../lark/errors.js';
 import type {
   GroupHistoryAudit,
   ScopedGroupContextReader,
@@ -57,6 +58,20 @@ export interface PersistentWriteAudit {
     resultIdentifiers?: (result: T) => Record<string, string> | undefined,
   ): Promise<T>;
 }
+
+export type KnowledgeSearchAuditInput = {
+  success: boolean;
+  rawCount: number;
+  validCount: number;
+  omittedCount: number;
+  errorCategory?: 'knowledge_search_contract_error';
+};
+
+export interface KnowledgeSearchAudit {
+  record(input: KnowledgeSearchAuditInput): void;
+}
+
+const NOOP_SEARCH_AUDIT: KnowledgeSearchAudit = { record: () => undefined };
 
 export type GroupHistoryToolContext = {
   reader: ScopedGroupContextReader;
@@ -207,6 +222,7 @@ export function createKnowledgeTools(
   groupHistory?: GroupHistoryToolContext,
   teamContext?: TeamContextToolContext,
   schedules?: ScheduleToolContext,
+  searchAudit: KnowledgeSearchAudit = NOOP_SEARCH_AUDIT,
 ) {
   const documents = new Map<string, Promise<FetchedDocument>>();
   const pageSets = new Map<string, string[]>();
@@ -247,10 +263,30 @@ export function createKnowledgeTools(
         query: z.string().min(1).max(500),
         spaceIds: z.array(TOKEN_SCHEMA).max(20).optional(),
       }).strict(),
-      execute: ({ query, spaceIds }, { abortSignal }) => service.search({
-        query,
-        ...(spaceIds ? { spaceIds } : {}),
-      }, abortSignal),
+      execute: async ({ query, spaceIds }, { abortSignal }) => {
+        try {
+          const result = await service.search({
+            query,
+            ...(spaceIds ? { spaceIds } : {}),
+          }, abortSignal);
+          searchAudit.record({
+            success: true,
+            rawCount: result.rawCount,
+            validCount: result.validCount,
+            omittedCount: result.omittedCount,
+          });
+          return result;
+        } catch (error) {
+          if (error instanceof KnowledgeSearchContractError) {
+            searchAudit.record({
+              success: false,
+              errorCategory: error.code,
+              ...error.completeness,
+            });
+          }
+          throw error;
+        }
+      },
     }),
     fetchDocument: tool({
       description: 'Read an authorized Feishu document as bounded markdown evidence.',

@@ -21,7 +21,7 @@ import { PostgresAgentRunStore } from '../../src/storage/agent-run-store.js';
 import { PostgresConversationStore } from '../../src/storage/conversation-store.js';
 import { createDatabase, type DatabaseHandle } from '../../src/storage/database.js';
 import { PostgresEventStore } from '../../src/storage/event-store.js';
-import { agentRuns, toolRuns } from '../../src/storage/schema.js';
+import { agentRuns, processedEvents, toolRuns } from '../../src/storage/schema.js';
 import { MessageWorker } from '../../src/worker/message-worker.js';
 
 const BOT_OPEN_ID = 'ou_minori';
@@ -191,7 +191,7 @@ describe('open team Agent release contract', () => {
     const reader = new LarkKnowledgeService(executor);
     const fakeModel = vi.fn(async (message: NormalizedMessage): Promise<AgentReply> => {
       const link = message.content.kind === 'text' ? message.content.feishuLinks[0] : undefined;
-      const doc = link ?? (await reader.search({ query: 'roadmap' }))[0]!.token;
+      const doc = link ?? (await reader.search({ query: 'roadmap' })).results[0]!.token;
       const fetched = await reader.fetchDocument({ doc });
       return {
         text: 'The Team Agent launches first [1].',
@@ -291,6 +291,139 @@ describe('open team Agent release contract', () => {
     );
   });
 
+  it('uses current Wiki tokens through the real Agent and stores counts only', async () => {
+    const rawResults = Array.from({ length: 10 }, (_, index) => index < 8
+      ? {
+        entity_type: 'WIKI',
+        result_meta: {
+          token: `wikcnCurrent${index}`,
+          url: `https://acme.feishu.cn/wiki/wikcnCurrent${index}`,
+        },
+        title: `Fixture page ${index}`,
+      }
+      : { entity_type: 'WIKI', title: `Malformed fixture ${index}` });
+    const executor = {
+      run: vi.fn(async (command: { id: string; doc?: string }) => {
+        if (command.id === 'drive.search') return { results: rawResults };
+        if (command.id === 'docs.fetch' && command.doc === 'wikcnCurrent0') {
+          return {
+            document: {
+              document_id: 'wikcnCurrent0',
+              revision_id: 1,
+              title: 'Fixture page 0',
+              url: 'https://acme.feishu.cn/wiki/wikcnCurrent0',
+              content: '# Fixture page 0\n\nCurrent planning evidence.',
+            },
+          };
+        }
+        throw new Error('unexpected_fixture_command');
+      }),
+    };
+    const knowledge = new LarkKnowledgeService(executor);
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_search_current', toolName: 'searchKnowledge',
+          input: JSON.stringify({ query: 'current planning' }),
+        }], 'tool-calls'),
+        generated([{
+          type: 'tool-call', toolCallId: 'call_fetch_current', toolName: 'fetchDocument',
+          input: JSON.stringify({
+            doc: 'wikcnCurrent0', mode: 'relevant', query: 'current planning',
+          }),
+        }], 'tool-calls'),
+        generated([{ type: 'text', text: 'Current planning evidence [1].' }], 'stop'),
+      ],
+    });
+    const runStore = new PostgresAgentRunStore(database.db);
+    const messenger = new FakeMessenger();
+    const operationalError = vi.fn();
+    const worker = new MessageWorker({
+      eventStore: events,
+      conversations,
+      messenger,
+      loadWriteAttempts: (eventId) => runStore.listWriteAttempts(eventId),
+      logger: { warn: vi.fn(), info: vi.fn() },
+      runAgent: (message, claimAttempt, signal) => {
+        if (message.content.kind !== 'text') throw new Error('unsupported_agent_input');
+        return runKnowledgeAgent({
+          prompt: message.content.text,
+          history: [],
+          trigger: {
+            kind: 'feishu_member',
+            senderOpenId: message.senderOpenId,
+            chatId: message.chatId,
+            chatType: message.chatType,
+            occurredAt: message.occurredAt,
+          },
+        }, {
+          model,
+          service: knowledge,
+          eventId: message.eventId,
+          claimAttempt,
+          modelName: '5.6-terra',
+          maxSteps: 40,
+          timeoutMs: 300_000,
+          botOpenId: BOT_OPEN_ID,
+          botAppId: 'cli_minori',
+          agentRunStore: runStore,
+          onOperationalError: operationalError,
+          conversationKey: message.conversationKey,
+          triggerMessageId: message.messageId,
+          conversationStore: conversations,
+        }, signal);
+      },
+    });
+    const incoming = normalizeMessageEvent(rawEvent({
+      event_id: 'evt_current_wiki_search',
+      message: {
+        message_id: 'om_current_wiki_search', chat_id: 'oc_team', chat_type: 'group',
+        message_type: 'text', create_time: '1785888001500',
+        content: JSON.stringify({ text: '@_user_1 check current planning' }),
+        mentions: [{ key: '@_user_1', id: { open_id: BOT_OPEN_ID }, name: 'Minori' }],
+      },
+    }), { botOpenId: BOT_OPEN_ID })!;
+
+    await events.enqueue(incoming);
+    const [claimed] = await events.claimReady(1, new Date(Date.now() + 60_000));
+    await worker.process(claimed!);
+
+    expect(executor.run).toHaveBeenCalledWith({
+      id: 'docs.fetch', doc: 'wikcnCurrent0',
+    }, expect.any(AbortSignal));
+    expect(JSON.stringify(model.doGenerateCalls)).toContain(
+      '"status":"partial","results"',
+    );
+    expect(JSON.stringify(model.doGenerateCalls)).toContain(
+      '"rawCount":10,"validCount":8,"omittedCount":2',
+    );
+    let audits: typeof toolRuns.$inferSelect[] = [];
+    await vi.waitFor(async () => {
+      const [run] = await database.db.select().from(agentRuns)
+        .where(eq(agentRuns.eventId, incoming.eventId));
+      audits = run
+        ? await database.db.select().from(toolRuns).where(eq(toolRuns.agentRunId, run.id))
+        : [];
+      expect(audits).toHaveLength(1);
+    });
+    expect(audits[0]).toMatchObject({
+      toolName: 'searchKnowledge',
+      success: true,
+      errorCategory: null,
+      sanitizedSummary: 'raw=10 valid=8 omitted=2',
+      targetIdentifiers: null,
+      resultIdentifiers: null,
+    });
+    expect(JSON.stringify(audits[0])).not.toMatch(
+      /current planning|Fixture page|wikcnCurrent|https?:|open[_ ]?id|oauth/iu,
+    );
+    const [event] = await database.db.select().from(processedEvents)
+      .where(eq(processedEvents.eventId, incoming.eventId));
+    expect(event?.writeStartedAt).toBeNull();
+    await expect(runStore.listWriteAttempts(incoming.eventId)).resolves.toEqual([]);
+    expect(operationalError).not.toHaveBeenCalled();
+  });
+
   it('uses transient paginated Group Context while persisting only invocations and replies', async () => {
     const groupContextSource: GroupContextSource = {
       open: vi.fn((input) => {
@@ -361,7 +494,10 @@ describe('open team Agent release contract', () => {
       ],
     });
     const knowledge: KnowledgeService = {
-      search: vi.fn(async () => []),
+      search: vi.fn(async () => ({
+        status: 'complete' as const,
+        results: [], rawCount: 0, validCount: 0, omittedCount: 0,
+      })),
       fetchDocument: vi.fn(),
       listSpaces: vi.fn(async () => []),
       listNodes: vi.fn(async () => []),
@@ -402,6 +538,7 @@ describe('open team Agent release contract', () => {
           botAppId: 'cli_minori',
           groupContextSource,
           agentRunStore: runStore,
+          onOperationalError: vi.fn(),
           conversationKey: message.conversationKey,
           triggerMessageId: message.messageId,
           conversationStore: conversations,
@@ -567,7 +704,10 @@ describe('open team Agent release contract', () => {
     };
     let fetchedRevisionBeforePatch: number | undefined;
     const knowledge: KnowledgeService = {
-      search: vi.fn(async () => []),
+      search: vi.fn(async () => ({
+        status: 'complete' as const,
+        results: [], rawCount: 0, validCount: 0, omittedCount: 0,
+      })),
       fetchDocument: vi.fn(async () => {
         fetchedRevisionBeforePatch = document.revisionId;
         return { ...document };
@@ -678,6 +818,7 @@ describe('open team Agent release contract', () => {
           botOpenId: BOT_OPEN_ID,
           botAppId: 'cli_minori',
           agentRunStore: runStore,
+          onOperationalError: vi.fn(),
           conversationKey: message.conversationKey,
           triggerMessageId: message.messageId,
           conversationStore: conversations,

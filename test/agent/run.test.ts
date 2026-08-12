@@ -29,10 +29,16 @@ function generated(
 
 function service(): KnowledgeService {
   return {
-    search: vi.fn().mockResolvedValue([{
-      title: 'Launch plan', url: 'https://acme.feishu.cn/docx/launch',
-      token: 'doxcnLaunch', type: 'docx',
-    }]),
+    search: vi.fn().mockResolvedValue({
+      status: 'complete',
+      results: [{
+        title: 'Launch plan', url: 'https://acme.feishu.cn/docx/launch',
+        token: 'doxcnLaunch', type: 'docx',
+      }],
+      rawCount: 1,
+      validCount: 1,
+      omittedCount: 0,
+    }),
     fetchDocument: vi.fn().mockResolvedValue({
       token: 'doxcnLaunch',
       title: 'Launch plan', url: 'https://acme.feishu.cn/docx/launch',
@@ -141,6 +147,7 @@ function agentRunStore(overrides: Partial<AgentRunStore> = {}): AgentRunStore {
     start: vi.fn().mockResolvedValue({ id: 'run_1' }),
     beginWrite: vi.fn().mockResolvedValue({ id: 'write_1' }),
     finishWrite: vi.fn().mockResolvedValue(undefined),
+    recordKnowledgeSearch: vi.fn().mockResolvedValue(undefined),
     listWriteAttempts: vi.fn().mockResolvedValue([]),
     recordGroupHistory: vi.fn().mockResolvedValue(undefined),
     recordTeamContext: vi.fn().mockResolvedValue(undefined),
@@ -169,6 +176,7 @@ function dependencies(
     botOpenId: 'ou_minori',
     botAppId: 'cli_minori',
     agentRunStore: agentRunStore(),
+    onOperationalError: vi.fn(),
     ...overrides,
   };
 }
@@ -521,6 +529,34 @@ describe('runKnowledgeAgent', () => {
     expect(model.doGenerateCalls.every(
       (call) => call.providerOptions?.openai?.store === false,
     )).toBe(true);
+  });
+
+  it('does not delay or fail a successful search when its audit is unavailable', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        generated([{
+          type: 'tool-call', toolCallId: 'call_search', toolName: 'searchKnowledge',
+          input: JSON.stringify({ query: 'beta launch' }),
+        }], 'tool-calls'),
+        generated([{ type: 'text', text: 'I found the launch plan.' }], 'stop'),
+      ],
+    });
+    const audit = agentRunStore({
+      recordKnowledgeSearch: vi.fn().mockRejectedValue(new Error('postgres://secret-host')),
+    });
+    const onOperationalError = vi.fn();
+
+    await expect(runKnowledgeAgent(input, dependencies(input.prompt, model, {
+      agentRunStore: audit,
+      onOperationalError,
+    }))).resolves.toMatchObject({
+      text: 'I found the launch plan.',
+      outcome: 'completed',
+    });
+    await vi.waitFor(() => {
+      expect(onOperationalError).toHaveBeenCalledOnce();
+    });
+    expect(onOperationalError).toHaveBeenCalledWith('search_audit_unavailable');
   });
 
   it('answers a general transformation directly without tools or an empty source section', async () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { KnowledgeSearchContractError } from '../../src/lark/errors.js';
 import type { KnowledgeService } from '../../src/lark/knowledge-service.js';
 import { createKnowledgeTools } from '../../src/agent/tools.js';
 import { SourceRegistry } from '../../src/agent/sources.js';
@@ -85,6 +86,68 @@ function service(): KnowledgeService {
 }
 
 describe('createKnowledgeTools', () => {
+  it('returns partial search results and records content-free completeness', async () => {
+    const result = {
+      status: 'partial' as const,
+      results: [{ title: 'Plan', token: 'wikcnPlan', type: 'WIKI' }],
+      rawCount: 2,
+      validCount: 1,
+      omittedCount: 1,
+    };
+    const knowledge = service();
+    knowledge.search = vi.fn().mockResolvedValue(result);
+    const record = vi.fn();
+    const tools = createKnowledgeTools(
+      knowledge,
+      { search: vi.fn().mockResolvedValue([]) },
+      new SourceRegistry(),
+      { run: (_input, operation) => operation() },
+      undefined,
+      undefined,
+      undefined,
+      { record },
+    );
+
+    await expect(tools.searchKnowledge.execute?.(
+      { query: 'plan' },
+      { toolCallId: 'search_1', messages: [] },
+    )).resolves.toEqual(result);
+    expect(record).toHaveBeenCalledWith({
+      success: true, rawCount: 2, validCount: 1, omittedCount: 1,
+    });
+  });
+
+  it('records a fully invalid search without replacing its stable error', async () => {
+    const error = new KnowledgeSearchContractError({
+      rawCount: 2, validCount: 0, omittedCount: 2,
+    });
+    const knowledge = service();
+    knowledge.search = vi.fn().mockRejectedValue(error);
+    const record = vi.fn();
+    const tools = createKnowledgeTools(
+      knowledge,
+      { search: vi.fn().mockResolvedValue([]) },
+      new SourceRegistry(),
+      { run: (_input, operation) => operation() },
+      undefined,
+      undefined,
+      undefined,
+      { record },
+    );
+
+    await expect(tools.searchKnowledge.execute?.(
+      { query: 'broken' },
+      { toolCallId: 'search_2', messages: [] },
+    )).rejects.toBe(error);
+    expect(record).toHaveBeenCalledWith({
+      success: false,
+      errorCategory: 'knowledge_search_contract_error',
+      rawCount: 2,
+      validCount: 0,
+      omittedCount: 2,
+    });
+  });
+
   it('exposes team-global schedule tools only for member-triggered runs', async () => {
     const schedule = scheduleContext();
     const audited: unknown[] = [];

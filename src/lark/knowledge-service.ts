@@ -1,16 +1,29 @@
 import { z } from 'zod';
-import { KnowledgeWriteConflict, LarkCliError, LarkContractError } from './errors.js';
+import {
+  KnowledgeSearchContractError,
+  KnowledgeWriteConflict,
+  LarkCliError,
+  LarkContractError,
+} from './errors.js';
 import type { LarkExecutor } from './runner.js';
 
 export type KnowledgeSearchResult = {
   title: string;
-  url: string;
+  url?: string;
   token: string;
   type: string;
 };
 
+export type KnowledgeSearchResultSet = {
+  status: 'complete' | 'partial';
+  results: KnowledgeSearchResult[];
+  rawCount: number;
+  validCount: number;
+  omittedCount: number;
+};
+
 export interface KnowledgeReader {
-  search(input: { query: string; spaceIds?: string[] }, signal?: AbortSignal): Promise<KnowledgeSearchResult[]>;
+  search(input: { query: string; spaceIds?: string[] }, signal?: AbortSignal): Promise<KnowledgeSearchResultSet>;
   fetchDocument(input: { doc: string }, signal?: AbortSignal): Promise<KnowledgeDocument>;
   listSpaces(signal?: AbortSignal): Promise<Array<{ spaceId: string; name: string }>>;
   listNodes(input: {
@@ -57,13 +70,11 @@ export interface KnowledgeService extends KnowledgeReader {
 }
 
 const driveSearchSchema = z.object({
-  results: z.array(z.object({
-    title: z.string().optional(),
-    title_highlighted: z.string().optional(),
-    entity_type: z.string(),
-    entity_id: z.string(),
-    result_meta: z.object({ url: z.string().optional() }).passthrough().optional(),
-  }).passthrough()),
+  results: z.array(z.unknown()),
+}).passthrough();
+
+const driveSearchRowSchema = z.object({
+  entity_type: z.string().min(1),
 }).passthrough();
 
 const documentSchema = z.object({
@@ -124,6 +135,26 @@ function searchResultTitle(
   return title || highlighted || fallback;
 }
 
+function nonEmptyString(value: unknown) {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function httpUrl(value: unknown) {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function countExactOccurrences(markdown: string, pattern: string) {
   if (!pattern) return 0;
   let count = 0;
@@ -158,23 +189,47 @@ export class LarkKnowledgeService implements KnowledgeService {
   async search(
     input: { query: string; spaceIds?: string[] },
     signal?: AbortSignal,
-  ): Promise<KnowledgeSearchResult[]> {
+  ): Promise<KnowledgeSearchResultSet> {
     const data = await this.run<unknown>({
       id: 'drive.search',
       query: input.query,
       ...(input.spaceIds ? { spaceIds: input.spaceIds } : {}),
     }, signal);
     const parsed = parseContract(driveSearchSchema, data);
-    return parsed.results.flatMap((result) => {
-      const url = result.result_meta?.url;
-      if (!url) return [];
+    const results = parsed.results.flatMap((raw): KnowledgeSearchResult[] => {
+      const row = driveSearchRowSchema.safeParse(raw);
+      if (!row.success) return [];
+      const resultMeta = objectValue(row.data.result_meta);
+      const token = nonEmptyString(resultMeta?.token) ?? nonEmptyString(row.data.entity_id);
+      if (!token) return [];
+      const url = httpUrl(resultMeta?.url);
       return [{
-        title: searchResultTitle(result.title, result.title_highlighted, result.entity_id),
-        url,
-        token: result.entity_id,
-        type: result.entity_type,
+        title: searchResultTitle(
+          nonEmptyString(row.data.title),
+          nonEmptyString(row.data.title_highlighted),
+          token,
+        ),
+        ...(url ? { url } : {}),
+        token,
+        type: row.data.entity_type,
       }];
     });
+    const rawCount = parsed.results.length;
+    const omittedCount = rawCount - results.length;
+    if (rawCount > 0 && results.length === 0) {
+      throw new KnowledgeSearchContractError({
+        rawCount,
+        validCount: 0,
+        omittedCount,
+      });
+    }
+    return {
+      status: omittedCount === 0 ? 'complete' : 'partial',
+      results,
+      rawCount,
+      validCount: results.length,
+      omittedCount,
+    };
   }
 
   async fetchDocument(input: { doc: string }, signal?: AbortSignal) {

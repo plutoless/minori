@@ -19,17 +19,97 @@ function executorReturning(data: unknown) {
 }
 
 describe('LarkKnowledgeService contract', () => {
+  it('preserves current Wiki search rows independently of malformed siblings', async () => {
+    const { executor } = executorReturning(await fixtureData('drive-search-current-wiki'));
+    const reader = new LarkKnowledgeService(executor);
+
+    await expect(reader.search({ query: 'wiki' })).resolves.toEqual({
+      status: 'partial',
+      results: [
+        {
+          title: 'Current Wiki',
+          url: 'https://acme.feishu.cn/wiki/wikcnCurrent',
+          token: 'wikcnCurrent',
+          type: 'WIKI',
+        },
+        {
+          title: 'Legacy document',
+          url: 'https://acme.feishu.cn/docx/doxcnLegacy',
+          token: 'doxcnLegacy',
+          type: 'DOCX',
+        },
+        {
+          title: 'Fetchable without URL',
+          token: 'wikcnNoUrl',
+          type: 'WIKI',
+        },
+      ],
+      rawCount: 4,
+      validCount: 3,
+      omittedCount: 1,
+    });
+  });
+
+  it('ignores malformed optional metadata on otherwise fetchable legacy rows', async () => {
+    const { executor } = executorReturning({
+      results: [
+        {
+          entity_type: 'WIKI', entity_id: 'legacyNumericUrl',
+          result_meta: { url: 123 }, title: 'Numeric URL',
+        },
+        {
+          entity_type: 'WIKI', entity_id: 'legacyNumericTitle',
+          result_meta: { url: 'https://acme.feishu.cn/wiki/legacyNumericTitle' }, title: 456,
+        },
+        {
+          entity_type: 'WIKI', entity_id: 'legacyEmptyCurrent',
+          result_meta: { token: '', url: 'https://acme.feishu.cn/wiki/legacyEmptyCurrent' },
+          title: 'Legacy fallback',
+        },
+      ],
+    });
+    const reader = new LarkKnowledgeService(executor);
+
+    await expect(reader.search({ query: 'legacy' })).resolves.toEqual({
+      status: 'complete',
+      results: [
+        { title: 'Numeric URL', token: 'legacyNumericUrl', type: 'WIKI' },
+        {
+          title: 'legacyNumericTitle', token: 'legacyNumericTitle', type: 'WIKI',
+          url: 'https://acme.feishu.cn/wiki/legacyNumericTitle',
+        },
+        {
+          title: 'Legacy fallback', token: 'legacyEmptyCurrent', type: 'WIKI',
+          url: 'https://acme.feishu.cn/wiki/legacyEmptyCurrent',
+        },
+      ],
+      rawCount: 3,
+      validCount: 3,
+      omittedCount: 0,
+    });
+  });
+
   it('maps Drive search output into source metadata', async () => {
     const { executor, run } = executorReturning(await fixtureData('drive-search'));
     const reader = new LarkKnowledgeService(executor);
 
     await expect(reader.search({ query: 'roadmap', spaceIds: ['734000001'] })).resolves
-      .toEqual([{
-        title: 'Team Roadmap',
-        url: 'https://acme.feishu.cn/docx/doxcnRoadmap',
-        token: 'doxcnRoadmap',
-        type: 'DOCX',
-      }]);
+      .toEqual({
+        status: 'complete',
+        results: [{
+          title: 'Team Roadmap',
+          url: 'https://acme.feishu.cn/docx/doxcnRoadmap',
+          token: 'doxcnRoadmap',
+          type: 'DOCX',
+        }, {
+          title: 'Legacy result without URL',
+          token: 'doccnLegacy',
+          type: 'DOC',
+        }],
+        rawCount: 2,
+        validCount: 2,
+        omittedCount: 0,
+      });
     expect(run).toHaveBeenCalledWith({
       id: 'drive.search', query: 'roadmap', spaceIds: ['734000001'],
     });
@@ -103,14 +183,27 @@ describe('LarkKnowledgeService contract', () => {
   });
 
   it('rejects upstream shape drift as a stable contract error', async () => {
-    const { executor } = executorReturning({ results: [{ title: 'missing metadata' }] });
+    const { executor } = executorReturning({
+      results: [{ title: 'missing metadata' }, { entity_type: 'WIKI' }],
+    });
     const reader = new LarkKnowledgeService(executor);
 
     const error = await reader.search({ query: 'roadmap' }).catch((reason: unknown) => reason);
 
-    expect(error).toBeInstanceOf(LarkContractError);
-    expect(error).toMatchObject({ code: 'contract_error' });
+    expect(error).toMatchObject({
+      code: 'knowledge_search_contract_error',
+      completeness: { rawCount: 2, validCount: 0, omittedCount: 2 },
+    });
     expect(JSON.stringify(error)).not.toContain('missing metadata');
+  });
+
+  it('returns a complete empty result set for an empty provider array', async () => {
+    const { executor } = executorReturning({ results: [] });
+    const reader = new LarkKnowledgeService(executor);
+
+    await expect(reader.search({ query: 'none' })).resolves.toEqual({
+      status: 'complete', results: [], rawCount: 0, validCount: 0, omittedCount: 0,
+    });
   });
 
   it('creates a document then re-fetches its canonical write receipt', async () => {

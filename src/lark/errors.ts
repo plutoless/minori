@@ -49,6 +49,19 @@ export class LarkContractError extends Error {
   }
 }
 
+export class KnowledgeSearchContractError extends Error {
+  readonly code = 'knowledge_search_contract_error' as const;
+
+  constructor(readonly completeness: {
+    rawCount: number;
+    validCount: 0;
+    omittedCount: number;
+  }) {
+    super('knowledge_search_contract_error');
+    this.name = 'KnowledgeSearchContractError';
+  }
+}
+
 export class KnowledgeWriteConflict extends Error {
   readonly code = 'knowledge_write_conflict' as const;
 
