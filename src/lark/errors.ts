@@ -62,6 +62,19 @@ export class KnowledgeSearchContractError extends Error {
   }
 }
 
+export class MeetingContractError extends Error {
+  readonly code = 'meeting_contract_error' as const;
+
+  constructor(readonly completeness: {
+    rawCount: number;
+    validCount: number;
+    omittedCount: number;
+  }) {
+    super('meeting_contract_error');
+    this.name = 'MeetingContractError';
+  }
+}
+
 export class KnowledgeWriteConflict extends Error {
   readonly code = 'knowledge_write_conflict' as const;
 

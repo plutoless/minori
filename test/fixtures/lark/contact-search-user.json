@@ -1,0 +1,9 @@
+{
+  "users": [
+    { "open_id": "ou_alice", "localized_name": "Alice", "department": "Product" },
+    { "open_id": "ou_alex_design", "localized_name": "Alex", "department": "Design" },
+    { "open_id": "ou_alex_platform", "localized_name": "Alex", "department": "Platform" },
+    { "localized_name": "Broken" }
+  ],
+  "has_more": false
+}
