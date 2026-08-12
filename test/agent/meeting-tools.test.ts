@@ -287,10 +287,12 @@ describe('createMeetingTools', () => {
     const service = meetingService();
     const aborted = new LarkCliError('aborted');
     service.getMeetingDetails = vi.fn().mockRejectedValue(aborted);
-    const tools = createMeetingTools(service, new SourceRegistry(), { record: vi.fn() });
+    const record = vi.fn();
+    const tools = createMeetingTools(service, new SourceRegistry(), { record });
     await expect(tools.searchMeetings.execute?.(
       { range: { kind: 'recent' } }, TOOL_CONTEXT,
     )).rejects.toBe(aborted);
+    expect(record).not.toHaveBeenCalled();
   });
 
   it('marks availability as unavailable instead of inventing an empty artifact set', async () => {

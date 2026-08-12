@@ -285,9 +285,6 @@ export function createMeetingTools(
         const rawCount = results.reduce((sum, result) => sum + result.rawCount, 0);
         const validCount = results.reduce((sum, result) => sum + result.validCount, 0);
         const omittedCount = results.reduce((sum, result) => sum + result.omittedCount, 0);
-        audit.record({
-          toolName: 'searchMeetings', success: true, rawCount, validCount, omittedCount,
-        });
         let details: Awaited<ReturnType<MeetingService['getMeetingDetails']>> = [];
         let artifactAvailability: 'loaded' | 'unavailable' = 'loaded';
         if (unique.size > 0) {
@@ -298,6 +295,9 @@ export function createMeetingTools(
             artifactAvailability = 'unavailable';
           }
         }
+        audit.record({
+          toolName: 'searchMeetings', success: true, rawCount, validCount, omittedCount,
+        });
         const detailById = new Map(details.map((detail) => [detail.meetingId, detail]));
         const cursor = pendingWindows.length > 0
           ? nextCursor({ kind: 'search', source: 'meeting', key, windows: pendingWindows })
