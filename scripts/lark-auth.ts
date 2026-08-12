@@ -23,8 +23,8 @@ const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MEETING_READ_SCOPES = Object.freeze([
   'contact:user:search',
   'vc:meeting.search:read',
-  'vc:meeting:readonly',
-  'vc:meeting.artifact.note:read',
+  'vc:meeting.meetingevent:read',
+  'vc:note:read',
   'vc:meeting.artifact.verbatim:read',
   'vc:note:read',
   'minutes:minutes.search:read',
