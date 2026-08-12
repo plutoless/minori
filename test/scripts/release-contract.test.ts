@@ -125,6 +125,22 @@ describe('Team Agent release packaging contract', () => {
     }
   });
 
+  it('documents SDK rich replies without granting Lark CLI Bot Authority', async () => {
+    const readme = await text('README.md');
+    const client = await text('src/feishu/client.ts');
+    const larkRunner = await text('src/lark/runner.ts');
+
+    expect(readme).toContain('Rich Content Reply');
+    expect(readme).toContain('Control Reply');
+    expect(readme).toContain('Feishu `post`');
+    expect(readme).toContain('Markdown images become ordinary links');
+    expect(readme).toContain('Lark CLI remains strict-user-only');
+    expect(client).toContain("msg_type: 'post'");
+    expect(larkRunner).not.toMatch(
+      /sendRichContent|replyRichContent|message\.create|message\.reply/u,
+    );
+  });
+
   it('documents historical evidence without introducing a mandatory tool workflow', async () => {
     const readme = await text('README.md');
     const activeDesign = await text(
