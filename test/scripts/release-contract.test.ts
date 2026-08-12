@@ -284,9 +284,9 @@ describe('Team Agent release packaging contract', () => {
       packages: Record<string, { version?: string }>;
     };
 
-    expect(manifest.version).toBe('0.3.0');
-    expect(lockfile.version).toBe('0.3.0');
-    expect(lockfile.packages[''].version).toBe('0.3.0');
+    expect(manifest.version).toBe('0.3.1');
+    expect(lockfile.version).toBe('0.3.1');
+    expect(lockfile.packages[''].version).toBe('0.3.1');
   });
 
   it('documents the GitHub-only release operator paths without a legacy deploy command', async () => {
