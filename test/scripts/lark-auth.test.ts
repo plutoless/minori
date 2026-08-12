@@ -45,8 +45,8 @@ describe('runLarkAuth', () => {
   const meetingScopes = [
     'contact:user:search',
     'vc:meeting.search:read',
-    'vc:meeting:readonly',
-    'vc:meeting.artifact.note:read',
+    'vc:meeting.meetingevent:read',
+    'vc:note:read',
     'vc:meeting.artifact.verbatim:read',
     'vc:note:read',
     'minutes:minutes.search:read',

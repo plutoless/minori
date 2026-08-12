@@ -100,8 +100,8 @@ describe('Team Agent release packaging contract', () => {
     const expectedScopes = [
       'contact:user:search',
       'vc:meeting.search:read',
-      'vc:meeting:readonly',
-      'vc:meeting.artifact.note:read',
+      'vc:meeting.meetingevent:read',
+      'vc:note:read',
       'vc:meeting.artifact.verbatim:read',
       'vc:note:read',
       'minutes:minutes.search:read',
@@ -284,9 +284,9 @@ describe('Team Agent release packaging contract', () => {
       packages: Record<string, { version?: string }>;
     };
 
-    expect(manifest.version).toBe('0.2.4');
-    expect(lockfile.version).toBe('0.2.4');
-    expect(lockfile.packages[''].version).toBe('0.2.4');
+    expect(manifest.version).toBe('0.3.0');
+    expect(lockfile.version).toBe('0.3.0');
+    expect(lockfile.packages[''].version).toBe('0.3.0');
   });
 
   it('documents the GitHub-only release operator paths without a legacy deploy command', async () => {
