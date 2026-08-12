@@ -40,6 +40,14 @@ _Avoid_: Final tool set, scenario restriction, unrestricted knowledge management
 Any audited Agent tool operation that changes durable state: a Typed Knowledge Write, a Team Context mutation, or a Scheduled Task lifecycle mutation. Reads, searches, list operations, and reply delivery are not Persistent Agent Writes.
 _Avoid_: Read tool, reply transport, unrestricted write, database access
 
+**Knowledge Search Audit**:
+Bounded, content-free diagnostic metadata about one knowledge search, including its success or stable failure category and raw, valid, and omitted result counts. Its persistence is best-effort and never turns an otherwise successful read into a failed tool call or a Persistent Agent Write.
+_Avoid_: Write audit, search history, query log, retrieved-content mirror
+
+**Knowledge Search Result Set**:
+The normalized results and bounded completeness metadata returned by one knowledge search. It tells the Agent whether rows were omitted without exposing raw provider errors or rejected row content.
+_Avoid_: Raw search response, complete knowledge snapshot, search audit row
+
 **Write Replay Boundary**:
 The moment the first Persistent Agent Write begins in an Agent run. Before this boundary, a transient model or read-only-tool failure may safely retry a message run under its existing policy; after it, Minori never automatically replays the whole run, even when the write outcome is unknown. Scheduled Runs never receive a business retry on either side of the boundary. Idempotent retry of reply transport is separate from Agent-run replay.
 _Avoid_: Retry every failure, completed-write boundary, reply retry

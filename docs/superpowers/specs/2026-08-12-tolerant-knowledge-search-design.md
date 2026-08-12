@@ -1,6 +1,6 @@
 # Tolerant Knowledge Search Design
 
-**Status:** Approved in conversation
+**Status:** Approved
 
 ## Problem
 
@@ -20,36 +20,54 @@ reporting a completely unrecognizable non-empty response.
 
 `LarkKnowledgeService.search` normalizes search results one row at a time.
 
-- A row is valid when it has a string `entity_type`, an HTTP(S) URL, and a stable
-  token from `entity_id` or, as a fallback, `result_meta.token`.
-- A valid row uses the existing title fallback order and becomes the existing
-  `KnowledgeSearchResult` shape.
+- A row is valid when it has a string `entity_type` and a stable document
+  identifier that `fetchDocument` can consume. The normalized `token` uses the
+  current Wiki response field `result_meta.token` when present and falls back to
+  the legacy `entity_id` field only when needed.
+- A valid row uses the existing title fallback order and becomes a normalized
+  `KnowledgeSearchResult` inside a Knowledge Search Result Set. Its `url` is
+  included only when the provider supplied a valid HTTP(S) URL; a missing or
+  malformed URL does not discard an otherwise fetchable result.
 - An invalid row is omitted without invalidating other rows.
-- An empty raw result array resolves to an empty result array.
+- An empty raw result array resolves to a complete Knowledge Search Result Set
+  with no results and all counts at zero.
 - A non-empty raw result array with zero valid rows throws the stable
   `knowledge_search_contract_error` category. It must not appear as an empty
   search result.
-- Mixed valid and invalid rows resolve with the valid rows.
+- Mixed valid and invalid rows resolve with the valid rows and bounded
+  completeness metadata (`status`, `rawCount`, `validCount`, `omittedCount`).
 
-The raw CLI response is never passed to the model.
+The Agent receives the normalized results plus completeness metadata, so it may
+naturally disclose that a search was partial. The raw CLI response and rejected
+row content are never passed to the model.
 
 ## Read Tool Audit
 
-Knowledge-search executions persist a bounded, content-free audit at the existing
-Agent tool-run boundary. The audit may contain only:
+Only `searchKnowledge` executions attempt to persist one bounded, content-free
+Knowledge Search Audit in the existing `tool_runs` table. This is a single
+post-outcome insert, not a `beginWrite` / `finishWrite` lifecycle, and it must not
+mark the Write Replay Boundary. No schema migration is required. The audit uses:
 
-- tool name;
-- success or failure;
-- stable error category;
-- raw result count;
-- valid result count;
-- omitted result count;
-- timestamps.
+- `tool_name = searchKnowledge`;
+- `success = true` for complete or partial usable results, otherwise `false`;
+- `error_category = knowledge_search_contract_error` only for the fully invalid
+  non-empty result;
+- `sanitized_summary = raw=<n> valid=<n> omitted=<n>`;
+- the timestamps already present on `tool_runs`.
 
 It must not persist the search query, result titles, URLs, tokens, document bodies,
 Open IDs, or raw provider errors. A partially valid search is successful and
 records its omission count. A completely invalid non-empty response fails with
 `knowledge_search_contract_error`.
+
+Knowledge Search Audit persistence is best-effort. If PostgreSQL cannot store the
+audit but the search itself succeeds, Minori returns the valid results to the
+Agent and emits only the stable operational category `search_audit_unavailable`.
+If the search itself fails, an audit failure must not replace its stable search
+error category. Write audit remains fail-closed and unchanged.
+
+Other read tools (`fetchDocument`, space/node listing, and node lookup) remain out
+of scope. They may adopt the same pattern in a later independently designed change.
 
 No new member-facing workflow or intent classifier is introduced. The Agent may
 continue naturally with partial results and may explain a complete tool failure.
@@ -69,11 +87,13 @@ continue naturally with partial results and may explain a complete tool failure.
 
 Tests use literal provider fixtures and verify:
 
-1. the existing `entity_id` shape remains supported;
-2. Wiki rows using `result_meta.token` resolve;
-3. mixed rows return only valid results;
-4. an empty raw result resolves empty;
-5. a non-empty, fully invalid response throws
+1. Wiki rows using `result_meta.token` resolve;
+2. the legacy `entity_id` shape remains supported as a fallback;
+3. when both identifiers exist, `result_meta.token` is used;
+4. a valid token with a missing or malformed URL remains usable without a URL;
+5. mixed rows return only valid results and accurate completeness metadata;
+6. an empty raw result resolves as a complete empty result set;
+7. a non-empty, fully invalid response throws
    `knowledge_search_contract_error`.
 
 ### Agent tool audit boundary
