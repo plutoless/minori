@@ -18,6 +18,7 @@ export type EventOutcome = {
   replyMessageId?: string;
   errorCode?: string;
   preparedReplyText?: string;
+  preparedReplyKind?: 'rich' | 'control';
 };
 
 export const processedEvents = pgTable('processed_events', {

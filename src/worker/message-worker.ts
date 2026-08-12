@@ -4,7 +4,9 @@ import { interruptedAfterWriteText, type WriteAttemptReceipt } from '../agent/ru
 import type { NormalizedMessage } from '../contracts/messages.js';
 import type { FeishuMessenger } from '../feishu/client.js';
 import type { ConversationStore } from '../storage/conversation-store.js';
-import type { EventStore, StoredEvent, TerminalEventResult } from '../storage/event-store.js';
+import type {
+  EventStore, PreparedReplyKind, StoredEvent, TerminalEventResult,
+} from '../storage/event-store.js';
 import { startProgressReply, type ProgressReplyHandle } from './progress-reply.js';
 import { formatAgentReply } from './source-format.js';
 
@@ -165,7 +167,8 @@ export class MessageWorker {
       const elapsed = this.now().getTime() - replyAttemptedAt.getTime();
       if (elapsed >= this.replyDeduplicationMs
         || !event.replyIdempotencyKey
-        || !event.preparedReplyText) {
+        || !event.preparedReplyText
+        || !event.preparedReplyKind) {
         this.options.logger.warn(
           { eventId: event.eventId, errorCode: 'reply_uncertain' },
           'reply outcome is uncertain',
@@ -223,15 +226,23 @@ export class MessageWorker {
           text: event.preparedReplyText!,
           key: event.replyIdempotencyKey!,
           attemptedAt: event.replyAttemptedAt,
+          kind: event.preparedReplyKind!,
         }
         : await this.prepareReply(event, signal, state, progress);
       sentReplyText = prepared.text;
       try {
-        replyMessageId = await this.withAbort(this.options.messenger.replyText(
-          event.payload.messageId,
-          prepared.text,
-          prepared.key,
-        ), signal);
+        const delivery = prepared.kind === 'rich'
+          ? this.options.messenger.replyRichContent(
+            event.payload.messageId,
+            prepared.text,
+            prepared.key,
+          )
+          : this.options.messenger.replyText(
+            event.payload.messageId,
+            prepared.text,
+            prepared.key,
+          );
+        replyMessageId = await this.withAbort(delivery, signal);
       } catch {
         if (signal.aborted) throw signal.reason;
         throw new RetryableProcessingError('reply_failed');
@@ -275,8 +286,10 @@ export class MessageWorker {
     progress: ProgressReplyHandle,
   ) {
     let text: string;
+    let kind: PreparedReplyKind = 'rich';
     if (event.payload.content.kind === 'unsupported') {
       text = UNSUPPORTED_REPLY;
+      kind = 'control';
     } else if (event.writeStartedAt) {
       const writeAttempts = await this.withAbort(
         this.options.loadWriteAttempts(event.eventId),
@@ -301,16 +314,17 @@ export class MessageWorker {
         if (signal.aborted) throw signal.reason;
         if (event.attempts < 3) throw new RetryableProcessingError('agent_failed');
         text = TEMPORARY_ERROR_REPLY;
-        return this.persistPreparedReply(event, text, signal, state, progress);
+        return this.persistPreparedReply(event, text, 'control', signal, state, progress);
       }
       text = formatAgentReply(reply);
     }
-    return this.persistPreparedReply(event, text, signal, state, progress);
+    return this.persistPreparedReply(event, text, kind, signal, state, progress);
   }
 
   private async persistPreparedReply(
     event: StoredEvent,
     text: string,
+    kind: PreparedReplyKind,
     signal: AbortSignal,
     state: { replyStarted: boolean },
     progress: ProgressReplyHandle,
@@ -323,10 +337,10 @@ export class MessageWorker {
       event.attempts,
       key,
       attemptedAt,
-      text,
+      { text, kind },
     ), signal);
     state.replyStarted = true;
-    return { text, key, attemptedAt };
+    return { text, kind, key, attemptedAt };
   }
 
   private async removeTerminalReaction(event: StoredEvent, terminal: TerminalEventResult) {

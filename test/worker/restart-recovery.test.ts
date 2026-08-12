@@ -15,6 +15,7 @@ function recovered(overrides: Partial<StoredEvent> = {}): StoredEvent {
     replyIdempotencyKey: 'minori-1234567890abcdef1234567890abcdef',
     replyAttemptedAt: new Date('2026-08-05T00:30:00Z'),
     preparedReplyText: 'durably prepared answer',
+    preparedReplyKind: 'rich',
     processingReactionId: 'stale_reaction',
     ...overrides,
   };
@@ -46,7 +47,9 @@ function setup(now: Date) {
     }),
   };
   const messenger = {
-    addReaction: vi.fn(async () => null), replyText,
+    addReaction: vi.fn(async () => null),
+    replyText: vi.fn(async () => 'om_control'),
+    replyRichContent: replyText,
     removeReaction: vi.fn(async () => { calls.push('remove'); }),
   };
   const runAgent = vi.fn();
@@ -81,7 +84,7 @@ function setup(now: Date) {
 
 describe('MessageWorker restart recovery', () => {
   it('does not duplicate a reply accepted just before the first worker loses confirmation', async () => {
-    let marked: { key: string; attemptedAt: Date; text: string } | undefined;
+    let marked: { key: string; attemptedAt: Date; text: string; kind: 'rich' | 'control' } | undefined;
     const accepted = new Map<string, string>();
     let loseFirstConfirmation = true;
     const replyText = vi.fn(async (_messageId: string, _text: string, key: string) => {
@@ -102,8 +105,12 @@ describe('MessageWorker restart recovery', () => {
       markReplyUncertain: vi.fn(async () => ({})),
       retry: vi.fn(async () => undefined),
       markReplyStarted: vi.fn(async (
-        _eventId: string, _attempt: number, key: string, attemptedAt: Date, text: string,
-      ) => { marked = { key, attemptedAt, text }; }),
+        _eventId: string,
+        _attempt: number,
+        key: string,
+        attemptedAt: Date,
+        prepared: { text: string; kind: 'rich' | 'control' },
+      ) => { marked = { key, attemptedAt, ...prepared }; }),
     };
     const runAgent = vi.fn(async () => ({
       text: 'prepared answer', sources: [], usage: {},
@@ -120,7 +127,8 @@ describe('MessageWorker restart recovery', () => {
       messenger: {
         addReaction: vi.fn(async () => null),
         removeReaction: vi.fn(async () => undefined),
-        replyText,
+        replyText: vi.fn(async () => 'om_control'),
+        replyRichContent: replyText,
       },
       logger: { warn: vi.fn(), info: vi.fn() },
       now: () => new Date('2026-08-05T01:00:00Z'),
@@ -129,6 +137,7 @@ describe('MessageWorker restart recovery', () => {
     delete initial.replyIdempotencyKey;
     delete initial.replyAttemptedAt;
     delete initial.preparedReplyText;
+    delete initial.preparedReplyKind;
     delete initial.processingReactionId;
     await worker.process(initial);
     expect(eventStore.retry).toHaveBeenCalledWith(
@@ -141,6 +150,7 @@ describe('MessageWorker restart recovery', () => {
       replyIdempotencyKey: marked!.key,
       replyAttemptedAt: marked!.attemptedAt,
       preparedReplyText: marked!.text,
+      preparedReplyKind: marked!.kind,
     });
     delete replay.processingReactionId;
     await worker.process(replay);
@@ -161,7 +171,7 @@ describe('MessageWorker restart recovery', () => {
 
     expect(state.messenger.removeReaction).toHaveBeenCalledWith('om_1', 'stale_reaction');
     expect(state.runAgent).not.toHaveBeenCalled();
-    expect(state.messenger.replyText).toHaveBeenCalledWith(
+    expect(state.messenger.replyRichContent).toHaveBeenCalledWith(
       'om_1', 'durably prepared answer', event.replyIdempotencyKey,
     );
     expect(state.eventStore.markReplyStarted).not.toHaveBeenCalled();
@@ -186,6 +196,18 @@ describe('MessageWorker restart recovery', () => {
     expect(JSON.stringify(state.logger.warn.mock.calls)).not.toContain('durably prepared answer');
   });
 
+  it('marks a legacy prepared reply without a semantic kind uncertain without sending', async () => {
+    const state = setup(new Date('2026-08-05T01:00:00Z'));
+    const event = recovered({ preparedReplyKind: undefined });
+
+    await state.worker.process(event);
+
+    expect(state.calls.slice(0, 2)).toEqual(['uncertain', 'remove']);
+    expect(state.messenger.replyText).not.toHaveBeenCalled();
+    expect(state.messenger.replyRichContent).not.toHaveBeenCalled();
+    expect(state.runAgent).not.toHaveBeenCalled();
+  });
+
   it('returns a durable interruption receipt without replaying an Agent run after a write', async () => {
     const state = setup(new Date('2026-08-05T01:00:00Z'));
     const event = recovered({
@@ -193,6 +215,7 @@ describe('MessageWorker restart recovery', () => {
       replyIdempotencyKey: undefined,
       replyAttemptedAt: undefined,
       preparedReplyText: undefined,
+      preparedReplyKind: undefined,
     });
 
     await state.worker.process(event);
@@ -200,12 +223,12 @@ describe('MessageWorker restart recovery', () => {
     expect(state.runAgent).not.toHaveBeenCalled();
     expect(state.eventStore.retry).not.toHaveBeenCalled();
     expect(state.loadWriteAttempts).toHaveBeenCalledWith('evt_crash');
-    expect(state.messenger.replyText).toHaveBeenCalledWith(
+    expect(state.messenger.replyRichContent).toHaveBeenCalledWith(
       'om_1',
       expect.stringContaining('写入开始后中断'),
       expect.stringMatching(/^minori-/u),
     );
-    expect(state.messenger.replyText.mock.calls[0]?.[1])
+    expect(state.messenger.replyRichContent.mock.calls[0]?.[1])
       .toContain('https://acme.feishu.cn/docx/created');
   });
 
@@ -222,12 +245,13 @@ describe('MessageWorker restart recovery', () => {
       replyIdempotencyKey: undefined,
       replyAttemptedAt: undefined,
       preparedReplyText: undefined,
+      preparedReplyKind: undefined,
     });
 
     await state.worker.process(event);
 
     expect(state.eventStore.markProgressAttempted).not.toHaveBeenCalled();
-    expect(state.messenger.replyText).toHaveBeenCalledOnce();
-    expect(state.messenger.replyText.mock.calls[0]?.[1]).toBe('final answer');
+    expect(state.messenger.replyRichContent).toHaveBeenCalledOnce();
+    expect(state.messenger.replyRichContent.mock.calls[0]?.[1]).toBe('final answer');
   });
 });
