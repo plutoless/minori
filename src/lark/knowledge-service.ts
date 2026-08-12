@@ -74,14 +74,7 @@ const driveSearchSchema = z.object({
 }).passthrough();
 
 const driveSearchRowSchema = z.object({
-  title: z.string().optional(),
-  title_highlighted: z.string().optional(),
   entity_type: z.string().min(1),
-  entity_id: z.string().min(1).optional(),
-  result_meta: z.object({
-    token: z.string().min(1).optional(),
-    url: z.string().optional(),
-  }).passthrough().optional(),
 }).passthrough();
 
 const documentSchema = z.object({
@@ -142,8 +135,18 @@ function searchResultTitle(
   return title || highlighted || fallback;
 }
 
-function httpUrl(value: string | undefined) {
-  if (!value) return undefined;
+function nonEmptyString(value: unknown) {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function httpUrl(value: unknown) {
+  if (typeof value !== 'string') return undefined;
   try {
     const parsed = new URL(value);
     return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? value : undefined;
@@ -196,11 +199,16 @@ export class LarkKnowledgeService implements KnowledgeService {
     const results = parsed.results.flatMap((raw): KnowledgeSearchResult[] => {
       const row = driveSearchRowSchema.safeParse(raw);
       if (!row.success) return [];
-      const token = row.data.result_meta?.token ?? row.data.entity_id;
+      const resultMeta = objectValue(row.data.result_meta);
+      const token = nonEmptyString(resultMeta?.token) ?? nonEmptyString(row.data.entity_id);
       if (!token) return [];
-      const url = httpUrl(row.data.result_meta?.url);
+      const url = httpUrl(resultMeta?.url);
       return [{
-        title: searchResultTitle(row.data.title, row.data.title_highlighted, token),
+        title: searchResultTitle(
+          nonEmptyString(row.data.title),
+          nonEmptyString(row.data.title_highlighted),
+          token,
+        ),
         ...(url ? { url } : {}),
         token,
         type: row.data.entity_type,

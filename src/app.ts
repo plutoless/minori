@@ -144,6 +144,9 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
     }, logger);
     const { messenger } = feishu;
     const calendar = createCalendarCalculator();
+    const onAgentOperationalError = (errorCode: 'search_audit_unavailable') => {
+      logger.warn({ errorCode }, 'agent operational audit unavailable');
+    };
     const nextWorker = new MessageWorker({
       eventStore: storage.eventStore,
       conversations: storage.conversationStore,
@@ -184,9 +187,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
             },
           } : {}),
           agentRunStore: storage.agentRunStore!,
-          onOperationalError: (errorCode) => {
-            logger.warn({ errorCode }, 'agent operational audit unavailable');
-          },
+          onOperationalError: onAgentOperationalError,
           conversationKey: message.conversationKey,
           triggerMessageId: message.messageId,
           conversationStore: storage.conversationStore!,
@@ -213,9 +214,7 @@ export function createApp(config: AppConfig, logger: Logger): MinoriApp {
           groupContextSource: feishu.groupContext,
           ...(teamContextSource ? { teamContextSource } : {}),
           agentRunStore: storage.agentRunStore,
-          onOperationalError: (errorCode) => {
-            logger.warn({ errorCode }, 'agent operational audit unavailable');
-          },
+          onOperationalError: onAgentOperationalError,
           contextTokenTarget: config.conversationContextTokenTarget,
         },
         messenger,
