@@ -116,3 +116,9 @@ one or more normalized results, and its audit must contain only counts and the
 stable success/failure fields above. Production verification must not print or
 persist result bodies, titles, URLs, tokens, identities, OAuth material, or
 environment values.
+
+The acceptance record may state only that the exact released image is healthy
+with restart count zero, the bounded query completed without
+`knowledge_search_contract_error`, one or more normalized results were returned,
+and one `searchKnowledge` audit row contained counts only. It must not contain the
+query, result title, URL, token, body, identity, OAuth value, or environment value.
