@@ -101,8 +101,7 @@ describe('Team Agent release packaging contract', () => {
       'contact:user:search',
       'vc:meeting.search:read',
       'vc:meeting.meetingevent:read',
-      'vc:note:read',
-      'vc:meeting.artifact.verbatim:read',
+      'vc:record:readonly',
       'vc:note:read',
       'minutes:minutes.search:read',
       'minutes:minutes.basic:read',
@@ -113,6 +112,7 @@ describe('Team Agent release packaging contract', () => {
       expect(readme).toContain(`\`${scope}\``);
       expect(design).toContain(scope);
     }
+    expect(auth).not.toContain("'vc:meeting.artifact.verbatim:read'");
     for (const toolName of ['searchMeetings', 'searchMeetingMinutes', 'fetchMeetingContent']) {
       expect(readme).toContain(`\`${toolName}\``);
       expect(tools).toContain(toolName);

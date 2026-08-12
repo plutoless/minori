@@ -62,14 +62,13 @@ The application requests only the additional user scopes required by the typed c
 - `contact:user:search`
 - `vc:meeting.search:read`
 - `vc:meeting.meetingevent:read`
-- `vc:note:read`
-- `vc:meeting.artifact.verbatim:read`
+- `vc:record:readonly`
 - `vc:note:read`
 - `minutes:minutes.search:read`
 - `minutes:minutes.basic:read`
 - `minutes:minutes.transcript:export`
 
-The OAuth command keeps the existing Docs, Drive, and Wiki domains and adds these explicit scopes. `contact:user:search` is used only with user identity to resolve a participant name to a meeting-search identifier; Minori accepts only candidates the Dedicated Knowledge User's typed search actually returns and does not enumerate the organization. The application does not request complete Contact, VC, or Minutes domains because they contain write, media, meeting-control, and other capabilities outside this feature.
+The OAuth command keeps the existing Docs, Drive, and Wiki domains and adds these explicit scopes. `contact:user:search` is used only with user identity to resolve a participant name to a meeting-search identifier; Minori accepts only candidates the Dedicated Knowledge User's typed search actually returns and does not enumerate the organization. `vc:record:readonly` is used only when Minori opens a selected Meeting Record after lightweight discovery. The advanced `vc:meeting.artifact.verbatim:read` scope is not part of the default OAuth set in this tenant; a Smart Meeting Note transcript that requires it is an independently unavailable source and does not block Meeting Record search, readable summaries, or Minute transcripts. The application does not request complete Contact, VC, or Minutes domains because they contain write, media, meeting-control, and other capabilities outside this feature. Lark CLI remains locked at 1.0.84 for this contract fix; dependency upgrades are separate changes.
 
 The app permissions must be added and published in the Feishu developer console before the production user reauthorizes. Production uses the existing persistent Lark credential store; there is no second token store.
 
