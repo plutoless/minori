@@ -303,6 +303,29 @@ describe('PostgresAgentRunStore', () => {
     }]);
   });
 
+  it('keeps a separate failure detail for each Agent retry', async () => {
+    const first = await store.start({ eventId: 'evt_1', claimAttempt: 1, model: '5.6-terra' });
+    const second = await store.start({ eventId: 'evt_1', claimAttempt: 2, model: '5.6-terra' });
+    await store.finish(first.id, {
+      toolCallCount: 0, outcome: 'failed', errorMessage: 'first failure',
+    });
+    await store.finish(second.id, {
+      toolCallCount: 0, outcome: 'failed', errorMessage: 'second failure',
+    });
+
+    const result = await database.pool.query<{
+      claimAttempt: number;
+      errorMessage: string | null;
+    }>(`
+      select claim_attempt as "claimAttempt", error_message as "errorMessage"
+      from agent_runs where id in ($1, $2) order by claim_attempt
+    `, [first.id, second.id]);
+    expect(result.rows).toEqual([
+      { claimAttempt: 1, errorMessage: 'first failure' },
+      { claimAttempt: 2, errorMessage: 'second failure' },
+    ]);
+  });
+
   it('clears only expired failure details while retaining Agent Run audits', async () => {
     await database.pool.query(`
       insert into processed_events (
