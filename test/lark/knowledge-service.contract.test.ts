@@ -51,6 +51,44 @@ describe('LarkKnowledgeService contract', () => {
     });
   });
 
+  it('accepts verified live append and patch responses without a repeated document ID', async () => {
+    const append = await loadFixtureData('docs.append.default');
+    const patch = await loadFixtureData('docs.patch.default');
+    const before = {
+      document: {
+        document_id: '<redacted-id>', revision_id: 9, content: '# Audit\n\nOld',
+        title: 'Audit', url: 'https://www.feishu.cn/docx/redacted',
+      },
+    };
+    const afterAppend = {
+      document: { ...before.document, revision_id: 10, content: '# Audit\n\nOld\n\nNew' },
+    };
+    const afterPatch = {
+      document: { ...before.document, revision_id: 10, content: '# Audit\n\nCurrent' },
+    };
+
+    const appendRun = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'docs.append') return append;
+      if (command.id === 'docs.fetch') return appendRun.mock.calls.length === 1
+        ? before : afterAppend;
+      throw new Error('unexpected_command');
+    });
+    const appendService = new LarkKnowledgeService({ run: appendRun } as unknown as LarkExecutor);
+    await expect(appendService.appendDocument({ doc: '<redacted-id>', content: '\nNew' }))
+      .resolves.toMatchObject({ operation: 'append', revisionId: 10 });
+
+    const patchRun = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'docs.patch') return patch;
+      if (command.id === 'docs.fetch') return patchRun.mock.calls.length === 1
+        ? before : afterPatch;
+      throw new Error('unexpected_command');
+    });
+    const patchService = new LarkKnowledgeService({ run: patchRun } as unknown as LarkExecutor);
+    await expect(patchService.patchDocument({
+      doc: '<redacted-id>', pattern: 'Old', replacement: 'Current',
+    })).resolves.toMatchObject({ operation: 'patch', revisionId: 10 });
+  });
+
   it('preserves current Wiki search rows independently of malformed siblings', async () => {
     const { executor } = executorReturning(await fixtureData('drive-search-current-wiki'));
     const reader = new LarkKnowledgeService(executor);

@@ -1,6 +1,7 @@
 import type { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { buildInvocation, type LarkCommand } from './command-catalog.js';
+import { decodeAuthStatus } from './contract-decoders.js';
 import { LarkCliError, type LarkCliErrorCode } from './errors.js';
 
 const larkErrorSchema = z.object({
@@ -20,21 +21,13 @@ const larkEnvelopeSchema = z.discriminatedUnion('ok', [
   }).passthrough(),
 ]);
 
-const authIdentityStatusSchema = z.object({
-  status: z.string(),
-  available: z.boolean(),
-}).passthrough();
-
-const authStatusSchema = z.object({
-  appId: z.string(),
-  brand: z.string(),
-  defaultAs: z.string(),
-  identity: z.enum(['user', 'bot', 'none']),
-  identities: z.object({
-    user: authIdentityStatusSchema,
-    bot: authIdentityStatusSchema,
-  }).passthrough(),
-}).passthrough();
+export function validateAuthStatus(data: unknown) {
+  try {
+    return decodeAuthStatus(data);
+  } catch {
+    throw new LarkCliError('invalid_envelope');
+  }
+}
 
 export interface SpawnedProcess {
   stdout: NodeJS.ReadableStream;
@@ -91,7 +84,11 @@ function buildChildEnvironment(configDir: string): NodeJS.ProcessEnv {
 }
 
 export class LarkRunner implements LarkExecutor {
-  constructor(private readonly options: LarkRunnerOptions) {}
+  private readonly options: LarkRunnerOptions;
+
+  constructor(options: LarkRunnerOptions) {
+    this.options = options;
+  }
 
   async run<T>(command: LarkCommand, signal?: AbortSignal): Promise<T> {
     const startedAt = Date.now();
@@ -212,9 +209,11 @@ export class LarkRunner implements LarkExecutor {
     }
 
     if (command.id === 'auth.status' && exitCode === 0) {
-      const authStatus = authStatusSchema.safeParse(parsed);
-      if (!authStatus.success) throw new LarkCliError('invalid_envelope', { exitCode });
-      return authStatus.data as T;
+      try {
+        return validateAuthStatus(parsed) as T;
+      } catch {
+        throw new LarkCliError('invalid_envelope', { exitCode });
+      }
     }
 
     const envelope = larkEnvelopeSchema.safeParse(parsed);

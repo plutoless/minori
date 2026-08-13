@@ -44,6 +44,17 @@ export type LarkCommand =
   | { id: 'wiki.nodeList'; spaceId: string; parentNodeToken?: string }
   | { id: 'wiki.nodeGet'; nodeToken: string };
 
+export const LARK_COMMAND_IDS = [
+  'auth.status', 'contact.searchUser', 'vc.search', 'vc.detail',
+  'note.detail', 'note.transcript', 'minutes.search', 'minutes.detail',
+  'drive.search', 'docs.fetch', 'docs.create', 'docs.append', 'docs.patch',
+  'wiki.spaceList', 'wiki.nodeList', 'wiki.nodeGet',
+] as const satisfies readonly LarkCommand['id'][];
+
+type MissingLarkCommandId = Exclude<LarkCommand['id'], typeof LARK_COMMAND_IDS[number]>;
+const ALL_LARK_COMMAND_IDS_ARE_CATALOGED: MissingLarkCommandId extends never ? true : never = true;
+void ALL_LARK_COMMAND_IDS_ARE_CATALOGED;
+
 export type LarkInvocation = {
   args: string[];
   stdin?: string;

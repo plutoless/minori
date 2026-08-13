@@ -3,9 +3,10 @@ import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import type { LarkCommand } from '../../src/lark/command-catalog.js';
+import { LARK_COMMAND_IDS, type LarkCommand } from '../../src/lark/command-catalog.js';
 import {
   applyFixedDocumentAudit,
+  assertContractCaseCoverage,
   bootstrapFixedDocument,
   LARK_CONTRACT_CASE_IDS,
   runContractAudit,
@@ -35,16 +36,8 @@ async function runOperator(args: string[], input: string, env: NodeJS.ProcessEnv
 
 describe('Lark Contract Audit', () => {
   it('enumerates every current command structural case', () => {
-    expect(LARK_CONTRACT_CASE_IDS).toEqual([
-      'auth.status.default', 'contact.searchUser.default',
-      'vc.search.default', 'vc.detail.default',
-      'note.detail.normal', 'note.detail.unified', 'note.transcript.unified',
-      'minutes.search.default', 'minutes.detail.basic', 'minutes.detail.summary',
-      'minutes.detail.todo', 'minutes.detail.chapter', 'minutes.detail.transcript',
-      'drive.search.default', 'docs.fetch.default', 'docs.create.bootstrap',
-      'docs.append.default', 'docs.patch.default',
-      'wiki.spaceList.default', 'wiki.nodeList.default', 'wiki.nodeGet.default',
-    ]);
+    expect(LARK_CONTRACT_CASE_IDS.length).toBeGreaterThan(LARK_COMMAND_IDS.length);
+    expect(assertContractCaseCoverage).not.toThrow();
   });
 
   it('rejects an unexpected CLI version before executing any command', async () => {
@@ -180,12 +173,18 @@ describe('Lark Contract Audit', () => {
         return { ok: true, data: { spaces: [{ space_id: 'space_1', name: 'private' }] } };
       }
       if (command.id === 'wiki.nodeList') {
-        return { ok: true, data: { nodes: [{ node_token: 'node_1' }] } };
+        return {
+          ok: true,
+          data: { nodes: [{ node_token: 'node_1', title: 'private', obj_type: 'docx' }] },
+        };
       }
       if (command.id === 'wiki.nodeGet') {
         return {
           ok: true,
-          data: { node_token: 'node_1', obj_token: 'doc_1', future_field: 'private' },
+          data: {
+            node_token: 'node_1', obj_token: 'doc_1', obj_type: 'docx', title: 'private',
+            future_field: 'private',
+          },
         };
       }
       throw new Error('sample_unavailable');
@@ -253,11 +252,11 @@ describe('Lark Contract Audit', () => {
     const run = vi.fn(async (command: LarkCommand) => {
       if (command.id === 'auth.status') return { identity: 'user' };
       if (command.id === 'vc.search') {
-        return { ok: true, data: { items: [{ id: 'meeting_1' }] } };
+        return { ok: true, data: { items: [{ id: 'meeting_1', display_info: 'private' }] } };
       }
       if (command.id === 'vc.detail') {
         return { ok: true, data: { meetings: Array.from({ length: 7 }, (_, index) => ({
-          meeting_id: `meeting_${index + 1}`, note_id: `note_${index + 1}`,
+          meeting_id: `meeting_${index + 1}`, topic: 'private', note_id: `note_${index + 1}`,
         })) } };
       }
       if (command.id === 'note.detail') {

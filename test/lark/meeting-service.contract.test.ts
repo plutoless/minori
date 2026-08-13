@@ -61,6 +61,28 @@ const MINUTE_REF: MeetingArtifactReference = {
 const BUDGET = (): MeetingByteBudget => ({ remaining: 24 * 1024 * 1024 });
 
 describe('LarkMeetingService', () => {
+  it('consumes verified live Contact and VC data fixtures through production parsers', async () => {
+    const contact = await loadFixtureData('contact.searchUser.default');
+    const search = await loadFixtureData('vc.search.default');
+    const detail = await loadFixtureData('vc.detail.default');
+    const executor = executorWith((command) => {
+      if (command.id === 'contact.searchUser') return contact;
+      if (command.id === 'vc.search') return search;
+      if (command.id === 'vc.detail') return detail;
+      throw new Error('unexpected_command');
+    });
+    const service = new LarkMeetingService(
+      executor, knowledgeWith(() => undefined), artifactStoreWith('unused'),
+    );
+
+    await expect(service.resolvePeople(['<redacted-text>'])).resolves.toEqual([
+      { status: 'resolved', name: '<redacted-text>', openId: '<redacted-id>' },
+    ]);
+    const meetings = await service.searchMeetings({ pageSize: 30 });
+    expect(meetings.items).toHaveLength(30);
+    await expect(service.getMeetingDetails(['<redacted-id>'])).resolves.toHaveLength(30);
+  });
+
   it('reads the live CLI 1.0.84 Note detail wrapper', async () => {
     const detail = await fixture('vc-detail.json');
     const note = await loadFixtureData('note.detail.normal');
