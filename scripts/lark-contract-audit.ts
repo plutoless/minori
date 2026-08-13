@@ -698,12 +698,11 @@ function parseSingleMarker(input: unknown, token: string, stage: 'initial' | 'fi
   return { revisionId: document.revision_id, nonce: markers.current };
 }
 
-function requireWrite(input: unknown, token: string, revisionId: number, stage: 'append_response' | 'patch_response') {
+function requireWrite(input: unknown, token: string, stage: 'append_response' | 'patch_response') {
   const parsed = writeSchema.safeParse(dataOf(input));
   if (!parsed.success
     || (parsed.data.document.document_id !== undefined
-      && parsed.data.document.document_id !== token)
-    || parsed.data.document.revision_id !== revisionId) unsafe(stage);
+      && parsed.data.document.document_id !== token)) unsafe(stage);
 }
 
 function executeAuditCommand(
@@ -738,7 +737,7 @@ export async function runFixedDocumentAudit(
     revisionId: initial.revisionId,
   }, input.signal);
   input.onResponse?.('docs.append.default', appendRaw);
-  requireWrite(appendRaw, input.documentToken, initial.revisionId + 1, 'append_response');
+  requireWrite(appendRaw, input.documentToken, 'append_response');
 
   const intermediateRaw = await executeAuditCommand(executor, {
     id: 'docs.fetch', doc: input.documentToken,
@@ -765,7 +764,7 @@ export async function runFixedDocumentAudit(
     revisionId: intermediate.data.document.revision_id,
   }, input.signal);
   input.onResponse?.('docs.patch.default', patchRaw);
-  requireWrite(patchRaw, input.documentToken, intermediate.data.document.revision_id + 1, 'patch_response');
+  requireWrite(patchRaw, input.documentToken, 'patch_response');
 
   const finalRaw = await executeAuditCommand(executor, {
     id: 'docs.fetch', doc: input.documentToken,

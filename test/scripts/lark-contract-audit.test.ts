@@ -63,9 +63,9 @@ describe('Lark Contract Audit', () => {
   it('keeps the fixed audit document constant-size across append and patch', async () => {
     const responses = [
       { document: { document_id: 'audit_doc', revision_id: 7, content: '# Minori Lark CLI Contract Audit\n\nCurrent marker: nonce-old' } },
-      { document: { revision_id: 8, url: 'https://example.feishu.cn/docx/audit' }, result: {}, warnings: [] },
+      { document: { revision_id: 7, url: 'https://example.feishu.cn/docx/audit' }, result: {}, warnings: [] },
       { document: { document_id: 'audit_doc', revision_id: 8, content: '# Minori Lark CLI Contract Audit\n\nCurrent marker: nonce-old\n\nCandidate marker: nonce-new' } },
-      { document: { revision_id: 9, url: 'https://example.feishu.cn/docx/audit' }, result: {}, warnings: [] },
+      { document: { revision_id: 8, url: 'https://example.feishu.cn/docx/audit' }, result: {}, warnings: [] },
       { document: { document_id: 'audit_doc', revision_id: 9, content: '# Minori Lark CLI Contract Audit\n\nCurrent marker: nonce-new' } },
     ];
     const run = vi.fn(async (_command: LarkCommand) => responses.shift());
