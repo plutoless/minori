@@ -71,6 +71,8 @@ describe('Lark Contract Sanitizer', () => {
       node_type: 'origin',
       obj_type: 'docx',
       visibility: 'private',
+      userName: 'Private User',
+      updated_at: '2026-08-12T00:00:00Z',
     });
     expect(result.unclassifiedStringFields).toEqual([]);
     expect(result.value).toEqual({
@@ -91,6 +93,8 @@ describe('Lark Contract Sanitizer', () => {
       node_type: '<redacted-text>',
       obj_type: '<redacted-text>',
       visibility: '<redacted-text>',
+      userName: '<redacted-text>',
+      updated_at: '<redacted-text>',
     });
   });
 

@@ -23,8 +23,8 @@ function classify(key: string, value: string): StringClass {
   if (/(?:url|uri|link)$/u.test(key)) return 'url';
   if (/(?:title|name|body|content|description|message|topic|display_info|markdown|text|file|path)$/u
     .test(key)
-    || /(?:^|_)(?:time|time_iso|highlighted|type|visibility|sharing)$/u.test(key)
-    || /^(?:command|current|latest|hint|scope|status|tokenStatus|defaultAs|match_segments|expiresAt|grantedAt|refreshExpiresAt|icon_info)$/u
+    || /(?:^|_)(?:time|time_iso|highlighted|type|visibility|sharing|updated_at)$/u.test(key)
+    || /^(?:command|current|latest|hint|scope|status|tokenStatus|defaultAs|match_segments|expiresAt|grantedAt|refreshExpiresAt|icon_info|userName)$/u
       .test(key)) return 'text';
   return 'unknown';
 }
