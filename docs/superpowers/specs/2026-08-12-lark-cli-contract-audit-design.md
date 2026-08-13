@@ -39,7 +39,7 @@ Runner tests use full sanitized CLI envelopes so they prove that the common enve
 
 `command-catalog.ts`, `LarkRunner`, and their public interfaces remain unchanged. The owning Knowledge or Meeting service continues to define and apply the schema for the post-runner value. This work does not introduce a dynamic registry, move every schema into a new abstraction, or create a second DTO layer.
 
-Reliability comes from making the runner test and the owning service contract test consume mechanically linked fixtures from the same live capture. A content-free manifest provides the one centralized inventory: it maps every business command variant and its small set of known structural cases to Envelope Fixtures, Data Fixtures, the owning service test, owning operation's stable contract-error category, and live-audit state. `auth.status` is the sole `envelope_only` exception because it has neither a common `data` payload nor an owning business-service parser. A completeness test fails when a catalog variant or declared structural case lacks the entries required by its fixture mode.
+Reliability comes from making the runner test and the owning service contract test consume mechanically linked fixtures from the same live capture. A content-free manifest provides the one centralized inventory: it maps every business command variant and its small set of known structural cases to live-audit state and, when verified, its Envelope Fixture, Data Fixture, owning service test, and operation-level contract-error category. `auth.status` is the sole `envelope_only` exception because it has neither a common `data` payload nor an owning business-service parser. A completeness test fails when a catalog variant or declared structural case lacks a manifest entry, or when a verified case lacks the evidence required by its fixture mode.
 
 The intended flow is:
 
@@ -89,7 +89,7 @@ Before an artifact can leave the server, a sanitizer replaces or removes:
 
 The sanitizer preserves envelope shape, nested field names, JSON types, optional-field presence, empty values, collection shape, and deterministic representative values. Only explicitly safe structural enums retain literal strings. Known identifier, URL, and body fields receive typed placeholders; every other string defaults to `<redacted-string>`, so an unfamiliar field can never reach the repository with its raw value. The manifest lists every such unclassified string-field path and the command remains `needs_review` until a person classifies them. A residue scan runs before generated files replace existing fixtures and again before commit.
 
-Each command case is invoked once and produces one sanitized Envelope Fixture containing the complete CLI JSON. For every business-command case, the corresponding Data Fixture is then mechanically extracted from `envelope.data`; it is never separately captured or hand-edited. The manifest records both SHA-256 digests, and repository validation requires the Data Fixture to equal the Envelope Fixture's `data` value exactly. `auth.status` declares `fixtureMode: envelope_only`, stores only the Envelope Fixture and its digest, and is verified at the Runner identity/availability seam without an invented Data Fixture or owning service test.
+Each successfully captured command case produces one sanitized Envelope Fixture containing the complete CLI JSON. For every verified business-command case, the corresponding Data Fixture is then mechanically extracted from `envelope.data`; it is never separately captured or hand-edited. The manifest records both SHA-256 digests, and repository validation requires the Data Fixture to equal the Envelope Fixture's `data` value exactly. A case recorded as `unavailable` or `not_exercised_by_policy` has no invented fixture. `auth.status` declares `fixtureMode: envelope_only`, stores only the Envelope Fixture and its digest when verified, and is tested at the Runner identity/availability seam without an invented Data Fixture or owning service test.
 
 Sanitized fixture pairs are versioned by CLI version:
 
@@ -226,7 +226,7 @@ Agent-facing and member-facing output remains bounded and does not expose provid
 
 The work is complete when:
 
-1. every current command variant and declared structural case has a manifest entry and satisfies its fixture mode: `auth.status` has one versioned Envelope Fixture and Runner contract test, while every business-command case has paired versioned fixtures and an owning service contract test;
+1. every current command variant and declared structural case has a manifest entry; every `verified` case satisfies its fixture mode, while `unavailable` and `not_exercised_by_policy` cases contain no invented fixture;
 2. bounded discovery has been attempted for sample-dependent cases, all exercised cases with real samples are `verified`, no case remains `needs_review`, missing samples are explicitly `unavailable`, and deliberate create omissions are explicitly `not_exercised_by_policy`;
 3. the fixed audit document completes the create/fetch/append/patch/fetch lifecycle without creating duplicate pages;
 4. the literal `{ note: { ... } }` response loads a readable Smart Note AI-summary document;
