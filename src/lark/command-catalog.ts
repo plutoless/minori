@@ -44,6 +44,27 @@ export type LarkCommand =
   | { id: 'wiki.nodeList'; spaceId: string; parentNodeToken?: string }
   | { id: 'wiki.nodeGet'; nodeToken: string };
 
+export const LARK_COMMAND_VARIANTS = [
+  'auth.status', 'contact.searchUser', 'vc.search', 'vc.detail',
+  'note.detail', 'note.transcript', 'minutes.search',
+  'minutes.detail:basic', 'minutes.detail:summary', 'minutes.detail:todo',
+  'minutes.detail:chapter', 'minutes.detail:transcript',
+  'drive.search', 'docs.fetch', 'docs.create', 'docs.append', 'docs.patch',
+  'wiki.spaceList', 'wiki.nodeList', 'wiki.nodeGet',
+] as const;
+
+export type LarkCommandVariant =
+  | Exclude<LarkCommand['id'], 'minutes.detail'>
+  | `minutes.detail:${Extract<LarkCommand, { id: 'minutes.detail' }>['artifact']}`;
+
+type MissingLarkCommandVariant = Exclude<
+  LarkCommandVariant,
+  typeof LARK_COMMAND_VARIANTS[number]
+>;
+const ALL_LARK_COMMAND_VARIANTS_ARE_CATALOGED:
+  MissingLarkCommandVariant extends never ? true : never = true;
+void ALL_LARK_COMMAND_VARIANTS_ARE_CATALOGED;
+
 export type LarkInvocation = {
   args: string[];
   stdin?: string;

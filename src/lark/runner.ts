@@ -36,6 +36,12 @@ const authStatusSchema = z.object({
   }).passthrough(),
 }).passthrough();
 
+export function validateAuthStatus(data: unknown) {
+  const parsed = authStatusSchema.safeParse(data);
+  if (!parsed.success) throw new LarkCliError('invalid_envelope');
+  return parsed.data;
+}
+
 export interface SpawnedProcess {
   stdout: NodeJS.ReadableStream;
   stderr: NodeJS.ReadableStream;
@@ -212,9 +218,11 @@ export class LarkRunner implements LarkExecutor {
     }
 
     if (command.id === 'auth.status' && exitCode === 0) {
-      const authStatus = authStatusSchema.safeParse(parsed);
-      if (!authStatus.success) throw new LarkCliError('invalid_envelope', { exitCode });
-      return authStatus.data as T;
+      try {
+        return validateAuthStatus(parsed) as T;
+      } catch {
+        throw new LarkCliError('invalid_envelope', { exitCode });
+      }
     }
 
     const envelope = larkEnvelopeSchema.safeParse(parsed);

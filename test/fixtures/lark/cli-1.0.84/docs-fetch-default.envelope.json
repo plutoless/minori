@@ -1,0 +1,19 @@
+{
+  "_notice": {
+    "update": {
+      "command": "<redacted-text>",
+      "current": "<redacted-text>",
+      "latest": "<redacted-text>",
+      "message": "<redacted-text>"
+    }
+  },
+  "data": {
+    "document": {
+      "content": "<redacted-text>",
+      "document_id": "<redacted-id>",
+      "revision_id": 11
+    }
+  },
+  "identity": "user",
+  "ok": true
+}

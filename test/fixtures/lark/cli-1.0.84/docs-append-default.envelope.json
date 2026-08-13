@@ -1,0 +1,20 @@
+{
+  "_notice": {
+    "update": {
+      "command": "<redacted-text>",
+      "current": "<redacted-text>",
+      "latest": "<redacted-text>",
+      "message": "<redacted-text>"
+    }
+  },
+  "data": {
+    "document": {
+      "revision_id": 10,
+      "url": "<redacted-url>"
+    },
+    "result": "<redacted-text>",
+    "warnings": []
+  },
+  "identity": "user",
+  "ok": true
+}

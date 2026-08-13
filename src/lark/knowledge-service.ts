@@ -89,7 +89,7 @@ const documentSchema = z.object({
 
 const writeResultSchema = z.object({
   document: z.object({
-    document_id: z.string(),
+    document_id: z.string().optional(),
     revision_id: z.number().int(),
   }).passthrough(),
 }).passthrough();
@@ -120,6 +120,34 @@ function parseContract<TSchema extends z.ZodType>(schema: TSchema, data: unknown
   const parsed = schema.safeParse(data);
   if (!parsed.success) throw new LarkContractError();
   return parsed.data;
+}
+
+export function validateKnowledgeCommandResult(
+  command: 'drive.search' | 'docs.fetch' | 'docs.create' | 'docs.append' | 'docs.patch'
+    | 'wiki.spaceList' | 'wiki.nodeList' | 'wiki.nodeGet',
+  data: unknown,
+) {
+  switch (command) {
+    case 'drive.search': {
+      const parsed = parseContract(driveSearchSchema, data);
+      if (parsed.results.length > 0
+        && !parsed.results.some((row) => driveSearchRowSchema.safeParse(row).success)) {
+        throw new LarkContractError();
+      }
+      return parsed;
+    }
+    case 'docs.fetch': return parseContract(documentSchema, data);
+    case 'docs.create': {
+      const result = parseContract(writeResultSchema, data);
+      if (!result.document.document_id) throw new LarkContractError();
+      return result;
+    }
+    case 'docs.append':
+    case 'docs.patch': return parseContract(writeResultSchema, data);
+    case 'wiki.spaceList': return parseContract(spaceListSchema, data);
+    case 'wiki.nodeList': return parseContract(nodeListSchema, data);
+    case 'wiki.nodeGet': return parseContract(nodeSchema, data);
+  }
 }
 
 function titleFromMarkdown(markdown: string, fallback: string) {
@@ -281,11 +309,12 @@ export class LarkKnowledgeService implements KnowledgeService {
   }
 
   private validateWriteResponse(
-    result: { document_id: string; revision_id: number },
+    result: { document_id?: string | undefined; revision_id: number },
     token: string,
     previousRevisionId: number,
   ) {
-    if (result.document_id !== token || result.revision_id <= previousRevisionId) {
+    if ((result.document_id !== undefined && result.document_id !== token)
+      || result.revision_id < previousRevisionId) {
       throw new LarkContractError();
     }
   }
@@ -300,6 +329,7 @@ export class LarkKnowledgeService implements KnowledgeService {
       content: input.content,
       ...(input.parentToken ? { parentToken: input.parentToken } : {}),
     }, signal);
+    if (!result.document_id) throw new LarkContractError();
     return this.writeResult('create', result.document_id, result.revision_id, signal);
   }
 
@@ -312,7 +342,9 @@ export class LarkKnowledgeService implements KnowledgeService {
       id: 'docs.append', doc: current.token, content: input.content, revisionId: current.revisionId,
     }, signal);
     this.validateWriteResponse(result, current.token, current.revisionId);
-    return this.writeResult('append', current.token, result.revision_id, signal);
+    return this.writeResult(
+      'append', current.token, Math.max(current.revisionId + 1, result.revision_id), signal,
+    );
   }
 
   async patchDocument(
@@ -334,7 +366,9 @@ export class LarkKnowledgeService implements KnowledgeService {
       revisionId: current.revisionId,
     }, signal);
     this.validateWriteResponse(result, current.token, current.revisionId);
-    return this.writeResult('patch', current.token, result.revision_id, signal);
+    return this.writeResult(
+      'patch', current.token, Math.max(current.revisionId + 1, result.revision_id), signal,
+    );
   }
 
   async listSpaces(signal?: AbortSignal) {

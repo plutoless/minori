@@ -4,6 +4,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LarkCliError } from '../../src/lark/errors.js';
 import { LarkRunner, type SpawnedProcess } from '../../src/lark/runner.js';
+import { loadFixtureData, loadFixtureEnvelope } from '../helpers/lark-contract-fixture.js';
 
 const AUTH_STATUS = {
   appId: 'cli_app_id',
@@ -67,6 +68,21 @@ describe('LarkRunner', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
+  });
+
+  it('parses the live CLI auth envelope and removes one business envelope', async () => {
+    const authEnvelope = await loadFixtureEnvelope('auth.status.default');
+    const { runner: authRunner } = runnerWith(fakeProcess({
+      stdout: JSON.stringify(authEnvelope),
+    }));
+    await expect(authRunner.run({ id: 'auth.status' })).resolves.toEqual(authEnvelope);
+
+    const wikiEnvelope = await loadFixtureEnvelope('wiki.spaceList.default');
+    const wikiData = await loadFixtureData('wiki.spaceList.default');
+    const { runner: wikiRunner } = runnerWith(fakeProcess({
+      stdout: JSON.stringify(wikiEnvelope),
+    }));
+    await expect(wikiRunner.run({ id: 'wiki.spaceList' })).resolves.toEqual(wikiData);
   });
 
   it('runs an allowed command without a shell and returns success data', async () => {

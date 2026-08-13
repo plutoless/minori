@@ -24,6 +24,30 @@ _Avoid_: Bot authority, tenant authority, requesting-user authority
 The persistent, operator-protected directory containing Lark CLI configuration, its Linux master key, and encrypted app and user OAuth credentials. The directory is a single high-sensitivity asset because its master key and ciphertext are intentionally preserved together for unattended token refresh.
 _Avoid_: Public config, secretless cache, knowledge database
 
+**Lark Command Contract**:
+The versioned response boundary for one Lark CLI command, proven by live captures of its small set of known Structural Cases. Business-command captures yield mechanically linked Envelope and Data Fixtures; `auth.status` is the sole envelope-only exception. The existing owning service parses each Data Fixture with the same schema it uses in production.
+_Avoid_: OpenAPI response, hand-written mock, dynamic contract registry
+
+**Structural Case**:
+A named, materially different response wrapper observed from a live Lark CLI command, such as normal and unified Smart Note detail. Structural Cases cover real response forms, not permutations of optional fields.
+_Avoid_: Test scenario, optional-field combination, invented provider response
+
+**Envelope Fixture**:
+The sanitized complete JSON output from one live Lark CLI command case, used to verify common runner behavior. Except for the declared envelope-only `auth.status` case, its paired Data Fixture must be mechanically derived from its `data` field and linked by digest in the audit manifest.
+_Avoid_: Raw production response, decoder fixture, independent mock
+
+**Data Fixture**:
+The sanitized post-runner value mechanically extracted from an Envelope Fixture and used to verify one Lark Command Contract decoder. It is never separately captured or hand-edited.
+_Avoid_: Full CLI envelope, service fixture, independent mock
+
+**Lark Contract Audit**:
+The live, content-safe verification of Minori's Lark Command Contracts against one exact CLI version. A Structural Case is verified only after its sanitized fixture has no unreviewed string-field classifications and passes its production parser.
+_Avoid_: Production content export, ordinary readiness check, fixture generation alone
+
+**Contract Audit State**:
+The root-owned operator state that binds the Lark Contract Audit to its one reusable Feishu audit document. It is recoverable operational metadata, separate from the Lark Credential Store and unavailable to the production Minori service.
+_Avoid_: OAuth credential, application environment variable, Neon audit row
+
 **Knowledge Boundary**:
 The complete set of Feishu content currently accessible to the Dedicated Knowledge User, including cloud documents, Wiki content, and Minutes, and therefore publishable through Minori to every Feishu Delivered Member. Minori does not maintain a second application-level allowlist or re-filter results using the requesting member's own content permissions.
 _Avoid_: Requester permission boundary, allowed-space list, configured knowledge scope

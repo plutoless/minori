@@ -172,9 +172,11 @@ const minuteRowSchema = z.object({
 }).passthrough();
 
 const noteDetailSchema = z.object({
-  note_display_type: z.enum(['normal', 'unified', 'unknown']),
-  note_doc_token: z.string().optional(),
-  verbatim_doc_token: z.string().optional(),
+  note: z.object({
+    note_display_type: z.enum(['normal', 'unified', 'unknown']),
+    note_doc_token: z.string().optional(),
+    verbatim_doc_token: z.string().optional(),
+  }).passthrough(),
 }).passthrough();
 
 const minuteDetailEnvelopeSchema = z.object({
@@ -279,6 +281,52 @@ function parseContactCandidates(data: unknown) {
     });
   }
   return candidates;
+}
+
+export function validateMeetingCommandResult(
+  command: 'contact.searchUser' | 'vc.search' | 'vc.detail' | 'note.detail'
+    | 'note.transcript' | 'minutes.search' | 'minutes.detail',
+  data: unknown,
+) {
+  switch (command) {
+    case 'contact.searchUser': return parseContactCandidates(data);
+    case 'vc.search': {
+      const parsed = parseEnvelope(searchEnvelopeSchema, data);
+      normalizeRows(parsed.items, (row) => (
+        meetingRowSchema.safeParse(row).success ? row : undefined
+      ));
+      return parsed;
+    }
+    case 'minutes.search': {
+      const parsed = parseEnvelope(searchEnvelopeSchema, data);
+      normalizeRows(parsed.items, (row) => (
+        minuteRowSchema.safeParse(row).success ? row : undefined
+      ));
+      return parsed;
+    }
+    case 'vc.detail': {
+      const parsed = parseEnvelope(detailEnvelopeSchema, data);
+      normalizeRows(parsed.meetings, (row) => (
+        meetingDetailRowSchema.safeParse(row).success ? row : undefined
+      ));
+      return parsed;
+    }
+    case 'note.detail': return parseEnvelope(noteDetailSchema, data);
+    case 'note.transcript': {
+      const parsed = z.object({ transcript_file: z.string().min(1) }).passthrough().safeParse(data);
+      if (!parsed.success) {
+        throw new MeetingContractError({ rawCount: 0, validCount: 0, omittedCount: 0 });
+      }
+      return parsed.data;
+    }
+    case 'minutes.detail': {
+      const parsed = parseEnvelope(minuteDetailEnvelopeSchema, data);
+      normalizeRows(parsed.minutes, (row) => (
+        minuteDetailRowSchema.safeParse(row).success ? row : undefined
+      ));
+      return parsed;
+    }
+  }
 }
 
 export class LarkMeetingService implements MeetingService {
@@ -462,7 +510,7 @@ export class LarkMeetingService implements MeetingService {
 
   private async noteDetail(noteId: string, signal?: AbortSignal) {
     const data = await this.run<unknown>({ id: 'note.detail', noteId }, signal);
-    return parseEnvelope(noteDetailSchema, data);
+    return parseEnvelope(noteDetailSchema, data).note;
   }
 
   private async smartNoteDocument(

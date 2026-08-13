@@ -7,6 +7,7 @@ import {
 } from '../../src/lark/errors.js';
 import { LarkKnowledgeService } from '../../src/lark/knowledge-service.js';
 import type { LarkExecutor } from '../../src/lark/runner.js';
+import { loadFixtureData } from '../helpers/lark-contract-fixture.js';
 
 async function fixtureData(name: string): Promise<unknown> {
   const raw = await readFile(resolve('test/fixtures/lark', `${name}.json`), 'utf8');
@@ -19,6 +20,81 @@ function executorReturning(data: unknown) {
 }
 
 describe('LarkKnowledgeService contract', () => {
+  it('accepts all verified live CLI 1.0.84 knowledge data fixtures', async () => {
+    const fixtures = {
+      search: await loadFixtureData('drive.search.default'),
+      fetch: await loadFixtureData('docs.fetch.default'),
+      spaces: await loadFixtureData('wiki.spaceList.default'),
+      nodes: await loadFixtureData('wiki.nodeList.default'),
+      node: await loadFixtureData('wiki.nodeGet.default'),
+    };
+    const run = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'drive.search') return fixtures.search;
+      if (command.id === 'docs.fetch') return fixtures.fetch;
+      if (command.id === 'wiki.spaceList') return fixtures.spaces;
+      if (command.id === 'wiki.nodeList') return fixtures.nodes;
+      if (command.id === 'wiki.nodeGet') return fixtures.node;
+      throw new Error('unexpected_command');
+    });
+    const reader = new LarkKnowledgeService({ run } as unknown as LarkExecutor);
+
+    await expect(reader.search({ query: 'sanitized' })).resolves.toMatchObject({
+      status: 'complete', rawCount: 15, validCount: 15, omittedCount: 0,
+    });
+    await expect(reader.fetchDocument({ doc: '<redacted-id>' })).resolves.toMatchObject({
+      token: '<redacted-id>', revisionId: expect.any(Number),
+    });
+    await expect(reader.listSpaces()).resolves.toHaveLength(3);
+    await expect(reader.listNodes({ spaceId: '<redacted-id>' })).resolves.toHaveLength(6);
+    await expect(reader.getNode({ nodeToken: '<redacted-id>' })).resolves.toMatchObject({
+      nodeToken: '<redacted-id>', objToken: '<redacted-id>',
+    });
+  });
+
+  it('accepts verified live append and patch responses without a repeated document ID', async () => {
+    const append = await loadFixtureData('docs.append.default');
+    const patch = await loadFixtureData('docs.patch.default');
+    const before = {
+      document: {
+        document_id: '<redacted-id>', revision_id: 9, content: '# Audit\n\nOld',
+        title: 'Audit', url: 'https://www.feishu.cn/docx/redacted',
+      },
+    };
+    const afterAppend = {
+      document: { ...before.document, revision_id: 10, content: '# Audit\n\nOld\n\nNew' },
+    };
+    const afterPatch = {
+      document: { ...before.document, revision_id: 10, content: '# Audit\n\nCurrent' },
+    };
+
+    const appendRun = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'docs.append') return append;
+      if (command.id === 'docs.fetch') return appendRun.mock.calls.length === 1
+        ? before : afterAppend;
+      throw new Error('unexpected_command');
+    });
+    const appendService = new LarkKnowledgeService({ run: appendRun } as unknown as LarkExecutor);
+    await expect(appendService.appendDocument({ doc: '<redacted-id>', content: '\nNew' }))
+      .resolves.toMatchObject({ operation: 'append', revisionId: 10 });
+
+    const patchBefore = {
+      document: { ...before.document, revision_id: 10, content: '# Audit\n\nOld' },
+    };
+    const patchAfter = {
+      document: { ...before.document, revision_id: 11, content: '# Audit\n\nCurrent' },
+    };
+    const patchRun = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'docs.patch') return patch;
+      if (command.id === 'docs.fetch') return patchRun.mock.calls.length === 1
+        ? patchBefore : patchAfter;
+      throw new Error('unexpected_command');
+    });
+    const patchService = new LarkKnowledgeService({ run: patchRun } as unknown as LarkExecutor);
+    await expect(patchService.patchDocument({
+      doc: '<redacted-id>', pattern: 'Old', replacement: 'Current',
+    })).resolves.toMatchObject({ operation: 'patch', revisionId: 11 });
+  });
+
   it('preserves current Wiki search rows independently of malformed siblings', async () => {
     const { executor } = executorReturning(await fixtureData('drive-search-current-wiki'));
     const reader = new LarkKnowledgeService(executor);
@@ -370,7 +446,7 @@ describe('LarkKnowledgeService contract', () => {
     ]);
   });
 
-  it('rejects a write response that does not advance its revision', async () => {
+  it('rejects when the canonical re-fetch does not advance after an accepted write', async () => {
     const before = await fixtureData('docs-fetch');
     const run = vi.fn(async (command: LarkCommand) => {
       if (command.id === 'docs.fetch') return before;
@@ -383,6 +459,7 @@ describe('LarkKnowledgeService contract', () => {
     expect(run.mock.calls.map(([command]) => command)).toEqual([
       { id: 'docs.fetch', doc: 'doxcnRoadmap' },
       { id: 'docs.append', doc: 'doxcnRoadmap', content: '\n- shipped', revisionId: 7 },
+      { id: 'docs.fetch', doc: 'doxcnRoadmap' },
     ]);
   });
 

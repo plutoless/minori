@@ -1,0 +1,22 @@
+{
+  "_notice": {
+    "update": {
+      "command": "<redacted-text>",
+      "current": "<redacted-text>",
+      "latest": "<redacted-text>",
+      "message": "<redacted-text>"
+    }
+  },
+  "data": {
+    "note": {
+      "create_time": "<redacted-text>",
+      "creator_id": "<redacted-id>",
+      "note_display_type": "normal",
+      "note_doc_token": "<redacted-id>",
+      "note_id": "<redacted-id>",
+      "verbatim_doc_token": "<redacted-id>"
+    }
+  },
+  "identity": "user",
+  "ok": true
+}

@@ -1,0 +1,28 @@
+{
+  "appId": "<redacted-id>",
+  "brand": "feishu",
+  "defaultAs": "<redacted-text>",
+  "identities": {
+    "bot": {
+      "available": false,
+      "hint": "<redacted-text>",
+      "message": "<redacted-text>",
+      "status": "<redacted-text>"
+    },
+    "user": {
+      "available": true,
+      "expiresAt": "<redacted-text>",
+      "grantedAt": "<redacted-text>",
+      "message": "<redacted-text>",
+      "openId": "<redacted-id>",
+      "refreshExpiresAt": "<redacted-text>",
+      "scope": "<redacted-text>",
+      "status": "ready",
+      "tokenStatus": "<redacted-text>",
+      "userName": "<redacted-text>",
+      "verified": true
+    }
+  },
+  "identity": "user",
+  "verified": true
+}
