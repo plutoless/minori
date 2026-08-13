@@ -62,11 +62,11 @@ describe('Lark Contract Audit', () => {
 
   it('keeps the fixed audit document constant-size across append and patch', async () => {
     const responses = [
-      { document: { document_id: 'audit_doc', revision_id: 7, title: 'Minori Lark CLI Contract Audit', content: 'Current marker: nonce-old' } },
+      { document: { document_id: 'audit_doc', revision_id: 7, content: '<title>Minori Lark CLI Contract Audit</title><p>Current marker: nonce-old</p>' } },
       { document: { document_id: 'audit_doc', revision_id: 8 } },
-      { document: { document_id: 'audit_doc', revision_id: 8, title: 'Minori Lark CLI Contract Audit', content: 'Current marker: nonce-old\nCandidate marker: nonce-new' } },
+      { document: { document_id: 'audit_doc', revision_id: 8, content: '<title>Minori Lark CLI Contract Audit</title><p>Current marker: nonce-old</p><p>Candidate marker: nonce-new</p>' } },
       { document: { document_id: 'audit_doc', revision_id: 9 } },
-      { document: { document_id: 'audit_doc', revision_id: 9, title: 'Minori Lark CLI Contract Audit', content: 'Current marker: nonce-new' } },
+      { document: { document_id: 'audit_doc', revision_id: 9, content: '<title>Minori Lark CLI Contract Audit</title><p>Current marker: nonce-new</p>' } },
     ];
     const run = vi.fn(async (_command: LarkCommand) => responses.shift());
 
@@ -100,11 +100,11 @@ describe('Lark Contract Audit', () => {
 
   it('marks fixed-document fetch/append/patch verified from their sanitized responses', async () => {
     const responses = [
-      { ok: true, data: { document: { document_id: 'audit_doc', revision_id: 7, title: 'Minori Lark CLI Contract Audit', content: 'Current marker: nonce-old' } } },
+      { ok: true, data: { document: { document_id: 'audit_doc', revision_id: 7, content: '<title>Minori Lark CLI Contract Audit</title><p>Current marker: nonce-old</p>' } } },
       { ok: true, data: { document: { document_id: 'audit_doc', revision_id: 8 } } },
-      { ok: true, data: { document: { document_id: 'audit_doc', revision_id: 8, title: 'Minori Lark CLI Contract Audit', content: 'Current marker: nonce-old\nCandidate marker: nonce-new' } } },
+      { ok: true, data: { document: { document_id: 'audit_doc', revision_id: 8, content: '<title>Minori Lark CLI Contract Audit</title><p>Current marker: nonce-old</p><p>Candidate marker: nonce-new</p>' } } },
       { ok: true, data: { document: { document_id: 'audit_doc', revision_id: 9 } } },
-      { ok: true, data: { document: { document_id: 'audit_doc', revision_id: 9, title: 'Minori Lark CLI Contract Audit', content: 'Current marker: nonce-new' } } },
+      { ok: true, data: { document: { document_id: 'audit_doc', revision_id: 9, content: '<title>Minori Lark CLI Contract Audit</title><p>Current marker: nonce-new</p>' } } },
     ];
     const run = vi.fn(async () => responses.shift());
     const report = await runContractAudit({ executor: { version: async () => '1.0.84', run: vi.fn(async () => { throw new Error('unavailable'); }) } }, {

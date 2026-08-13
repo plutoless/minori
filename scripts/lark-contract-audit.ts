@@ -647,7 +647,7 @@ const documentSchema = z.object({
   document: z.object({
     document_id: z.string().min(1),
     revision_id: z.number().int().nonnegative(),
-    title: z.string(),
+    title: z.string().optional(),
     content: z.string(),
   }).passthrough(),
 }).passthrough();
@@ -660,7 +660,7 @@ const writeSchema = z.object({
 }).passthrough();
 
 const TITLE = 'Minori Lark CLI Contract Audit';
-const CURRENT_MARKER = /^Current marker: ([A-Za-z0-9_-]{8,128})$/u;
+const AUDIT_CONTENT = /^<title>Minori Lark CLI Contract Audit<\/title><p>Current marker: ([A-Za-z0-9_-]{8,128})<\/p>(?:<p>Candidate marker: ([A-Za-z0-9_-]{8,128})<\/p>)?$/u;
 
 function unsafe(): never {
   throw new Error('lark_contract_audit_document_unsafe');
@@ -670,9 +670,9 @@ function parseSingleMarker(input: unknown, token: string) {
   const parsed = documentSchema.safeParse(dataOf(input));
   if (!parsed.success) unsafe();
   const document = parsed.data.document;
-  if (document.document_id !== token || document.title !== TITLE) unsafe();
-  const match = CURRENT_MARKER.exec(document.content);
-  if (!match) unsafe();
+  if (document.document_id !== token || (document.title !== undefined && document.title !== TITLE)) unsafe();
+  const match = AUDIT_CONTENT.exec(document.content);
+  if (!match || match[2] !== undefined) unsafe();
   return { revisionId: document.revision_id, nonce: match[1]! };
 }
 
@@ -722,10 +722,14 @@ export async function runFixedDocumentAudit(
   input.onResponse?.('docs.fetch.default', intermediateRaw);
   const intermediate = documentSchema.safeParse(dataOf(intermediateRaw));
   const expectedBlock = `Current marker: ${initial.nonce}\n${candidate}`;
+  const intermediateMatch = intermediate.success
+    ? AUDIT_CONTENT.exec(intermediate.data.document.content)
+    : null;
   if (!intermediate.success
     || intermediate.data.document.document_id !== input.documentToken
-    || intermediate.data.document.title !== TITLE
-    || intermediate.data.document.content !== expectedBlock
+    || (intermediate.data.document.title !== undefined && intermediate.data.document.title !== TITLE)
+    || intermediateMatch?.[1] !== initial.nonce
+    || intermediateMatch?.[2] !== input.nonce
     || intermediate.data.document.revision_id !== initial.revisionId + 1) unsafe();
 
   const finalMarker = `Current marker: ${input.nonce}`;
