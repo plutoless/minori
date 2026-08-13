@@ -18,10 +18,14 @@ const PLACEHOLDERS = new Set([
 
 function classify(key: string, value: string): StringClass {
   if (SAFE_ENUMS.has(value)) return 'enum';
-  if (/(?:^|_)(?:id|ids|token|tokens|code|revision_id)$/u.test(key)) return 'id';
+  if (/(?:^|_)(?:id|ids|token|tokens|code|revision_id)$/u.test(key)
+    || /^(?:appId|openId|creator|owner|meeting_no)$/u.test(key)) return 'id';
   if (/(?:url|uri|link)$/u.test(key)) return 'url';
   if (/(?:title|name|body|content|description|message|topic|display_info|markdown|text|file|path)$/u
-    .test(key)) return 'text';
+    .test(key)
+    || /(?:^|_)(?:time|time_iso|highlighted|type|visibility|sharing)$/u.test(key)
+    || /^(?:command|current|latest|hint|scope|status|tokenStatus|defaultAs|match_segments|expiresAt|grantedAt|refreshExpiresAt|icon_info)$/u
+      .test(key)) return 'text';
   return 'unknown';
 }
 

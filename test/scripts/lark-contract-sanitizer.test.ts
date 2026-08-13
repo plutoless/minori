@@ -52,6 +52,48 @@ describe('Lark Contract Sanitizer', () => {
     });
   });
 
+  it('classifies the content-free operational fields observed in CLI 1.0.84', () => {
+    const result = sanitizeCapture({
+      appId: 'provider-app-id',
+      openId: 'provider-open-id',
+      creator: 'provider-user-id',
+      owner: 'provider-user-id',
+      meeting_no: '123456789',
+      command: 'npm install something',
+      current: '1.0.84',
+      latest: '1.0.85',
+      hint: 'provider hint',
+      scope: 'provider scopes',
+      tokenStatus: 'valid',
+      create_time: '2026-08-12T00:00:00Z',
+      title_highlighted: '<em>private</em>',
+      match_segments: ['private'],
+      node_type: 'origin',
+      obj_type: 'docx',
+      visibility: 'private',
+    });
+    expect(result.unclassifiedStringFields).toEqual([]);
+    expect(result.value).toEqual({
+      appId: '<redacted-id>',
+      openId: '<redacted-id>',
+      creator: '<redacted-id>',
+      owner: '<redacted-id>',
+      meeting_no: '<redacted-id>',
+      command: '<redacted-text>',
+      current: '<redacted-text>',
+      latest: '<redacted-text>',
+      hint: '<redacted-text>',
+      scope: '<redacted-text>',
+      tokenStatus: '<redacted-text>',
+      create_time: '<redacted-text>',
+      title_highlighted: '<redacted-text>',
+      match_segments: ['<redacted-text>'],
+      node_type: '<redacted-text>',
+      obj_type: '<redacted-text>',
+      visibility: '<redacted-text>',
+    });
+  });
+
   it('rejects forbidden residue in generated JSON', async () => {
     const base = await root();
     const safe = join(base, 'safe.json');
