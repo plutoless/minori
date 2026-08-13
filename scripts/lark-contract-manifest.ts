@@ -4,7 +4,7 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
-import { scanForbiddenResidue } from './lark-contract-sanitizer.js';
+import { scanForbiddenResidue } from './lark-contract-sanitizer.ts';
 
 export const FIXTURE_MODES = ['envelope_only', 'envelope_data'] as const;
 export const AUDIT_STATES = [
@@ -124,7 +124,7 @@ async function containedRegularFile(root: string, path: string) {
   return candidate;
 }
 
-async function lockfileVersion(path: string) {
+export async function resolvedLarkCliVersion(path: string) {
   try {
     const lock = JSON.parse(await readFile(path, 'utf8')) as {
       packages?: Record<string, { version?: unknown }>;
@@ -144,7 +144,7 @@ export async function verifyFixtureSet(input: {
 }) {
   const manifest = await loadContractManifest(input.manifestPath);
   const directoryVersion = basename(input.fixtureRoot).match(/^cli-(\d+\.\d+\.\d+)$/u)?.[1];
-  const resolvedVersion = await lockfileVersion(input.lockfilePath);
+  const resolvedVersion = await resolvedLarkCliVersion(input.lockfilePath);
   if (!directoryVersion || manifest.cliVersion !== directoryVersion
     || manifest.cliVersion !== resolvedVersion) {
     throw new Error('lark_contract_version_mismatch');

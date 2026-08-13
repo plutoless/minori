@@ -1,0 +1,816 @@
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
+import { z } from 'zod';
+import { buildInvocation, type LarkCommand } from '../src/lark/command-catalog.ts';
+import {
+  canonicalJson,
+  resolvedLarkCliVersion,
+  sha256File,
+} from './lark-contract-manifest.ts';
+import { sanitizeCapture, validateTranscriptArtifact } from './lark-contract-sanitizer.ts';
+
+// Keep the audit at the production single-artifact ceiling without importing the runtime module.
+const MAX_TRANSCRIPT_FILE_BYTES = 8 * 1024 * 1024;
+
+export const LARK_CONTRACT_CASE_IDS = [
+  'auth.status.default', 'contact.searchUser.default',
+  'vc.search.default', 'vc.detail.default',
+  'note.detail.normal', 'note.detail.unified', 'note.transcript.unified',
+  'minutes.search.default', 'minutes.detail.basic', 'minutes.detail.summary',
+  'minutes.detail.todo', 'minutes.detail.chapter', 'minutes.detail.transcript',
+  'drive.search.default', 'docs.fetch.default', 'docs.create.bootstrap',
+  'docs.append.default', 'docs.patch.default',
+  'wiki.spaceList.default', 'wiki.nodeList.default', 'wiki.nodeGet.default',
+] as const;
+
+export type LarkContractCaseId = typeof LARK_CONTRACT_CASE_IDS[number];
+
+export type AuditCommandExecutor = {
+  run(command: LarkCommand, signal?: AbortSignal): Promise<unknown>;
+};
+
+export type RawLarkExecutor = AuditCommandExecutor & {
+  version(): Promise<string>;
+};
+
+export type ContractAuditCase = {
+  caseId: LarkContractCaseId;
+  commandVariant: LarkCommand['id'];
+  structuralCase?: string;
+  stage: 'execute' | 'decode' | 'sample';
+  state: 'verified' | 'needs_review' | 'unavailable' | 'not_exercised_by_policy' | 'failed';
+  operationCategory: 'lark_auth_unavailable' | 'meeting_contract_error' | 'knowledge_contract_error';
+  rawCount: number;
+  validCount: number;
+  omittedCount: number;
+  unclassifiedStringFields: string[];
+};
+
+export type ContractAuditReport = {
+  cliVersion: string;
+  capturedAt: string;
+  cases: ContractAuditCase[];
+  sanitizedCaptures: Partial<Record<LarkContractCaseId, unknown>>;
+};
+
+export type ContractAuditArtifactBoundary = {
+  withDirectory<T>(operation: (directory: string) => Promise<T>): Promise<T>;
+  validate(root: string, relativePath: string, maxBytes: number): Promise<{ byteCount: number }>;
+};
+
+type ContractAuditOptions = {
+  now: Date;
+  contactQuery: string;
+  driveQuery: string;
+  includeWriteAudit: boolean;
+  bootstrapAuditDocument: boolean;
+  expectedCliVersion?: string;
+  signal?: AbortSignal;
+};
+
+const operatorInputSchema = z.object({
+  contactQuery: z.string().min(1).max(200),
+  driveQuery: z.string().min(1).max(200),
+  includeWriteAudit: z.boolean().optional().default(false),
+  bootstrapAuditDocument: z.boolean().optional().default(false),
+  auditDocumentToken: z.string().min(1).max(500).optional(),
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{8,100}$/u).optional(),
+}).superRefine((input, context) => {
+  if (input.bootstrapAuditDocument && !input.includeWriteAudit) {
+    context.addIssue({ code: 'custom', message: 'write_audit_required_for_bootstrap' });
+  }
+  if (input.bootstrapAuditDocument && input.auditDocumentToken) {
+    context.addIssue({ code: 'custom', message: 'bootstrap_requires_missing_binding' });
+  }
+  if (input.includeWriteAudit && !input.nonce) {
+    context.addIssue({ code: 'custom', message: 'audit_nonce_required' });
+  }
+});
+
+const contractAuditStateSchema = z.object({
+  documentToken: z.string().min(1).max(500),
+}).strict();
+
+const COMMAND_FOR_CASE: Record<LarkContractCaseId, LarkCommand['id']> = {
+  'auth.status.default': 'auth.status',
+  'contact.searchUser.default': 'contact.searchUser',
+  'vc.search.default': 'vc.search',
+  'vc.detail.default': 'vc.detail',
+  'note.detail.normal': 'note.detail',
+  'note.detail.unified': 'note.detail',
+  'note.transcript.unified': 'note.transcript',
+  'minutes.search.default': 'minutes.search',
+  'minutes.detail.basic': 'minutes.detail',
+  'minutes.detail.summary': 'minutes.detail',
+  'minutes.detail.todo': 'minutes.detail',
+  'minutes.detail.chapter': 'minutes.detail',
+  'minutes.detail.transcript': 'minutes.detail',
+  'drive.search.default': 'drive.search',
+  'docs.fetch.default': 'docs.fetch',
+  'docs.create.bootstrap': 'docs.create',
+  'docs.append.default': 'docs.append',
+  'docs.patch.default': 'docs.patch',
+  'wiki.spaceList.default': 'wiki.spaceList',
+  'wiki.nodeList.default': 'wiki.nodeList',
+  'wiki.nodeGet.default': 'wiki.nodeGet',
+};
+
+function categoryFor(command: LarkCommand['id']): ContractAuditCase['operationCategory'] {
+  if (command === 'auth.status') return 'lark_auth_unavailable';
+  if (command === 'contact.searchUser' || command.startsWith('vc.')
+    || command.startsWith('note.') || command.startsWith('minutes.')) {
+    return 'meeting_contract_error';
+  }
+  return 'knowledge_contract_error';
+}
+
+function structuralCase(caseId: LarkContractCaseId) {
+  const suffix = caseId.split('.').at(-1);
+  return suffix && suffix !== 'default' ? suffix : undefined;
+}
+
+function initialCase(caseId: LarkContractCaseId): ContractAuditCase {
+  const commandVariant = COMMAND_FOR_CASE[caseId];
+  return {
+    caseId,
+    commandVariant,
+    ...(structuralCase(caseId) ? { structuralCase: structuralCase(caseId) } : {}),
+    stage: 'sample',
+    state: caseId.startsWith('docs.create.') || caseId.startsWith('docs.append.')
+      || caseId.startsWith('docs.patch.')
+      ? 'not_exercised_by_policy'
+      : 'unavailable',
+    operationCategory: categoryFor(commandVariant),
+    rawCount: 0,
+    validCount: 0,
+    omittedCount: 0,
+    unclassifiedStringFields: [],
+  };
+}
+
+function dataOf(raw: unknown) {
+  if (raw !== null && typeof raw === 'object' && (raw as { ok?: unknown }).ok === true
+    && 'data' in raw) return (raw as { data: unknown }).data;
+  return raw;
+}
+
+function arrayAt(data: unknown, key: string) {
+  if (data === null || typeof data !== 'object') return [];
+  const value = (data as Record<string, unknown>)[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function nonEmptyAt(value: unknown, keys: string[]) {
+  if (value === null || typeof value !== 'object') return undefined;
+  for (const key of keys) {
+    const candidate = (value as Record<string, unknown>)[key];
+    if (typeof candidate === 'string' && candidate.trim()) return candidate;
+  }
+  return undefined;
+}
+
+function startAt(now: Date, days: number) {
+  return new Date(now.getTime() - days * 24 * 60 * 60 * 1_000).toISOString();
+}
+
+export async function runContractAudit(
+  dependencies: { executor: RawLarkExecutor; artifacts?: ContractAuditArtifactBoundary },
+  options: ContractAuditOptions,
+): Promise<ContractAuditReport> {
+  const cliVersion = await dependencies.executor.version();
+  if (options.expectedCliVersion && cliVersion !== options.expectedCliVersion) {
+    throw new Error('lark_contract_version_mismatch');
+  }
+  const cases = new Map<LarkContractCaseId, ContractAuditCase>(
+    LARK_CONTRACT_CASE_IDS.map((caseId) => [caseId, initialCase(caseId)]),
+  );
+  const sanitizedCaptures: ContractAuditReport['sanitizedCaptures'] = {};
+
+  const artifacts = dependencies.artifacts ?? {
+    async withDirectory<T>(operation: (directory: string) => Promise<T>) {
+      const directory = await mkdtemp(join(tmpdir(), 'minori-lark-contract-'));
+      try {
+        return await operation(directory);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    validate: validateTranscriptArtifact,
+  };
+
+  const recordRaw = (caseId: LarkContractCaseId, raw: unknown) => {
+    const sanitized = sanitizeCapture(raw);
+    sanitizedCaptures[caseId] = sanitized.value;
+    const current = cases.get(caseId)!;
+    cases.set(caseId, {
+      ...current,
+      stage: 'decode',
+      state: sanitized.unclassifiedStringFields.length > 0 ? 'needs_review' : 'verified',
+      rawCount: 1,
+      validCount: 1,
+      unclassifiedStringFields: sanitized.unclassifiedStringFields,
+    });
+    return raw;
+  };
+
+  const markFailed = (caseId: LarkContractCaseId, stage: 'execute' | 'decode' = 'execute') => {
+    const current = cases.get(caseId)!;
+    cases.set(caseId, { ...current, stage, state: 'failed' });
+  };
+
+  const capture = async (caseId: LarkContractCaseId, command: LarkCommand) => {
+    try {
+      const raw = await dependencies.executor.run(command, options.signal);
+      if (raw !== null && typeof raw === 'object' && (raw as { ok?: unknown }).ok === false) {
+        throw new Error('lark_contract_command_failed');
+      }
+      return recordRaw(caseId, raw);
+    } catch {
+      markFailed(caseId);
+      return undefined;
+    }
+  };
+
+  await capture('auth.status.default', { id: 'auth.status' });
+  await capture('contact.searchUser.default', {
+    id: 'contact.searchUser', query: options.contactQuery, pageSize: 30,
+  });
+
+  let meetingSearch: unknown;
+  for (const days of [90, 180, 365]) {
+    try {
+      const raw = await dependencies.executor.run({
+        id: 'vc.search', start: startAt(options.now, days), end: options.now.toISOString(),
+        pageSize: 30,
+      }, options.signal);
+      meetingSearch = raw;
+      if (arrayAt(dataOf(raw), 'items').length > 0) break;
+    } catch {
+      const current = cases.get('vc.search.default')!;
+      cases.set('vc.search.default', { ...current, stage: 'execute', state: 'failed' });
+      meetingSearch = undefined;
+      break;
+    }
+  }
+  if (meetingSearch !== undefined) {
+    const items = arrayAt(dataOf(meetingSearch), 'items');
+    if (items.length > 0) {
+      const sanitized = sanitizeCapture(meetingSearch);
+      sanitizedCaptures['vc.search.default'] = sanitized.value;
+      const current = cases.get('vc.search.default')!;
+      cases.set('vc.search.default', {
+        ...current,
+        stage: 'decode',
+        state: sanitized.unclassifiedStringFields.length ? 'needs_review' : 'verified',
+        rawCount: items.length,
+        validCount: items.length,
+        unclassifiedStringFields: sanitized.unclassifiedStringFields,
+      });
+      const meetingIds = items.map((item) => nonEmptyAt(item, ['id', 'meeting_id']))
+        .filter((value): value is string => value !== undefined);
+      if (meetingIds.length > 0) {
+        const detail = await capture('vc.detail.default', {
+          id: 'vc.detail', meetingIds: meetingIds.slice(0, 30),
+        });
+        const detailRows = arrayAt(dataOf(detail), 'meetings');
+        const noteIds = detailRows.map((item) => nonEmptyAt(item, ['note_id']))
+          .filter((value): value is string => value !== undefined);
+        for (const noteId of noteIds.slice(0, 6)) {
+          const raw = await dependencies.executor.run({ id: 'note.detail', noteId }, options.signal)
+            .catch(() => undefined);
+          if (raw === undefined) continue;
+          const note = (dataOf(raw) as { note?: unknown })?.note ?? dataOf(raw);
+          const display = nonEmptyAt(note, ['note_display_type']);
+          const caseId = display === 'unified' ? 'note.detail.unified' : 'note.detail.normal';
+          if (cases.get(caseId)?.state === 'verified') continue;
+          const sanitized = sanitizeCapture(raw);
+          sanitizedCaptures[caseId] = sanitized.value;
+          const currentNote = cases.get(caseId)!;
+          cases.set(caseId, {
+            ...currentNote,
+            stage: 'decode',
+            state: sanitized.unclassifiedStringFields.length ? 'needs_review' : 'verified',
+            rawCount: 1,
+            validCount: 1,
+            unclassifiedStringFields: sanitized.unclassifiedStringFields,
+          });
+          if (display === 'unified'
+            && cases.get('note.transcript.unified')?.state !== 'verified') {
+            await artifacts.withDirectory(async (workDir) => {
+              const transcriptCase = 'note.transcript.unified' as const;
+              try {
+                const transcriptRaw = await dependencies.executor.run({
+                  id: 'note.transcript', noteId, workDir,
+                }, options.signal);
+                const transcriptFile = nonEmptyAt(dataOf(transcriptRaw), ['transcript_file']);
+                if (!transcriptFile) throw new Error('transcript_missing');
+                await artifacts.validate(workDir, transcriptFile, MAX_TRANSCRIPT_FILE_BYTES);
+                recordRaw(transcriptCase, transcriptRaw);
+              } catch {
+                markFailed(transcriptCase, 'decode');
+              }
+            });
+          }
+        }
+      }
+    }
+  }
+
+  let minuteSearch: unknown;
+  for (const days of [90, 180, 365]) {
+    try {
+      const raw = await dependencies.executor.run({
+        id: 'minutes.search', start: startAt(options.now, days), end: options.now.toISOString(),
+        pageSize: 30,
+      }, options.signal);
+      minuteSearch = raw;
+      if (arrayAt(dataOf(raw), 'items').length > 0) break;
+    } catch {
+      const current = cases.get('minutes.search.default')!;
+      cases.set('minutes.search.default', { ...current, stage: 'execute', state: 'failed' });
+      minuteSearch = undefined;
+      break;
+    }
+  }
+  if (minuteSearch !== undefined && arrayAt(dataOf(minuteSearch), 'items').length > 0) {
+    const sanitized = sanitizeCapture(minuteSearch);
+    sanitizedCaptures['minutes.search.default'] = sanitized.value;
+    const current = cases.get('minutes.search.default')!;
+    cases.set('minutes.search.default', {
+      ...current,
+      stage: 'decode',
+      state: sanitized.unclassifiedStringFields.length ? 'needs_review' : 'verified',
+      rawCount: arrayAt(dataOf(minuteSearch), 'items').length,
+      validCount: arrayAt(dataOf(minuteSearch), 'items').length,
+      unclassifiedStringFields: sanitized.unclassifiedStringFields,
+    });
+    const minuteToken = arrayAt(dataOf(minuteSearch), 'items')
+      .map((row) => nonEmptyAt(row, ['minute_token', 'token', 'id']))
+      .find((value) => value !== undefined);
+    if (minuteToken) {
+      for (const artifact of ['basic', 'summary', 'todo', 'chapter'] as const) {
+        await capture(`minutes.detail.${artifact}`, {
+          id: 'minutes.detail', minuteTokens: [minuteToken], artifact,
+        });
+      }
+      await artifacts.withDirectory(async (workDir) => {
+        const caseId = 'minutes.detail.transcript' as const;
+        try {
+          const raw = await dependencies.executor.run({
+            id: 'minutes.detail', minuteTokens: [minuteToken], artifact: 'transcript', workDir,
+          }, options.signal);
+          const row = arrayAt(dataOf(raw), 'minutes')[0];
+          const artifactMap = row !== null && typeof row === 'object'
+            ? (row as { artifacts?: unknown }).artifacts
+            : undefined;
+          const transcriptFile = nonEmptyAt(artifactMap, ['transcript_file']);
+          if (!transcriptFile) throw new Error('transcript_missing');
+          await artifacts.validate(workDir, transcriptFile, MAX_TRANSCRIPT_FILE_BYTES);
+          recordRaw(caseId, raw);
+        } catch {
+          markFailed(caseId, 'decode');
+        }
+      });
+    }
+  }
+
+  const drive = await capture('drive.search.default', {
+    id: 'drive.search', query: options.driveQuery,
+  });
+  const driveRows = arrayAt(dataOf(drive), 'results');
+  const documentToken = driveRows.map((row) => {
+    if (row === null || typeof row !== 'object') return undefined;
+    const meta = (row as { result_meta?: unknown }).result_meta;
+    return nonEmptyAt(meta, ['token']) ?? nonEmptyAt(row, ['entity_id']);
+  }).find((value) => value !== undefined);
+  if (documentToken) await capture('docs.fetch.default', { id: 'docs.fetch', doc: documentToken });
+
+  const spacesRaw = await capture('wiki.spaceList.default', { id: 'wiki.spaceList' });
+  const spaceId = arrayAt(dataOf(spacesRaw), 'spaces')
+    .map((row) => nonEmptyAt(row, ['space_id'])).find((value) => value !== undefined);
+  if (spaceId) {
+    const nodesRaw = await capture('wiki.nodeList.default', {
+      id: 'wiki.nodeList', spaceId,
+    });
+    const nodeToken = arrayAt(dataOf(nodesRaw), 'nodes')
+      .map((row) => nonEmptyAt(row, ['node_token'])).find((value) => value !== undefined);
+    if (nodeToken) await capture('wiki.nodeGet.default', { id: 'wiki.nodeGet', nodeToken });
+  }
+
+  // Write capture is intentionally performed only by the fixed-document operator path.
+  if (!options.includeWriteAudit) {
+    for (const caseId of ['docs.append.default', 'docs.patch.default'] as const) {
+      const current = cases.get(caseId)!;
+      cases.set(caseId, { ...current, state: 'not_exercised_by_policy' });
+    }
+  }
+  if (!options.bootstrapAuditDocument) {
+    const current = cases.get('docs.create.bootstrap')!;
+    cases.set('docs.create.bootstrap', { ...current, state: 'not_exercised_by_policy' });
+  }
+
+  return {
+    cliVersion,
+    capturedAt: options.now.toISOString(),
+    cases: LARK_CONTRACT_CASE_IDS.map((caseId) => cases.get(caseId)!),
+    sanitizedCaptures,
+  };
+}
+
+const MAX_RAW_OUTPUT_BYTES = 4 * 1024 * 1024;
+const COMMAND_TIMEOUT_MS = 120_000;
+
+async function executeProcess(args: string[], input?: {
+  cwd?: string;
+  stdin?: string;
+}) {
+  return new Promise<{ output: string; exitCode: number | null }>((resolve, reject) => {
+    const binary = process.env.LARK_CLI_BIN ?? 'lark-cli';
+    const child = spawn(binary, args, {
+      shell: false,
+      ...(input?.cwd ? { cwd: input.cwd } : {}),
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        LANG: process.env.LANG,
+        LC_ALL: process.env.LC_ALL,
+        LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,
+        LARKSUITE_CLI_DATA_DIR: process.env.LARKSUITE_CLI_DATA_DIR,
+      },
+      stdio: [input?.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const finish = (error?: Error, exitCode: number | null = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve({
+        output: Buffer.concat(stdout.length ? stdout : stderr).toString('utf8'),
+        exitCode,
+      });
+    };
+    const collect = (target: Buffer[]) => (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.byteLength;
+      if (size > MAX_RAW_OUTPUT_BYTES) {
+        child.kill('SIGKILL');
+        finish(new Error('lark_contract_output_limit'));
+      } else target.push(buffer);
+    };
+    child.stdout!.on('data', collect(stdout));
+    child.stderr!.on('data', collect(stderr));
+    child.once('error', () => finish(new Error('lark_contract_spawn_failed')));
+    child.once('close', (code) => finish(undefined, code));
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(new Error('lark_contract_timeout'));
+    }, COMMAND_TIMEOUT_MS);
+    timer.unref?.();
+    if (input?.stdin !== undefined) child.stdin!.end(input.stdin);
+  });
+}
+
+export class ProcessRawLarkExecutor implements RawLarkExecutor {
+  async version() {
+    const result = await executeProcess(['--version']);
+    if (result.exitCode !== 0) throw new Error('lark_contract_version_unavailable');
+    const version = result.output.match(/\b(\d+\.\d+\.\d+)\b/u)?.[1];
+    if (!version) throw new Error('lark_contract_version_unavailable');
+    return version;
+  }
+
+  async run(command: LarkCommand) {
+    const invocation = buildInvocation(command);
+    const result = await executeProcess(invocation.args, {
+      ...(invocation.cwd ? { cwd: invocation.cwd } : {}),
+      ...(invocation.stdin !== undefined ? { stdin: invocation.stdin } : {}),
+    });
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.output);
+    } catch {
+      throw new Error('lark_contract_malformed_json');
+    }
+    if (result.exitCode !== 0) throw new Error('lark_contract_command_failed');
+    return parsed;
+  }
+}
+
+function fixtureMode(caseId: LarkContractCaseId) {
+  return caseId === 'auth.status.default' ? 'envelope_only' as const : 'envelope_data' as const;
+}
+
+function fixtureStem(caseId: LarkContractCaseId) {
+  return caseId.replaceAll('.', '-');
+}
+
+async function writeCapturedArtifacts(report: ContractAuditReport, outputRoot: string) {
+  const fixtureRoot = join(outputRoot, `cli-${report.cliVersion}`);
+  await mkdir(fixtureRoot, { recursive: true, mode: 0o700 });
+  const manifestCases: Record<string, unknown>[] = [];
+  for (const entry of report.cases) {
+    const base: Record<string, unknown> = {
+      caseId: entry.caseId,
+      commandVariant: entry.commandVariant,
+      ...(entry.structuralCase ? { structuralCase: entry.structuralCase } : {}),
+      fixtureMode: fixtureMode(entry.caseId),
+      operationCategory: entry.operationCategory,
+      state: entry.state,
+      stage: entry.stage,
+      unclassifiedStringFields: entry.unclassifiedStringFields,
+    };
+    const capture = report.sanitizedCaptures[entry.caseId];
+    if (entry.state === 'verified' && capture !== undefined) {
+      const stem = fixtureStem(entry.caseId);
+      const envelopePath = `${stem}.envelope.json`;
+      await writeFile(join(fixtureRoot, envelopePath), canonicalJson(capture), { mode: 0o600 });
+      Object.assign(base, {
+        envelopePath,
+        envelopeSha256: await sha256File(join(fixtureRoot, envelopePath)),
+      });
+      if (fixtureMode(entry.caseId) === 'envelope_data') {
+        const data = dataOf(capture);
+        const dataPath = `${stem}.data.json`;
+        await writeFile(join(fixtureRoot, dataPath), canonicalJson(data), { mode: 0o600 });
+        Object.assign(base, {
+          dataPath,
+          dataSha256: await sha256File(join(fixtureRoot, dataPath)),
+          owningTest: entry.operationCategory === 'meeting_contract_error'
+            ? 'test/lark/meeting-service.contract.test.ts'
+            : 'test/lark/knowledge-service.contract.test.ts',
+        });
+      }
+    }
+    manifestCases.push(base);
+  }
+  await writeFile(join(fixtureRoot, 'manifest.json'), canonicalJson({
+    cliVersion: report.cliVersion,
+    capturedAt: report.capturedAt,
+    cases: manifestCases,
+  }), { mode: 0o600 });
+  const contentFreeReport = {
+    cliVersion: report.cliVersion,
+    capturedAt: report.capturedAt,
+    cases: report.cases,
+  };
+  await writeFile(join(outputRoot, 'report.json'), canonicalJson(contentFreeReport), { mode: 0o600 });
+}
+
+async function readStdinJson() {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > 64 * 1024) throw new Error('lark_contract_input_invalid');
+    chunks.push(buffer);
+  }
+  try {
+    const parsed = operatorInputSchema.safeParse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    if (!parsed.success) throw new Error();
+    return parsed.data;
+  } catch {
+    throw new Error('lark_contract_input_invalid');
+  }
+}
+
+async function main() {
+  if (process.argv[2] !== '--capture' || process.argv[3] !== '--output') {
+    throw new Error('lark_contract_audit_operator_mode_required');
+  }
+  const outputRoot = process.argv[4];
+  if (!outputRoot || !isAbsolute(outputRoot)) throw new Error('lark_contract_output_invalid');
+  const lockfileIndex = process.argv.indexOf('--lockfile');
+  const lockfilePath = lockfileIndex >= 0 ? process.argv[lockfileIndex + 1] : resolve('package-lock.json');
+  if (!lockfilePath || !isAbsolute(lockfilePath)) throw new Error('lark_contract_version_mismatch');
+  const expectedCliVersion = await resolvedLarkCliVersion(lockfilePath);
+  const stateIndex = process.argv.indexOf('--state');
+  const statePath = stateIndex >= 0 ? process.argv[stateIndex + 1] : undefined;
+  if (stateIndex >= 0 && (!statePath || !isAbsolute(statePath))) {
+    throw new Error('lark_contract_state_invalid');
+  }
+  const input = await readStdinJson();
+  let stateToken: string | undefined;
+  if (statePath) {
+    try {
+      const parsed = contractAuditStateSchema.safeParse(JSON.parse(await readFile(statePath, 'utf8')));
+      if (!parsed.success) throw new Error();
+      stateToken = parsed.data.documentToken;
+    } catch {
+      throw new Error('lark_contract_state_invalid');
+    }
+  }
+  const suppliedToken = input.auditDocumentToken ?? stateToken;
+  if (input.bootstrapAuditDocument && suppliedToken) {
+    throw new Error('lark_contract_state_already_bound');
+  }
+  if (input.includeWriteAudit && !input.bootstrapAuditDocument && !suppliedToken) {
+    throw new Error('lark_contract_state_required');
+  }
+  const executor = new ProcessRawLarkExecutor();
+  const report = await runContractAudit({ executor }, {
+    now: new Date(),
+    contactQuery: input.contactQuery,
+    driveQuery: input.driveQuery,
+    includeWriteAudit: input.includeWriteAudit,
+    bootstrapAuditDocument: input.bootstrapAuditDocument,
+    expectedCliVersion,
+  });
+  let documentToken = suppliedToken;
+  let newBinding: string | undefined;
+  if (input.bootstrapAuditDocument && input.nonce) {
+    const bootstrap = await bootstrapFixedDocument(executor, input.nonce);
+    documentToken = bootstrap.documentToken;
+    newBinding = bootstrap.documentToken;
+    recordReportCapture(report, 'docs.create.bootstrap', bootstrap.raw);
+  }
+  if (input.includeWriteAudit && documentToken && input.nonce) {
+    await applyFixedDocumentAudit(report, executor, documentToken, input.nonce);
+  }
+  await mkdir(outputRoot, { recursive: true, mode: 0o700 });
+  await writeCapturedArtifacts(report, outputRoot);
+  if (newBinding) {
+    await writeFile(join(outputRoot, 'binding.secret'), canonicalJson({
+      documentToken: newBinding,
+    }), { mode: 0o600 });
+  }
+  console.error('lark_contract_audit_result=success');
+}
+
+const documentSchema = z.object({
+  document: z.object({
+    document_id: z.string().min(1),
+    revision_id: z.number().int().nonnegative(),
+    title: z.string(),
+    content: z.string(),
+  }).passthrough(),
+}).passthrough();
+
+const writeSchema = z.object({
+  document: z.object({
+    document_id: z.string().min(1),
+    revision_id: z.number().int().nonnegative(),
+  }).passthrough(),
+}).passthrough();
+
+const TITLE = 'Minori Lark CLI Contract Audit';
+const CURRENT_MARKER = /^Current marker: ([A-Za-z0-9_-]{8,128})$/u;
+
+function unsafe(): never {
+  throw new Error('lark_contract_audit_document_unsafe');
+}
+
+function parseSingleMarker(input: unknown, token: string) {
+  const parsed = documentSchema.safeParse(dataOf(input));
+  if (!parsed.success) unsafe();
+  const document = parsed.data.document;
+  if (document.document_id !== token || document.title !== TITLE) unsafe();
+  const match = CURRENT_MARKER.exec(document.content);
+  if (!match) unsafe();
+  return { revisionId: document.revision_id, nonce: match[1]! };
+}
+
+function requireWrite(input: unknown, token: string, revisionId: number) {
+  const parsed = writeSchema.safeParse(dataOf(input));
+  if (!parsed.success || parsed.data.document.document_id !== token
+    || parsed.data.document.revision_id !== revisionId) unsafe();
+}
+
+function executeAuditCommand(
+  executor: AuditCommandExecutor,
+  command: LarkCommand,
+  signal?: AbortSignal,
+) {
+  return signal ? executor.run(command, signal) : executor.run(command);
+}
+
+export async function runFixedDocumentAudit(
+  executor: AuditCommandExecutor,
+  input: {
+    documentToken: string;
+    nonce: string;
+    signal?: AbortSignal;
+    onResponse?: (caseId: 'docs.fetch.default' | 'docs.append.default' | 'docs.patch.default', raw: unknown) => void;
+  },
+) {
+  if (!/^[A-Za-z0-9_-]{8,128}$/u.test(input.nonce)) unsafe();
+  const initialRaw = await executeAuditCommand(executor, {
+    id: 'docs.fetch', doc: input.documentToken,
+  }, input.signal);
+  input.onResponse?.('docs.fetch.default', initialRaw);
+  const initial = parseSingleMarker(initialRaw, input.documentToken);
+  if (initial.nonce === input.nonce) unsafe();
+  const candidate = `Candidate marker: ${input.nonce}`;
+  const appendRaw = await executeAuditCommand(executor, {
+    id: 'docs.append',
+    doc: input.documentToken,
+    content: `\n${candidate}`,
+    revisionId: initial.revisionId,
+  }, input.signal);
+  input.onResponse?.('docs.append.default', appendRaw);
+  requireWrite(appendRaw, input.documentToken, initial.revisionId + 1);
+
+  const intermediateRaw = await executeAuditCommand(executor, {
+    id: 'docs.fetch', doc: input.documentToken,
+  }, input.signal);
+  input.onResponse?.('docs.fetch.default', intermediateRaw);
+  const intermediate = documentSchema.safeParse(dataOf(intermediateRaw));
+  const expectedBlock = `Current marker: ${initial.nonce}\n${candidate}`;
+  if (!intermediate.success
+    || intermediate.data.document.document_id !== input.documentToken
+    || intermediate.data.document.title !== TITLE
+    || intermediate.data.document.content !== expectedBlock
+    || intermediate.data.document.revision_id !== initial.revisionId + 1) unsafe();
+
+  const finalMarker = `Current marker: ${input.nonce}`;
+  const patchRaw = await executeAuditCommand(executor, {
+    id: 'docs.patch',
+    doc: input.documentToken,
+    pattern: expectedBlock,
+    content: finalMarker,
+    revisionId: intermediate.data.document.revision_id,
+  }, input.signal);
+  input.onResponse?.('docs.patch.default', patchRaw);
+  requireWrite(patchRaw, input.documentToken, intermediate.data.document.revision_id + 1);
+
+  const finalRaw = await executeAuditCommand(executor, {
+    id: 'docs.fetch', doc: input.documentToken,
+  }, input.signal);
+  input.onResponse?.('docs.fetch.default', finalRaw);
+  const final = parseSingleMarker(finalRaw, input.documentToken);
+  if (final.nonce !== input.nonce
+    || final.revisionId !== intermediate.data.document.revision_id + 1) unsafe();
+  return { finalRevisionId: final.revisionId };
+}
+
+export async function bootstrapFixedDocument(
+  executor: AuditCommandExecutor,
+  nonce: string,
+  signal?: AbortSignal,
+) {
+  if (!/^[A-Za-z0-9_-]{8,100}$/u.test(nonce)) unsafe();
+  const raw = await executeAuditCommand(executor, {
+    id: 'docs.create',
+    title: TITLE,
+    content: `Current marker: bootstrap_${nonce}`,
+  }, signal);
+  const parsed = writeSchema.safeParse(dataOf(raw));
+  if (!parsed.success) unsafe();
+  return {
+    documentToken: parsed.data.document.document_id,
+    initialRevisionId: parsed.data.document.revision_id,
+    raw,
+  };
+}
+
+function recordReportCapture(
+  report: ContractAuditReport,
+  caseId: LarkContractCaseId,
+  raw: unknown,
+) {
+  const sanitized = sanitizeCapture(raw);
+  report.sanitizedCaptures[caseId] = sanitized.value;
+  const index = report.cases.findIndex((entry) => entry.caseId === caseId);
+  if (index < 0) throw new Error('lark_contract_case_missing');
+  const current = report.cases[index]!;
+  report.cases[index] = {
+    ...current,
+    stage: 'decode',
+    state: sanitized.unclassifiedStringFields.length ? 'needs_review' : 'verified',
+    rawCount: 1,
+    validCount: 1,
+    omittedCount: 0,
+    unclassifiedStringFields: sanitized.unclassifiedStringFields,
+  };
+}
+
+export async function applyFixedDocumentAudit(
+  report: ContractAuditReport,
+  executor: AuditCommandExecutor,
+  documentToken: string,
+  nonce: string,
+  signal?: AbortSignal,
+) {
+  return runFixedDocumentAudit(executor, {
+    documentToken,
+    nonce,
+    ...(signal ? { signal } : {}),
+    onResponse: (caseId, raw) => recordReportCapture(report, caseId, raw),
+  });
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error: unknown) => {
+    const category = error instanceof Error && error.message.startsWith('lark_contract_')
+      ? error.message
+      : 'lark_contract_audit_failed';
+    console.error(category);
+    process.exitCode = 1;
+  });
+}

@@ -20,7 +20,7 @@ function classify(key: string, value: string): StringClass {
   if (SAFE_ENUMS.has(value)) return 'enum';
   if (/(?:^|_)(?:id|ids|token|tokens|code|revision_id)$/u.test(key)) return 'id';
   if (/(?:url|uri|link)$/u.test(key)) return 'url';
-  if (/(?:title|name|body|content|description|message|topic|display_info|markdown|text)$/u
+  if (/(?:title|name|body|content|description|message|topic|display_info|markdown|text|file|path)$/u
     .test(key)) return 'text';
   return 'unknown';
 }

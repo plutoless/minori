@@ -14,7 +14,7 @@
     "lark:contract-audit": "node --experimental-strip-types scripts/lark-contract-audit.ts",
     "runtime:verify": "node --env-file-if-exists=.env --experimental-strip-types scripts/verify-runtime.ts",
     "db:migrate": "node --env-file-if-exists=.env --experimental-strip-types scripts/migrate.ts",
-    "typecheck:scripts": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --strict --esModuleInterop --skipLibCheck --types node scripts/*.ts",
+    "typecheck:scripts": "tsc --ignoreConfig --noEmit --target ES2023 --module NodeNext --moduleResolution NodeNext --strict --esModuleInterop --skipLibCheck --allowImportingTsExtensions --types node scripts/*.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
