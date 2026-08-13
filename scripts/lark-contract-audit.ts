@@ -660,7 +660,7 @@ const writeSchema = z.object({
 }).passthrough();
 
 const TITLE = 'Minori Lark CLI Contract Audit';
-const AUDIT_TITLE = `<title>${TITLE}</title>`;
+const AUDIT_TITLE = `# ${TITLE}\n\n`;
 const MARKER_VALUE = /^[A-Za-z0-9_-]{8,128}$/u;
 
 function unsafe(stage = 'document'): never {
@@ -670,19 +670,17 @@ function unsafe(stage = 'document'): never {
 function auditMarkers(content: string, stage: string) {
   if (!content.startsWith(AUDIT_TITLE)) unsafe(`${stage}_content`);
   const body = content.slice(AUDIT_TITLE.length);
-  const currentPrefix = '<p>Current marker: ';
+  const currentPrefix = 'Current marker: ';
   if (!body.startsWith(currentPrefix)) unsafe(`${stage}_content`);
-  const currentEnd = body.indexOf('</p>', currentPrefix.length);
-  if (currentEnd < 0) unsafe(`${stage}_content`);
-  const current = body.slice(currentPrefix.length, currentEnd);
+  const candidateSeparator = '\n\nCandidate marker: ';
+  const candidateStart = body.indexOf(candidateSeparator, currentPrefix.length);
+  const current = body.slice(
+    currentPrefix.length,
+    candidateStart < 0 ? undefined : candidateStart,
+  );
   if (!MARKER_VALUE.test(current)) unsafe(`${stage}_content`);
-  const remainder = body.slice(currentEnd + 4);
-  if (!remainder) return { current };
-  const candidatePrefix = '<p>Candidate marker: ';
-  if (!remainder.startsWith(candidatePrefix) || !remainder.endsWith('</p>')) {
-    unsafe(`${stage}_content`);
-  }
-  const candidate = remainder.slice(candidatePrefix.length, -4);
+  if (candidateStart < 0) return { current };
+  const candidate = body.slice(candidateStart + candidateSeparator.length);
   if (!MARKER_VALUE.test(candidate)) unsafe(`${stage}_content`);
   return { current, candidate };
 }
