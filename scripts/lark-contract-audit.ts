@@ -654,7 +654,7 @@ const documentSchema = z.object({
 
 const writeSchema = z.object({
   document: z.object({
-    document_id: z.string().min(1),
+    document_id: z.string().min(1).optional(),
     revision_id: z.number().int().nonnegative(),
   }).passthrough(),
 }).passthrough();
@@ -678,7 +678,9 @@ function parseSingleMarker(input: unknown, token: string) {
 
 function requireWrite(input: unknown, token: string, revisionId: number) {
   const parsed = writeSchema.safeParse(dataOf(input));
-  if (!parsed.success || parsed.data.document.document_id !== token
+  if (!parsed.success
+    || (parsed.data.document.document_id !== undefined
+      && parsed.data.document.document_id !== token)
     || parsed.data.document.revision_id !== revisionId) unsafe();
 }
 
@@ -721,7 +723,7 @@ export async function runFixedDocumentAudit(
   }, input.signal);
   input.onResponse?.('docs.fetch.default', intermediateRaw);
   const intermediate = documentSchema.safeParse(dataOf(intermediateRaw));
-  const expectedBlock = `Current marker: ${initial.nonce}\n${candidate}`;
+  const expectedBlock = `Current marker: ${initial.nonce}\n\n${candidate}`;
   const intermediateMatch = intermediate.success
     ? AUDIT_CONTENT.exec(intermediate.data.document.content)
     : null;

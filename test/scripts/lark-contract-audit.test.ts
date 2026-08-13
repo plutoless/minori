@@ -63,9 +63,9 @@ describe('Lark Contract Audit', () => {
   it('keeps the fixed audit document constant-size across append and patch', async () => {
     const responses = [
       { document: { document_id: 'audit_doc', revision_id: 7, content: '<title>Minori Lark CLI Contract Audit</title><p>Current marker: nonce-old</p>' } },
-      { document: { document_id: 'audit_doc', revision_id: 8 } },
+      { document: { revision_id: 8, url: 'https://example.feishu.cn/docx/audit' }, result: {}, warnings: [] },
       { document: { document_id: 'audit_doc', revision_id: 8, content: '<title>Minori Lark CLI Contract Audit</title><p>Current marker: nonce-old</p><p>Candidate marker: nonce-new</p>' } },
-      { document: { document_id: 'audit_doc', revision_id: 9 } },
+      { document: { revision_id: 9, url: 'https://example.feishu.cn/docx/audit' }, result: {}, warnings: [] },
       { document: { document_id: 'audit_doc', revision_id: 9, content: '<title>Minori Lark CLI Contract Audit</title><p>Current marker: nonce-new</p>' } },
     ];
     const run = vi.fn(async (_command: LarkCommand) => responses.shift());
@@ -77,7 +77,7 @@ describe('Lark Contract Audit', () => {
       { id: 'docs.fetch', doc: 'audit_doc' },
       { id: 'docs.append', doc: 'audit_doc', content: '\nCandidate marker: nonce-new', revisionId: 7 },
       { id: 'docs.fetch', doc: 'audit_doc' },
-      { id: 'docs.patch', doc: 'audit_doc', pattern: 'Current marker: nonce-old\nCandidate marker: nonce-new', content: 'Current marker: nonce-new', revisionId: 8 },
+      { id: 'docs.patch', doc: 'audit_doc', pattern: 'Current marker: nonce-old\n\nCandidate marker: nonce-new', content: 'Current marker: nonce-new', revisionId: 8 },
       { id: 'docs.fetch', doc: 'audit_doc' },
     ]);
   });
