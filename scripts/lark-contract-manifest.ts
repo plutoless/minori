@@ -4,6 +4,7 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
+import { scanForbiddenResidue } from './lark-contract-sanitizer.js';
 
 export const FIXTURE_MODES = ['envelope_only', 'envelope_data'] as const;
 export const AUDIT_STATES = [
@@ -149,16 +150,19 @@ export async function verifyFixtureSet(input: {
     throw new Error('lark_contract_version_mismatch');
   }
 
+  const generatedFiles: string[] = [];
   for (const entry of manifest.cases) {
     if (entry.state !== 'verified') continue;
     try {
       const envelopePath = await containedRegularFile(input.fixtureRoot, entry.envelopePath!);
+      generatedFiles.push(envelopePath);
       if (await sha256File(envelopePath) !== entry.envelopeSha256) throw new Error();
       const envelopeRaw = await readFile(envelopePath, 'utf8');
       const envelope = JSON.parse(envelopeRaw) as unknown;
       if (canonicalJson(envelope) !== envelopeRaw) throw new Error();
       if (entry.fixtureMode === 'envelope_data') {
         const dataPath = await containedRegularFile(input.fixtureRoot, entry.dataPath!);
+        generatedFiles.push(dataPath);
         if (await sha256File(dataPath) !== entry.dataSha256) throw new Error();
         const dataRaw = await readFile(dataPath, 'utf8');
         const data = JSON.parse(dataRaw) as unknown;
@@ -170,6 +174,7 @@ export async function verifyFixtureSet(input: {
       throw new Error('lark_contract_fixture_invalid');
     }
   }
+  await scanForbiddenResidue(generatedFiles);
 }
 
 export async function installFixtureSetAtomically(input: {

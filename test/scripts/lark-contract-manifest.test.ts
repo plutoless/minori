@@ -134,6 +134,13 @@ describe('Lark Contract Manifest', () => {
     await expect(verifyFixtureSet(versionPaths)).rejects.toThrow('lark_contract_version_mismatch');
   });
 
+  it('rejects correctly hashed fixture files that still contain raw strings', async () => {
+    const base = await root();
+    const paths = await writeFixtureSet(base, { data: { spaces: ['private space name'] } });
+
+    await expect(verifyFixtureSet(paths)).rejects.toThrow('lark_contract_residue_detected');
+  });
+
   it('atomically replaces a target only after staging verifies', async () => {
     const base = await root();
     const staged = await writeFixtureSet(join(base, 'staged'));
