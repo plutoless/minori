@@ -305,6 +305,8 @@ describe('Lark Contract Audit', () => {
     expect(launcher).toContain('/opt/minori/lark:/var/lib/minori/lark');
     expect(launcher).not.toContain('--env-file');
     expect(launcher).not.toContain('/opt/minori/minori.env');
+    expect(launcher).toContain("grep -E '^lark_contract_[a-z_]+$'");
+    expect(launcher).toContain('minori_lark_contract_audit category=%s');
   });
 
   it('runs the native operator entry and writes only a verified sanitized fixture set', async () => {

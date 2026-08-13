@@ -65,6 +65,7 @@ if [[ -e "$audit_root/state.json" ]]; then
   operator_state_args=(--state /run/minori-contract-state.json)
 fi
 
+operator_log="$run_root/operator.log"
 if ! docker run --rm --read-only --user 10001:10001 \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
   --env HOME=/var/lib/minori/lark/home \
@@ -82,7 +83,11 @@ if ! docker run --rm --read-only --user 10001:10001 \
   /app/scripts/lark-contract-audit.ts --capture --output /run/minori-audit \
   --lockfile /app/package-lock.json \
   "${operator_state_args[@]}" \
-  <"$input_file" >/dev/null 2>&1; then
+  <"$input_file" >"$operator_log" 2>&1; then
+  category="$(grep -E '^lark_contract_[a-z_]+$' "$operator_log" | tail -n 1 || true)"
+  if [[ -n "$category" ]]; then
+    printf 'minori_lark_contract_audit category=%s\n' "$category" >&2
+  fi
   fail
 fi
 
