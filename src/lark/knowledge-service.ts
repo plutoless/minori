@@ -1,12 +1,4 @@
-import {
-  decodeDriveSearch,
-  decodeKnowledgeDocument,
-  decodeKnowledgeWrite,
-  decodeNode,
-  decodeNodeList,
-  decodeSpaceList,
-  driveSearchRowSchema,
-} from './contract-decoders.js';
+import { z } from 'zod';
 import {
   KnowledgeSearchContractError,
   KnowledgeWriteConflict,
@@ -14,14 +6,6 @@ import {
   LarkContractError,
 } from './errors.js';
 import type { LarkExecutor } from './runner.js';
-
-function parseContract<T>(decoder: (data: unknown) => T, data: unknown): T {
-  try {
-    return decoder(data);
-  } catch {
-    throw new LarkContractError();
-  }
-}
 
 export type KnowledgeSearchResult = {
   title: string;
@@ -85,30 +69,77 @@ export interface KnowledgeService extends KnowledgeReader {
   }, signal?: AbortSignal): Promise<KnowledgeWriteResult>;
 }
 
+const driveSearchSchema = z.object({
+  results: z.array(z.unknown()),
+}).passthrough();
+
+const driveSearchRowSchema = z.object({
+  entity_type: z.string().min(1),
+}).passthrough();
+
+const documentSchema = z.object({
+  document: z.object({
+    document_id: z.string(),
+    revision_id: z.number().int(),
+    content: z.string(),
+    title: z.string().optional(),
+    url: z.string().optional(),
+  }).passthrough(),
+}).passthrough();
+
+const writeResultSchema = z.object({
+  document: z.object({
+    document_id: z.string().optional(),
+    revision_id: z.number().int(),
+  }).passthrough(),
+}).passthrough();
+
+const spaceListSchema = z.object({
+  spaces: z.array(z.object({
+    space_id: z.string(),
+    name: z.string(),
+  }).passthrough()),
+}).passthrough();
+
+const nodeListSchema = z.object({
+  nodes: z.array(z.object({
+    node_token: z.string(),
+    title: z.string(),
+    obj_type: z.string(),
+  }).passthrough()),
+}).passthrough();
+
+const nodeSchema = z.object({
+  node_token: z.string(),
+  obj_token: z.string(),
+  obj_type: z.string(),
+  title: z.string(),
+}).passthrough();
+
+function parseContract<TSchema extends z.ZodType>(schema: TSchema, data: unknown): z.output<TSchema> {
+  const parsed = schema.safeParse(data);
+  if (!parsed.success) throw new LarkContractError();
+  return parsed.data;
+}
+
 export function validateKnowledgeCommandResult(
   command: 'drive.search' | 'docs.fetch' | 'docs.create' | 'docs.append' | 'docs.patch'
     | 'wiki.spaceList' | 'wiki.nodeList' | 'wiki.nodeGet',
   data: unknown,
 ) {
   switch (command) {
-    case 'drive.search':
-      return parseContract(decodeDriveSearch, data);
-    case 'docs.fetch':
-      return parseContract(decodeKnowledgeDocument, data);
+    case 'drive.search': return parseContract(driveSearchSchema, data);
+    case 'docs.fetch': return parseContract(documentSchema, data);
     case 'docs.create': {
-      const result = parseContract(decodeKnowledgeWrite, data);
+      const result = parseContract(writeResultSchema, data);
       if (!result.document.document_id) throw new LarkContractError();
       return result;
     }
     case 'docs.append':
-    case 'docs.patch':
-      return parseContract(decodeKnowledgeWrite, data);
-    case 'wiki.spaceList':
-      return parseContract(decodeSpaceList, data);
-    case 'wiki.nodeList':
-      return parseContract(decodeNodeList, data);
-    case 'wiki.nodeGet':
-      return parseContract(decodeNode, data);
+    case 'docs.patch': return parseContract(writeResultSchema, data);
+    case 'wiki.spaceList': return parseContract(spaceListSchema, data);
+    case 'wiki.nodeList': return parseContract(nodeListSchema, data);
+    case 'wiki.nodeGet': return parseContract(nodeSchema, data);
   }
 }
 
@@ -168,11 +199,7 @@ function isRevisionConflict(error: unknown) {
 }
 
 export class LarkKnowledgeService implements KnowledgeService {
-  private readonly executor: LarkExecutor;
-
-  constructor(executor: LarkExecutor) {
-    this.executor = executor;
-  }
+  constructor(private readonly executor: LarkExecutor) {}
 
   private run<T>(command: Parameters<LarkExecutor['run']>[0], signal?: AbortSignal) {
     return signal
@@ -189,7 +216,7 @@ export class LarkKnowledgeService implements KnowledgeService {
       query: input.query,
       ...(input.spaceIds ? { spaceIds: input.spaceIds } : {}),
     }, signal);
-    const parsed = parseContract(decodeDriveSearch, data);
+    const parsed = parseContract(driveSearchSchema, data);
     const results = parsed.results.flatMap((raw): KnowledgeSearchResult[] => {
       const row = driveSearchRowSchema.safeParse(raw);
       if (!row.success) return [];
@@ -228,7 +255,7 @@ export class LarkKnowledgeService implements KnowledgeService {
 
   async fetchDocument(input: { doc: string }, signal?: AbortSignal) {
     const data = await this.run<unknown>({ id: 'docs.fetch', doc: input.doc }, signal);
-    const { document } = parseContract(decodeKnowledgeDocument, data);
+    const { document } = parseContract(documentSchema, data);
     return {
       token: document.document_id,
       title: document.title ?? titleFromMarkdown(document.content, document.document_id),
@@ -248,7 +275,7 @@ export class LarkKnowledgeService implements KnowledgeService {
   ) {
     try {
       const data = await this.run<unknown>(command, signal);
-      return parseContract(decodeKnowledgeWrite, data).document;
+      return parseContract(writeResultSchema, data).document;
     } catch (error) {
       if (isRevisionConflict(error)) throw new KnowledgeWriteConflict();
       throw error;
@@ -335,7 +362,7 @@ export class LarkKnowledgeService implements KnowledgeService {
 
   async listSpaces(signal?: AbortSignal) {
     const data = await this.run<unknown>({ id: 'wiki.spaceList' }, signal);
-    const parsed = parseContract(decodeSpaceList, data);
+    const parsed = parseContract(spaceListSchema, data);
     return parsed.spaces.map((space) => ({ spaceId: space.space_id, name: space.name }));
   }
 
@@ -345,7 +372,7 @@ export class LarkKnowledgeService implements KnowledgeService {
       spaceId: input.spaceId,
       ...(input.parentNodeToken ? { parentNodeToken: input.parentNodeToken } : {}),
     }, signal);
-    const parsed = parseContract(decodeNodeList, data);
+    const parsed = parseContract(nodeListSchema, data);
     return parsed.nodes.map((node) => ({
       nodeToken: node.node_token,
       title: node.title,
@@ -357,7 +384,7 @@ export class LarkKnowledgeService implements KnowledgeService {
     const data = await this.run<unknown>({
       id: 'wiki.nodeGet', nodeToken: input.nodeToken,
     }, signal);
-    const node = parseContract(decodeNode, data);
+    const node = parseContract(nodeSchema, data);
     return {
       nodeToken: node.node_token,
       objToken: node.obj_token,

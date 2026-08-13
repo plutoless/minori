@@ -29,7 +29,10 @@ source_mode="$(stat -c '%a' "$source_root")"
 for source_file in \
   "$source_root/scripts/lark-contract-audit.ts" \
   "$source_root/scripts/lark-contract-manifest.ts" \
-  "$source_root/scripts/lark-contract-sanitizer.ts"; do
+  "$source_root/scripts/lark-contract-sanitizer.ts" \
+  "$source_root/scripts/lark-contract-knowledge-validator.js" \
+  "$source_root/scripts/lark-contract-meeting-validator.js" \
+  "$source_root/scripts/lark-contract-runner-validator.js"; do
   [[ -f "$source_file" && ! -L "$source_file" && "$(stat -c '%u' "$source_file")" == '0' ]] || fail
   source_mode="$(stat -c '%a' "$source_file")"
   (( (8#$source_mode & 8#022) == 0 )) || fail
@@ -54,7 +57,7 @@ cleanup() {
   rm -rf -- "$run_root"
 }
 trap cleanup EXIT INT TERM HUP
-install -d -m 0700 -o 10001 -g 10001 "$run_root/output"
+chown 10001:10001 "$run_root"
 docker_state_args=()
 operator_state_args=()
 if [[ -e "$audit_root/state.json" ]]; then
@@ -76,11 +79,14 @@ if ! docker run --rm --interactive --read-only --user 10001:10001 \
   --volume "$source_root/scripts/lark-contract-audit.ts:/app/scripts/lark-contract-audit.ts:ro" \
   --volume "$source_root/scripts/lark-contract-manifest.ts:/app/scripts/lark-contract-manifest.ts:ro" \
   --volume "$source_root/scripts/lark-contract-sanitizer.ts:/app/scripts/lark-contract-sanitizer.ts:ro" \
+  --volume "$source_root/scripts/lark-contract-knowledge-validator.js:/app/scripts/lark-contract-knowledge-validator.js:ro" \
+  --volume "$source_root/scripts/lark-contract-meeting-validator.js:/app/scripts/lark-contract-meeting-validator.js:ro" \
+  --volume "$source_root/scripts/lark-contract-runner-validator.js:/app/scripts/lark-contract-runner-validator.js:ro" \
   --volume "$source_root/src:/app/src:ro" \
-  --volume "$run_root/output:/run/minori-audit" \
+  --volume "$run_root:/run/minori-audit-parent" \
   "${docker_state_args[@]}" \
   "$image" node --experimental-strip-types \
-  /app/scripts/lark-contract-audit.ts --capture --output /run/minori-audit \
+  /app/scripts/lark-contract-audit.ts --capture --output /run/minori-audit-parent/output \
   --lockfile /app/package-lock.json \
   "${operator_state_args[@]}" \
   <"$input_file" >"$operator_log" 2>&1; then

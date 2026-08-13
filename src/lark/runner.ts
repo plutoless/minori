@@ -1,7 +1,6 @@
 import type { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { buildInvocation, type LarkCommand } from './command-catalog.js';
-import { decodeAuthStatus } from './contract-decoders.js';
 import { LarkCliError, type LarkCliErrorCode } from './errors.js';
 
 const larkErrorSchema = z.object({
@@ -21,12 +20,26 @@ const larkEnvelopeSchema = z.discriminatedUnion('ok', [
   }).passthrough(),
 ]);
 
+const authIdentityStatusSchema = z.object({
+  status: z.string(),
+  available: z.boolean(),
+}).passthrough();
+
+const authStatusSchema = z.object({
+  appId: z.string(),
+  brand: z.string(),
+  defaultAs: z.string(),
+  identity: z.enum(['user', 'bot', 'none']),
+  identities: z.object({
+    user: authIdentityStatusSchema,
+    bot: authIdentityStatusSchema,
+  }).passthrough(),
+}).passthrough();
+
 export function validateAuthStatus(data: unknown) {
-  try {
-    return decodeAuthStatus(data);
-  } catch {
-    throw new LarkCliError('invalid_envelope');
-  }
+  const parsed = authStatusSchema.safeParse(data);
+  if (!parsed.success) throw new LarkCliError('invalid_envelope');
+  return parsed.data;
 }
 
 export interface SpawnedProcess {
@@ -84,11 +97,7 @@ function buildChildEnvironment(configDir: string): NodeJS.ProcessEnv {
 }
 
 export class LarkRunner implements LarkExecutor {
-  private readonly options: LarkRunnerOptions;
-
-  constructor(options: LarkRunnerOptions) {
-    this.options = options;
-  }
+  constructor(private readonly options: LarkRunnerOptions) {}
 
   async run<T>(command: LarkCommand, signal?: AbortSignal): Promise<T> {
     const startedAt = Date.now();

@@ -3,7 +3,7 @@ import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { LARK_COMMAND_IDS, type LarkCommand } from '../../src/lark/command-catalog.js';
+import { LARK_COMMAND_VARIANTS, type LarkCommand } from '../../src/lark/command-catalog.js';
 import {
   applyFixedDocumentAudit,
   assertContractCaseCoverage,
@@ -36,7 +36,7 @@ async function runOperator(args: string[], input: string, env: NodeJS.ProcessEnv
 
 describe('Lark Contract Audit', () => {
   it('enumerates every current command structural case', () => {
-    expect(LARK_CONTRACT_CASE_IDS.length).toBeGreaterThan(LARK_COMMAND_IDS.length);
+    expect(LARK_CONTRACT_CASE_IDS.length).toBeGreaterThan(LARK_COMMAND_VARIANTS.length);
     expect(assertContractCaseCoverage).not.toThrow();
   });
 
@@ -323,7 +323,7 @@ describe('Lark Contract Audit', () => {
 set -eu
 if [[ "\${1:-}" == '--version' ]]; then printf '%s\\n' '1.0.84'; exit 0; fi
 case "\${1:-} \${2:-}" in
-  'auth status') printf '%s\\n' '{"identity":"user"}' ;;
+  'auth status') printf '%s\\n' '{"appId":"app","brand":"feishu","defaultAs":"user","identity":"user","identities":{"user":{"status":"ready","available":true},"bot":{"status":"unavailable","available":false}}}' ;;
   'contact +search-user') printf '%s\\n' '{"ok":true,"data":{"users":[]}}' ;;
   'vc +search') printf '%s\\n' '{"ok":true,"data":{"items":[]}}' ;;
   'minutes +search') printf '%s\\n' '{"ok":true,"data":{"items":[]}}' ;;

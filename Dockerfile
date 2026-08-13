@@ -7,6 +7,8 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
+COPY scripts ./scripts
+RUN npm run generate:lark-contract-validators
 RUN npm run build
 RUN npm prune --omit=dev
 
@@ -25,7 +27,7 @@ RUN groupadd --gid 10001 minori \
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
 COPY package.json package-lock.json ./
-COPY scripts ./scripts
+COPY --from=build /app/scripts ./scripts
 COPY drizzle ./drizzle
 COPY --chown=minori:minori deploy/vultr/compose.production.yaml /opt/minori/release/compose.production.yaml
 COPY --chown=minori:minori deploy/vultr/deployment-protocol /opt/minori/release/deployment-protocol

@@ -1,18 +1,5 @@
 import { z } from 'zod';
 import {
-  contactEnvelopeSchema,
-  contactRowSchema,
-  meetingDetailEnvelopeSchema,
-  meetingDetailRowSchema,
-  meetingRowSchema,
-  meetingSearchEnvelopeSchema,
-  minuteDetailEnvelopeSchema,
-  minuteDetailRowSchema,
-  minuteRowSchema,
-  noteDetailSchema,
-  transcriptResponseSchema,
-} from './contract-decoders.js';
-import {
   LarkCliError,
   LarkContractError,
   MeetingArtifactError,
@@ -147,6 +134,62 @@ export interface MeetingService {
   ): Promise<MeetingContentLoad>;
 }
 
+const contactEnvelopeSchema = z.object({
+  users: z.array(z.unknown()),
+}).passthrough();
+
+const contactRowSchema = z.object({
+  open_id: z.string().min(1),
+  localized_name: z.string().min(1),
+}).passthrough();
+
+const searchEnvelopeSchema = z.object({
+  items: z.array(z.unknown()),
+  has_more: z.boolean().optional(),
+  page_token: z.string().optional(),
+}).passthrough();
+
+const detailEnvelopeSchema = z.object({
+  meetings: z.array(z.unknown()),
+}).passthrough();
+
+const meetingRowSchema = z.object({
+  id: z.string().trim().min(1),
+  display_info: z.string().optional(),
+  meta_data: z.object({
+    app_link: z.unknown().optional(),
+    description: z.unknown().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
+const meetingDetailRowSchema = z.object({
+  meeting_id: z.string().min(1),
+  topic: z.string().min(1),
+}).passthrough();
+
+const minuteRowSchema = z.object({
+  title: z.string().min(1),
+}).passthrough();
+
+const noteDetailSchema = z.object({
+  note: z.object({
+    note_display_type: z.enum(['normal', 'unified', 'unknown']),
+    note_doc_token: z.string().optional(),
+    verbatim_doc_token: z.string().optional(),
+  }).passthrough(),
+}).passthrough();
+
+const minuteDetailEnvelopeSchema = z.object({
+  minutes: z.array(z.unknown()),
+}).passthrough();
+
+const minuteDetailRowSchema = z.object({
+  minute_token: z.string().min(1),
+  title: z.string().optional(),
+  note_id: z.string().optional(),
+  artifacts: z.record(z.string(), z.unknown()).optional(),
+}).passthrough();
+
 function optionalString(value: unknown) {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
@@ -246,39 +289,28 @@ export function validateMeetingCommandResult(
   data: unknown,
 ) {
   switch (command) {
-    case 'contact.searchUser':
-      return parseContactCandidates(data);
+    case 'contact.searchUser': return parseContactCandidates(data);
     case 'vc.search':
-    case 'minutes.search':
-      return parseEnvelope(meetingSearchEnvelopeSchema, data);
-    case 'vc.detail':
-      return parseEnvelope(meetingDetailEnvelopeSchema, data);
-    case 'note.detail':
-      return parseEnvelope(noteDetailSchema, data);
+    case 'minutes.search': return parseEnvelope(searchEnvelopeSchema, data);
+    case 'vc.detail': return parseEnvelope(detailEnvelopeSchema, data);
+    case 'note.detail': return parseEnvelope(noteDetailSchema, data);
     case 'note.transcript': {
-      const parsed = transcriptResponseSchema.safeParse(data);
-      if (!parsed.success) throw new MeetingContractError({ rawCount: 0, validCount: 0, omittedCount: 0 });
+      const parsed = z.object({ transcript_file: z.string().min(1) }).passthrough().safeParse(data);
+      if (!parsed.success) {
+        throw new MeetingContractError({ rawCount: 0, validCount: 0, omittedCount: 0 });
+      }
       return parsed.data;
     }
-    case 'minutes.detail':
-      return parseEnvelope(minuteDetailEnvelopeSchema, data);
+    case 'minutes.detail': return parseEnvelope(minuteDetailEnvelopeSchema, data);
   }
 }
 
 export class LarkMeetingService implements MeetingService {
-  private readonly executor: LarkExecutor;
-  private readonly knowledge: KnowledgeReader;
-  private readonly artifacts: MeetingArtifactStore;
-
   constructor(
-    executor: LarkExecutor,
-    knowledge: KnowledgeReader,
-    artifacts: MeetingArtifactStore = systemMeetingArtifactStore(),
-  ) {
-    this.executor = executor;
-    this.knowledge = knowledge;
-    this.artifacts = artifacts;
-  }
+    private readonly executor: LarkExecutor,
+    private readonly knowledge: KnowledgeReader,
+    private readonly artifacts: MeetingArtifactStore = systemMeetingArtifactStore(),
+  ) {}
 
   private run<T>(command: Parameters<LarkExecutor['run']>[0], signal?: AbortSignal) {
     return signal ? this.executor.run<T>(command, signal) : this.executor.run<T>(command);
@@ -322,7 +354,7 @@ export class LarkMeetingService implements MeetingService {
       pageSize: input.pageSize,
       ...(input.pageToken ? { pageToken: input.pageToken } : {}),
     }, signal);
-    const envelope = parseEnvelope(meetingSearchEnvelopeSchema, data);
+    const envelope = parseEnvelope(searchEnvelopeSchema, data);
     const normalized = normalizeRows(envelope.items, (raw): MeetingCandidate | undefined => {
       const row = meetingRowSchema.safeParse(raw);
       if (!row.success) return undefined;
@@ -341,7 +373,7 @@ export class LarkMeetingService implements MeetingService {
 
   async getMeetingDetails(meetingIds: string[], signal?: AbortSignal): Promise<MeetingDetail[]> {
     const data = await this.run<unknown>({ id: 'vc.detail', meetingIds }, signal);
-    const envelope = parseEnvelope(meetingDetailEnvelopeSchema, data);
+    const envelope = parseEnvelope(detailEnvelopeSchema, data);
     return normalizeRows(envelope.meetings, (raw): MeetingDetail | undefined => {
       const row = meetingDetailRowSchema.safeParse(raw);
       if (!row.success) return undefined;
@@ -374,7 +406,7 @@ export class LarkMeetingService implements MeetingService {
       pageSize: input.pageSize,
       ...(input.pageToken ? { pageToken: input.pageToken } : {}),
     }, signal);
-    const envelope = parseEnvelope(meetingSearchEnvelopeSchema, data);
+    const envelope = parseEnvelope(searchEnvelopeSchema, data);
     const normalized = normalizeRows(envelope.items, (raw): MinuteCandidate | undefined => {
       const row = minuteRowSchema.safeParse(raw);
       if (!row.success) return undefined;
@@ -493,7 +525,8 @@ export class LarkMeetingService implements MeetingService {
       const data = await this.run<unknown>({
         id: 'note.transcript', noteId, workDir,
       }, signal);
-      const response = transcriptResponseSchema.safeParse(data);
+      const response = z.object({ transcript_file: z.string().min(1) }).passthrough()
+        .safeParse(data);
       if (!response.success) throw new MeetingContentError('meeting_transcript_unavailable');
       const text = await this.artifacts.readFile(workDir, response.data.transcript_file, budget);
       return this.result(metadata, 'smart_note_transcript', text);

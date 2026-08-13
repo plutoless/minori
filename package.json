@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "verify": "npm run typecheck && npm run typecheck:scripts && npm test && npm run build"
+    "generate:lark-contract-validators": "node scripts/generate-lark-contract-validators.mjs",
+    "verify": "npm run generate:lark-contract-validators && npm run typecheck && npm run typecheck:scripts && npm test && npm run build"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.30",
