@@ -24,7 +24,7 @@ function classify(key: string, value: string): StringClass {
   if (/(?:title|name|body|content|description|message|topic|display_info|markdown|text|file|path)$/u
     .test(key)
     || /(?:^|_)(?:time|time_iso|highlighted|type|visibility|sharing|updated_at)$/u.test(key)
-    || /^(?:command|current|latest|hint|scope|status|tokenStatus|defaultAs|match_segments|expiresAt|grantedAt|refreshExpiresAt|icon_info|userName)$/u
+    || /^(?:command|current|latest|hint|scope|status|tokenStatus|defaultAs|match_segments|expiresAt|grantedAt|refreshExpiresAt|icon_info|userName|result)$/u
       .test(key)) return 'text';
   return 'unknown';
 }
