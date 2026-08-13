@@ -314,7 +314,7 @@ export class LarkKnowledgeService implements KnowledgeService {
     previousRevisionId: number,
   ) {
     if ((result.document_id !== undefined && result.document_id !== token)
-      || result.revision_id <= previousRevisionId) {
+      || result.revision_id < previousRevisionId) {
       throw new LarkContractError();
     }
   }
@@ -342,7 +342,9 @@ export class LarkKnowledgeService implements KnowledgeService {
       id: 'docs.append', doc: current.token, content: input.content, revisionId: current.revisionId,
     }, signal);
     this.validateWriteResponse(result, current.token, current.revisionId);
-    return this.writeResult('append', current.token, result.revision_id, signal);
+    return this.writeResult(
+      'append', current.token, Math.max(current.revisionId + 1, result.revision_id), signal,
+    );
   }
 
   async patchDocument(
@@ -364,7 +366,9 @@ export class LarkKnowledgeService implements KnowledgeService {
       revisionId: current.revisionId,
     }, signal);
     this.validateWriteResponse(result, current.token, current.revisionId);
-    return this.writeResult('patch', current.token, result.revision_id, signal);
+    return this.writeResult(
+      'patch', current.token, Math.max(current.revisionId + 1, result.revision_id), signal,
+    );
   }
 
   async listSpaces(signal?: AbortSignal) {

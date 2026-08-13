@@ -77,16 +77,22 @@ describe('LarkKnowledgeService contract', () => {
     await expect(appendService.appendDocument({ doc: '<redacted-id>', content: '\nNew' }))
       .resolves.toMatchObject({ operation: 'append', revisionId: 10 });
 
+    const patchBefore = {
+      document: { ...before.document, revision_id: 10, content: '# Audit\n\nOld' },
+    };
+    const patchAfter = {
+      document: { ...before.document, revision_id: 11, content: '# Audit\n\nCurrent' },
+    };
     const patchRun = vi.fn(async (command: LarkCommand) => {
       if (command.id === 'docs.patch') return patch;
       if (command.id === 'docs.fetch') return patchRun.mock.calls.length === 1
-        ? before : afterPatch;
+        ? patchBefore : patchAfter;
       throw new Error('unexpected_command');
     });
     const patchService = new LarkKnowledgeService({ run: patchRun } as unknown as LarkExecutor);
     await expect(patchService.patchDocument({
       doc: '<redacted-id>', pattern: 'Old', replacement: 'Current',
-    })).resolves.toMatchObject({ operation: 'patch', revisionId: 10 });
+    })).resolves.toMatchObject({ operation: 'patch', revisionId: 11 });
   });
 
   it('preserves current Wiki search rows independently of malformed siblings', async () => {
@@ -440,7 +446,7 @@ describe('LarkKnowledgeService contract', () => {
     ]);
   });
 
-  it('rejects a write response that does not advance its revision', async () => {
+  it('rejects when the canonical re-fetch does not advance after an accepted write', async () => {
     const before = await fixtureData('docs-fetch');
     const run = vi.fn(async (command: LarkCommand) => {
       if (command.id === 'docs.fetch') return before;
@@ -453,6 +459,7 @@ describe('LarkKnowledgeService contract', () => {
     expect(run.mock.calls.map(([command]) => command)).toEqual([
       { id: 'docs.fetch', doc: 'doxcnRoadmap' },
       { id: 'docs.append', doc: 'doxcnRoadmap', content: '\n- shipped', revisionId: 7 },
+      { id: 'docs.fetch', doc: 'doxcnRoadmap' },
     ]);
   });
 

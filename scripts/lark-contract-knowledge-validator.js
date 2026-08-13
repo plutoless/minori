@@ -243,7 +243,7 @@ var LarkKnowledgeService = class {
     };
   }
   validateWriteResponse(result, token, previousRevisionId) {
-    if (result.document_id !== void 0 && result.document_id !== token || result.revision_id <= previousRevisionId) {
+    if (result.document_id !== void 0 && result.document_id !== token || result.revision_id < previousRevisionId) {
       throw new LarkContractError();
     }
   }
@@ -266,7 +266,12 @@ var LarkKnowledgeService = class {
       revisionId: current.revisionId
     }, signal);
     this.validateWriteResponse(result, current.token, current.revisionId);
-    return this.writeResult("append", current.token, result.revision_id, signal);
+    return this.writeResult(
+      "append",
+      current.token,
+      Math.max(current.revisionId + 1, result.revision_id),
+      signal
+    );
   }
   async patchDocument(input, signal) {
     const current = await this.fetchDocument({ doc: input.doc }, signal);
@@ -284,7 +289,12 @@ var LarkKnowledgeService = class {
       revisionId: current.revisionId
     }, signal);
     this.validateWriteResponse(result, current.token, current.revisionId);
-    return this.writeResult("patch", current.token, result.revision_id, signal);
+    return this.writeResult(
+      "patch",
+      current.token,
+      Math.max(current.revisionId + 1, result.revision_id),
+      signal
+    );
   }
   async listSpaces(signal) {
     const data = await this.run({ id: "wiki.spaceList" }, signal);
