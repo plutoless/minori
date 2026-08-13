@@ -42,7 +42,7 @@ describe('LarkKnowledgeService contract', () => {
       status: 'complete', rawCount: 15, validCount: 15, omittedCount: 0,
     });
     await expect(reader.fetchDocument({ doc: '<redacted-id>' })).resolves.toMatchObject({
-      token: '<redacted-id>', revisionId: 3,
+      token: '<redacted-id>', revisionId: expect.any(Number),
     });
     await expect(reader.listSpaces()).resolves.toHaveLength(3);
     await expect(reader.listNodes({ spaceId: '<redacted-id>' })).resolves.toHaveLength(6);

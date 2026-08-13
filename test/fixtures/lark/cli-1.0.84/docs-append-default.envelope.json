@@ -9,10 +9,11 @@
   },
   "data": {
     "document": {
-      "content": "<redacted-text>",
-      "document_id": "<redacted-id>",
-      "revision_id": 11
-    }
+      "revision_id": 10,
+      "url": "<redacted-url>"
+    },
+    "result": "<redacted-text>",
+    "warnings": []
   },
   "identity": "user",
   "ok": true
