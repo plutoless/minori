@@ -668,11 +668,14 @@ function unsafe(stage = 'document'): never {
 
 function parseSingleMarker(input: unknown, token: string, stage: 'initial' | 'final') {
   const parsed = documentSchema.safeParse(dataOf(input));
-  if (!parsed.success) unsafe(stage);
+  if (!parsed.success) unsafe(`${stage}_schema`);
   const document = parsed.data.document;
-  if (document.document_id !== token || (document.title !== undefined && document.title !== TITLE)) unsafe(stage);
+  if (document.document_id !== token
+    || (document.title !== undefined && document.title !== TITLE)) {
+    unsafe(`${stage}_identity`);
+  }
   const match = AUDIT_CONTENT.exec(document.content);
-  if (!match || match[2] !== undefined) unsafe(stage);
+  if (!match || match[2] !== undefined) unsafe(`${stage}_content`);
   return { revisionId: document.revision_id, nonce: match[1]! };
 }
 

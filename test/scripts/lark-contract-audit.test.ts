@@ -133,7 +133,7 @@ describe('Lark Contract Audit', () => {
     }));
     await expect(runFixedDocumentAudit({ run }, {
       documentToken: 'audit_doc', nonce: 'nonce-new',
-    })).rejects.toThrow('lark_contract_audit_initial_unsafe');
+    })).rejects.toThrow('lark_contract_audit_initial_');
     expect(run).toHaveBeenCalledTimes(1);
   });
 
