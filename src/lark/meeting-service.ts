@@ -172,9 +172,11 @@ const minuteRowSchema = z.object({
 }).passthrough();
 
 const noteDetailSchema = z.object({
-  note_display_type: z.enum(['normal', 'unified', 'unknown']),
-  note_doc_token: z.string().optional(),
-  verbatim_doc_token: z.string().optional(),
+  note: z.object({
+    note_display_type: z.enum(['normal', 'unified', 'unknown']),
+    note_doc_token: z.string().optional(),
+    verbatim_doc_token: z.string().optional(),
+  }).passthrough(),
 }).passthrough();
 
 const minuteDetailEnvelopeSchema = z.object({
@@ -462,7 +464,7 @@ export class LarkMeetingService implements MeetingService {
 
   private async noteDetail(noteId: string, signal?: AbortSignal) {
     const data = await this.run<unknown>({ id: 'note.detail', noteId }, signal);
-    return parseEnvelope(noteDetailSchema, data);
+    return parseEnvelope(noteDetailSchema, data).note;
   }
 
   private async smartNoteDocument(

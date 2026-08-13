@@ -1,6 +1,8 @@
 {
-  "note_id": "note_1",
-  "note_display_type": "unified",
-  "note_doc_token": "dox_note_summary",
-  "verbatim_doc_token": "dox_must_not_route"
+  "note": {
+    "note_id": "note_1",
+    "note_display_type": "unified",
+    "note_doc_token": "dox_note_summary",
+    "verbatim_doc_token": "dox_must_not_route"
+  }
 }

@@ -1,0 +1,268 @@
+{
+  "_notice": {
+    "update": {
+      "command": "<redacted-text>",
+      "current": "<redacted-text>",
+      "latest": "<redacted-text>",
+      "message": "<redacted-text>"
+    }
+  },
+  "data": {
+    "meetings": [
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "note_id": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "note_id": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "note_id": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "note_id": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "note_id": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "note_id": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "note_id": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "note_id": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "note_id": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      },
+      {
+        "end_time": "<redacted-text>",
+        "hint": "<redacted-text>",
+        "meeting_id": "<redacted-id>",
+        "meeting_no": "<redacted-id>",
+        "start_time": "<redacted-text>",
+        "topic": "<redacted-text>"
+      }
+    ]
+  },
+  "identity": "user",
+  "meta": {
+    "count": 30
+  },
+  "ok": true
+}

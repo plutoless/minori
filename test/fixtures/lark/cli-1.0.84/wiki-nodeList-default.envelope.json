@@ -1,0 +1,81 @@
+{
+  "_notice": {
+    "update": {
+      "command": "<redacted-text>",
+      "current": "<redacted-text>",
+      "latest": "<redacted-text>",
+      "message": "<redacted-text>"
+    }
+  },
+  "data": {
+    "has_more": false,
+    "nodes": [
+      {
+        "has_child": true,
+        "node_token": "<redacted-id>",
+        "node_type": "<redacted-text>",
+        "obj_token": "<redacted-id>",
+        "obj_type": "<redacted-text>",
+        "parent_node_token": "",
+        "space_id": "<redacted-id>",
+        "title": "<redacted-text>"
+      },
+      {
+        "has_child": false,
+        "node_token": "<redacted-id>",
+        "node_type": "<redacted-text>",
+        "obj_token": "<redacted-id>",
+        "obj_type": "<redacted-text>",
+        "parent_node_token": "",
+        "space_id": "<redacted-id>",
+        "title": "<redacted-text>"
+      },
+      {
+        "has_child": false,
+        "node_token": "<redacted-id>",
+        "node_type": "<redacted-text>",
+        "obj_token": "<redacted-id>",
+        "obj_type": "<redacted-text>",
+        "parent_node_token": "",
+        "space_id": "<redacted-id>",
+        "title": ""
+      },
+      {
+        "has_child": true,
+        "node_token": "<redacted-id>",
+        "node_type": "<redacted-text>",
+        "obj_token": "<redacted-id>",
+        "obj_type": "<redacted-text>",
+        "parent_node_token": "",
+        "space_id": "<redacted-id>",
+        "title": "<redacted-text>"
+      },
+      {
+        "has_child": true,
+        "node_token": "<redacted-id>",
+        "node_type": "<redacted-text>",
+        "obj_token": "<redacted-id>",
+        "obj_type": "<redacted-text>",
+        "parent_node_token": "",
+        "space_id": "<redacted-id>",
+        "title": "<redacted-text>"
+      },
+      {
+        "has_child": true,
+        "node_token": "<redacted-id>",
+        "node_type": "<redacted-text>",
+        "obj_token": "<redacted-id>",
+        "obj_type": "<redacted-text>",
+        "parent_node_token": "",
+        "space_id": "<redacted-id>",
+        "title": "<redacted-text>"
+      }
+    ],
+    "page_token": ""
+  },
+  "identity": "user",
+  "meta": {
+    "count": 6
+  },
+  "ok": true
+}

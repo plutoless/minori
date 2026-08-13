@@ -7,6 +7,7 @@ import {
 } from '../../src/lark/errors.js';
 import { LarkKnowledgeService } from '../../src/lark/knowledge-service.js';
 import type { LarkExecutor } from '../../src/lark/runner.js';
+import { loadFixtureData } from '../helpers/lark-contract-fixture.js';
 
 async function fixtureData(name: string): Promise<unknown> {
   const raw = await readFile(resolve('test/fixtures/lark', `${name}.json`), 'utf8');
@@ -19,6 +20,37 @@ function executorReturning(data: unknown) {
 }
 
 describe('LarkKnowledgeService contract', () => {
+  it('accepts all verified live CLI 1.0.84 knowledge data fixtures', async () => {
+    const fixtures = {
+      search: await loadFixtureData('drive.search.default'),
+      fetch: await loadFixtureData('docs.fetch.default'),
+      spaces: await loadFixtureData('wiki.spaceList.default'),
+      nodes: await loadFixtureData('wiki.nodeList.default'),
+      node: await loadFixtureData('wiki.nodeGet.default'),
+    };
+    const run = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'drive.search') return fixtures.search;
+      if (command.id === 'docs.fetch') return fixtures.fetch;
+      if (command.id === 'wiki.spaceList') return fixtures.spaces;
+      if (command.id === 'wiki.nodeList') return fixtures.nodes;
+      if (command.id === 'wiki.nodeGet') return fixtures.node;
+      throw new Error('unexpected_command');
+    });
+    const reader = new LarkKnowledgeService({ run } as unknown as LarkExecutor);
+
+    await expect(reader.search({ query: 'sanitized' })).resolves.toMatchObject({
+      status: 'complete', rawCount: 15, validCount: 15, omittedCount: 0,
+    });
+    await expect(reader.fetchDocument({ doc: '<redacted-id>' })).resolves.toMatchObject({
+      token: '<redacted-id>', revisionId: 3,
+    });
+    await expect(reader.listSpaces()).resolves.toHaveLength(3);
+    await expect(reader.listNodes({ spaceId: '<redacted-id>' })).resolves.toHaveLength(6);
+    await expect(reader.getNode({ nodeToken: '<redacted-id>' })).resolves.toMatchObject({
+      nodeToken: '<redacted-id>', objToken: '<redacted-id>',
+    });
+  });
+
   it('preserves current Wiki search rows independently of malformed siblings', async () => {
     const { executor } = executorReturning(await fixtureData('drive-search-current-wiki'));
     const reader = new LarkKnowledgeService(executor);

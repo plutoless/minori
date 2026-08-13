@@ -1,0 +1,29 @@
+{
+  "_notice": {
+    "update": {
+      "command": "<redacted-text>",
+      "current": "<redacted-text>",
+      "latest": "<redacted-text>",
+      "message": "<redacted-text>"
+    }
+  },
+  "data": {
+    "creator": "<redacted-id>",
+    "has_child": true,
+    "node_create_time": "<redacted-text>",
+    "node_token": "<redacted-id>",
+    "node_type": "<redacted-text>",
+    "obj_create_time": "<redacted-text>",
+    "obj_edit_time": "<redacted-text>",
+    "obj_token": "<redacted-id>",
+    "obj_type": "<redacted-text>",
+    "origin_node_token": "<redacted-id>",
+    "owner": "<redacted-id>",
+    "parent_node_token": "",
+    "space_id": "<redacted-id>",
+    "title": "<redacted-text>",
+    "updated_at": "<redacted-text>"
+  },
+  "identity": "user",
+  "ok": true
+}

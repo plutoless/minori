@@ -277,7 +277,7 @@ export async function runContractAudit(
         const detailRows = arrayAt(dataOf(detail), 'meetings');
         const noteIds = detailRows.map((item) => nonEmptyAt(item, ['note_id']))
           .filter((value): value is string => value !== undefined);
-        for (const noteId of noteIds.slice(0, 6)) {
+        for (const noteId of noteIds.slice(0, 30)) {
           const raw = await dependencies.executor.run({ id: 'note.detail', noteId }, options.signal)
             .catch(() => undefined);
           if (raw === undefined) continue;

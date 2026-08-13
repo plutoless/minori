@@ -1,0 +1,35 @@
+{
+  "_notice": {
+    "update": {
+      "command": "<redacted-text>",
+      "current": "<redacted-text>",
+      "latest": "<redacted-text>",
+      "message": "<redacted-text>"
+    }
+  },
+  "data": {
+    "has_more": false,
+    "users": [
+      {
+        "chat_recency_hint": "",
+        "department": "",
+        "email": "",
+        "enterprise_email": "",
+        "has_chatted": false,
+        "is_activated": true,
+        "is_cross_tenant": false,
+        "localized_name": "<redacted-text>",
+        "match_segments": [
+          "<redacted-text>"
+        ],
+        "open_id": "<redacted-id>",
+        "p2p_chat_id": ""
+      }
+    ]
+  },
+  "identity": "user",
+  "meta": {
+    "count": 1
+  },
+  "ok": true
+}

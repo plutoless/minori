@@ -256,10 +256,14 @@ describe('Lark Contract Audit', () => {
         return { ok: true, data: { items: [{ id: 'meeting_1' }] } };
       }
       if (command.id === 'vc.detail') {
-        return { ok: true, data: { meetings: [{ meeting_id: 'meeting_1', note_id: 'note_1' }] } };
+        return { ok: true, data: { meetings: Array.from({ length: 7 }, (_, index) => ({
+          meeting_id: `meeting_${index + 1}`, note_id: `note_${index + 1}`,
+        })) } };
       }
       if (command.id === 'note.detail') {
-        return { ok: true, data: { note: { note_display_type: 'unified' } } };
+        return { ok: true, data: { note: {
+          note_display_type: command.noteId === 'note_7' ? 'unified' : 'normal',
+        } } };
       }
       if (command.id === 'note.transcript') {
         await writeFile(join(command.workDir, 'transcript.md'), 'transient transcript');

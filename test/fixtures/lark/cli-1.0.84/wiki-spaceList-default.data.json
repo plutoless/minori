@@ -1,0 +1,30 @@
+{
+  "has_more": false,
+  "page_token": "<redacted-id>",
+  "spaces": [
+    {
+      "description": "",
+      "name": "<redacted-text>",
+      "open_sharing": "<redacted-text>",
+      "space_id": "<redacted-id>",
+      "space_type": "<redacted-text>",
+      "visibility": "<redacted-text>"
+    },
+    {
+      "description": "<redacted-text>",
+      "name": "<redacted-text>",
+      "open_sharing": "<redacted-text>",
+      "space_id": "<redacted-id>",
+      "space_type": "<redacted-text>",
+      "visibility": "<redacted-text>"
+    },
+    {
+      "description": "",
+      "name": "<redacted-text>",
+      "open_sharing": "<redacted-text>",
+      "space_id": "<redacted-id>",
+      "space_type": "<redacted-text>",
+      "visibility": "<redacted-text>"
+    }
+  ]
+}

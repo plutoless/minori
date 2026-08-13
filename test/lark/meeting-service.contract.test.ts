@@ -14,6 +14,7 @@ import {
 } from '../../src/lark/meeting-service.js';
 import type { KnowledgeReader } from '../../src/lark/knowledge-service.js';
 import type { LarkExecutor } from '../../src/lark/runner.js';
+import { loadFixtureData } from '../helpers/lark-contract-fixture.js';
 
 async function fixture(name: string) {
   const path = fileURLToPath(new URL(`../fixtures/lark/${name}`, import.meta.url));
@@ -60,6 +61,27 @@ const MINUTE_REF: MeetingArtifactReference = {
 const BUDGET = (): MeetingByteBudget => ({ remaining: 24 * 1024 * 1024 });
 
 describe('LarkMeetingService', () => {
+  it('reads the live CLI 1.0.84 Note detail wrapper', async () => {
+    const detail = await fixture('vc-detail.json');
+    const note = await loadFixtureData('note.detail.normal');
+    const executor = executorWith((command) => (
+      command.id === 'vc.detail' ? detail : note
+    ));
+    const knowledge = knowledgeWith((doc) => ({
+      token: doc, title: 'Sanitized note', markdown: 'AI summary', revisionId: 1,
+    }));
+    const service = new LarkMeetingService(executor, knowledge, artifactStoreWith('unused'));
+
+    await expect(service.fetchContent(MEETING_REF, {
+      contentKind: 'summary', artifactPreference: 'smart_note',
+    }, BUDGET())).resolves.toMatchObject({
+      status: 'loaded', kind: 'smart_note_ai_summary', text: 'AI summary',
+    });
+    expect(knowledge.fetchDocument).toHaveBeenCalledWith(
+      { doc: '<redacted-id>' }, undefined,
+    );
+  });
+
   it('resolves only unique exact participant names and bounds ambiguous candidates', async () => {
     const data = await fixture('contact-search-user.json');
     const executor = executorWith(() => data);
@@ -298,10 +320,10 @@ describe('LarkMeetingService', () => {
 
   it('falls back to an original transcript only when auto has no readable summary', async () => {
     const detail = await fixture('vc-detail.json');
-    const note = {
+    const note = { note: {
       note_id: 'note_1', note_display_type: 'normal',
       verbatim_doc_token: 'dox_note_transcript',
-    };
+    } };
     const executor = executorWith((command) => {
       if (command.id === 'vc.detail') return detail;
       if (command.id === 'note.detail') return note;
