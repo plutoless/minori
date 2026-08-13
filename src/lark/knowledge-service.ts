@@ -128,7 +128,14 @@ export function validateKnowledgeCommandResult(
   data: unknown,
 ) {
   switch (command) {
-    case 'drive.search': return parseContract(driveSearchSchema, data);
+    case 'drive.search': {
+      const parsed = parseContract(driveSearchSchema, data);
+      if (parsed.results.length > 0
+        && !parsed.results.some((row) => driveSearchRowSchema.safeParse(row).success)) {
+        throw new LarkContractError();
+      }
+      return parsed;
+    }
     case 'docs.fetch': return parseContract(documentSchema, data);
     case 'docs.create': {
       const result = parseContract(writeResultSchema, data);

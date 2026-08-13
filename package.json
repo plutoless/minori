@@ -19,7 +19,8 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "generate:lark-contract-validators": "node scripts/generate-lark-contract-validators.mjs",
-    "verify": "npm run generate:lark-contract-validators && npm run typecheck && npm run typecheck:scripts && npm test && npm run build"
+    "check:lark-contract-validators": "node scripts/check-lark-contract-validators.mjs",
+    "verify": "npm run generate:lark-contract-validators && npm run check:lark-contract-validators && npm run typecheck && npm run typecheck:scripts && npm test && npm run build"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.30",

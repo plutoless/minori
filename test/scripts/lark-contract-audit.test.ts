@@ -53,6 +53,35 @@ describe('Lark Contract Audit', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('does not verify non-empty captures whose production row decoder rejects every row', async () => {
+    const run = vi.fn(async (command: LarkCommand) => {
+      if (command.id === 'auth.status') {
+        return {
+          appId: 'app', brand: 'feishu', defaultAs: 'user', identity: 'user',
+          identities: {
+            user: { status: 'ready', available: true },
+            bot: { status: 'unavailable', available: false },
+          },
+        };
+      }
+      if (command.id === 'vc.search') return { ok: true, data: { items: [{ broken: true }] } };
+      if (command.id === 'drive.search') return { ok: true, data: { results: [{ broken: true }] } };
+      if (command.id === 'minutes.search') return { ok: true, data: { items: [] } };
+      if (command.id === 'contact.searchUser') return { ok: true, data: { users: [] } };
+      if (command.id === 'wiki.spaceList') return { ok: true, data: { spaces: [] } };
+      throw new Error('sample_unavailable');
+    });
+    const report = await runContractAudit({ executor: { version: async () => '1.0.84', run } }, {
+      now: new Date('2026-08-12T12:00:00.000Z'),
+      contactQuery: 'operator-supplied', driveQuery: 'operator-supplied',
+      includeWriteAudit: false, bootstrapAuditDocument: false,
+    });
+    expect(report.cases.find((entry) => entry.caseId === 'vc.search.default')?.state)
+      .toBe('failed');
+    expect(report.cases.find((entry) => entry.caseId === 'drive.search.default')?.state)
+      .toBe('failed');
+  });
+
   it('keeps the fixed audit document constant-size across append and patch', async () => {
     const responses = [
       { document: { document_id: 'audit_doc', revision_id: 7, content: '# Minori Lark CLI Contract Audit\n\nCurrent marker: nonce-old' } },
@@ -73,6 +102,12 @@ describe('Lark Contract Audit', () => {
       { id: 'docs.patch', doc: 'audit_doc', pattern: 'Current marker: nonce-old\n\nCandidate marker: nonce-new', content: 'Current marker: nonce-new', revisionId: 8 },
       { id: 'docs.fetch', doc: 'audit_doc' },
     ]);
+  });
+
+  it('rejects a create response without a bindable document ID', async () => {
+    const executor = { run: vi.fn(async () => ({ document: { revision_id: 1 } })) };
+    await expect(bootstrapFixedDocument(executor, 'nonce-new'))
+      .rejects.toThrow('lark_contract_audit_bootstrap_response_unsafe');
   });
 
   it('bootstraps the one audit document only through the typed create command', async () => {

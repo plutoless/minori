@@ -290,9 +290,27 @@ export function validateMeetingCommandResult(
 ) {
   switch (command) {
     case 'contact.searchUser': return parseContactCandidates(data);
-    case 'vc.search':
-    case 'minutes.search': return parseEnvelope(searchEnvelopeSchema, data);
-    case 'vc.detail': return parseEnvelope(detailEnvelopeSchema, data);
+    case 'vc.search': {
+      const parsed = parseEnvelope(searchEnvelopeSchema, data);
+      normalizeRows(parsed.items, (row) => (
+        meetingRowSchema.safeParse(row).success ? row : undefined
+      ));
+      return parsed;
+    }
+    case 'minutes.search': {
+      const parsed = parseEnvelope(searchEnvelopeSchema, data);
+      normalizeRows(parsed.items, (row) => (
+        minuteRowSchema.safeParse(row).success ? row : undefined
+      ));
+      return parsed;
+    }
+    case 'vc.detail': {
+      const parsed = parseEnvelope(detailEnvelopeSchema, data);
+      normalizeRows(parsed.meetings, (row) => (
+        meetingDetailRowSchema.safeParse(row).success ? row : undefined
+      ));
+      return parsed;
+    }
     case 'note.detail': return parseEnvelope(noteDetailSchema, data);
     case 'note.transcript': {
       const parsed = z.object({ transcript_file: z.string().min(1) }).passthrough().safeParse(data);
@@ -301,7 +319,13 @@ export function validateMeetingCommandResult(
       }
       return parsed.data;
     }
-    case 'minutes.detail': return parseEnvelope(minuteDetailEnvelopeSchema, data);
+    case 'minutes.detail': {
+      const parsed = parseEnvelope(minuteDetailEnvelopeSchema, data);
+      normalizeRows(parsed.minutes, (row) => (
+        minuteDetailRowSchema.safeParse(row).success ? row : undefined
+      ));
+      return parsed;
+    }
   }
 }
 

@@ -835,7 +835,7 @@ export async function bootstrapFixedDocument(
     content: `Current marker: bootstrap_${nonce}`,
   }, signal);
   const parsed = writeSchema.safeParse(dataOf(raw));
-  if (!parsed.success) unsafe('bootstrap_response');
+  if (!parsed.success || !parsed.data.document.document_id) unsafe('bootstrap_response');
   return {
     documentToken: parsed.data.document.document_id,
     initialRevisionId: parsed.data.document.revision_id,
