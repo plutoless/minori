@@ -140,7 +140,7 @@ describe('runReleaseValidation', () => {
     const exitCode = await runReleaseValidation({
       environment: {
         GITHUB_REF_TYPE: 'tag',
-        GITHUB_REF_NAME: 'v0.3.1',
+        GITHUB_REF_NAME: 'v0.3.2',
         GITHUB_SHA: commitSha,
         GHCR_IMAGE: ghcrImage,
       },
@@ -153,8 +153,8 @@ describe('runReleaseValidation', () => {
     expect(isAncestor).toHaveBeenCalledWith(commitSha);
     expect(writeOutput).toHaveBeenCalledWith({
       commitSha,
-      version: '0.3.1',
-      semverTag: 'v0.3.1',
+      version: '0.3.2',
+      semverTag: 'v0.3.2',
       ghcrImage,
     });
     expect(reportFailure).not.toHaveBeenCalled();
