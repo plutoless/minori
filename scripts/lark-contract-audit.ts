@@ -660,10 +660,31 @@ const writeSchema = z.object({
 }).passthrough();
 
 const TITLE = 'Minori Lark CLI Contract Audit';
-const AUDIT_CONTENT = /^<title>Minori Lark CLI Contract Audit<\/title><p>Current marker: ([A-Za-z0-9_-]{8,128})<\/p>(?:<p>Candidate marker: ([A-Za-z0-9_-]{8,128})<\/p>)?$/u;
+const AUDIT_TITLE = `<title>${TITLE}</title>`;
+const MARKER_VALUE = /^[A-Za-z0-9_-]{8,128}$/u;
 
 function unsafe(stage = 'document'): never {
   throw new Error(`lark_contract_audit_${stage}_unsafe`);
+}
+
+function auditMarkers(content: string, stage: string) {
+  if (!content.startsWith(AUDIT_TITLE)) unsafe(`${stage}_content`);
+  const body = content.slice(AUDIT_TITLE.length);
+  const currentPrefix = '<p>Current marker: ';
+  if (!body.startsWith(currentPrefix)) unsafe(`${stage}_content`);
+  const currentEnd = body.indexOf('</p>', currentPrefix.length);
+  if (currentEnd < 0) unsafe(`${stage}_content`);
+  const current = body.slice(currentPrefix.length, currentEnd);
+  if (!MARKER_VALUE.test(current)) unsafe(`${stage}_content`);
+  const remainder = body.slice(currentEnd + 4);
+  if (!remainder) return { current };
+  const candidatePrefix = '<p>Candidate marker: ';
+  if (!remainder.startsWith(candidatePrefix) || !remainder.endsWith('</p>')) {
+    unsafe(`${stage}_content`);
+  }
+  const candidate = remainder.slice(candidatePrefix.length, -4);
+  if (!MARKER_VALUE.test(candidate)) unsafe(`${stage}_content`);
+  return { current, candidate };
 }
 
 function parseSingleMarker(input: unknown, token: string, stage: 'initial' | 'final') {
@@ -674,9 +695,9 @@ function parseSingleMarker(input: unknown, token: string, stage: 'initial' | 'fi
     || (document.title !== undefined && document.title !== TITLE)) {
     unsafe(`${stage}_identity`);
   }
-  const match = AUDIT_CONTENT.exec(document.content);
-  if (!match || match[2] !== undefined) unsafe(`${stage}_content`);
-  return { revisionId: document.revision_id, nonce: match[1]! };
+  const markers = auditMarkers(document.content, stage);
+  if (markers.candidate !== undefined) unsafe(`${stage}_content`);
+  return { revisionId: document.revision_id, nonce: markers.current };
 }
 
 function requireWrite(input: unknown, token: string, revisionId: number, stage: 'append_response' | 'patch_response') {
@@ -727,14 +748,14 @@ export async function runFixedDocumentAudit(
   input.onResponse?.('docs.fetch.default', intermediateRaw);
   const intermediate = documentSchema.safeParse(dataOf(intermediateRaw));
   const expectedBlock = `Current marker: ${initial.nonce}\n\n${candidate}`;
-  const intermediateMatch = intermediate.success
-    ? AUDIT_CONTENT.exec(intermediate.data.document.content)
+  const intermediateMarkers = intermediate.success
+    ? auditMarkers(intermediate.data.document.content, 'intermediate')
     : null;
   if (!intermediate.success
     || intermediate.data.document.document_id !== input.documentToken
     || (intermediate.data.document.title !== undefined && intermediate.data.document.title !== TITLE)
-    || intermediateMatch?.[1] !== initial.nonce
-    || intermediateMatch?.[2] !== input.nonce
+    || intermediateMarkers?.current !== initial.nonce
+    || intermediateMarkers?.candidate !== input.nonce
     || intermediate.data.document.revision_id !== initial.revisionId + 1) unsafe('intermediate');
 
   const finalMarker = `Current marker: ${input.nonce}`;
