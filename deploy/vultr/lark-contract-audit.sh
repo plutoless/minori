@@ -66,7 +66,7 @@ if [[ -e "$audit_root/state.json" ]]; then
 fi
 
 operator_log="$run_root/operator.log"
-if ! docker run --rm --read-only --user 10001:10001 \
+if ! docker run --rm --interactive --read-only --user 10001:10001 \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
   --env HOME=/var/lib/minori/lark/home \
   --env LARKSUITE_CLI_CONFIG_DIR=/var/lib/minori/lark/config \
