@@ -662,26 +662,26 @@ const writeSchema = z.object({
 const TITLE = 'Minori Lark CLI Contract Audit';
 const AUDIT_CONTENT = /^<title>Minori Lark CLI Contract Audit<\/title><p>Current marker: ([A-Za-z0-9_-]{8,128})<\/p>(?:<p>Candidate marker: ([A-Za-z0-9_-]{8,128})<\/p>)?$/u;
 
-function unsafe(): never {
-  throw new Error('lark_contract_audit_document_unsafe');
+function unsafe(stage = 'document'): never {
+  throw new Error(`lark_contract_audit_${stage}_unsafe`);
 }
 
-function parseSingleMarker(input: unknown, token: string) {
+function parseSingleMarker(input: unknown, token: string, stage: 'initial' | 'final') {
   const parsed = documentSchema.safeParse(dataOf(input));
-  if (!parsed.success) unsafe();
+  if (!parsed.success) unsafe(stage);
   const document = parsed.data.document;
-  if (document.document_id !== token || (document.title !== undefined && document.title !== TITLE)) unsafe();
+  if (document.document_id !== token || (document.title !== undefined && document.title !== TITLE)) unsafe(stage);
   const match = AUDIT_CONTENT.exec(document.content);
-  if (!match || match[2] !== undefined) unsafe();
+  if (!match || match[2] !== undefined) unsafe(stage);
   return { revisionId: document.revision_id, nonce: match[1]! };
 }
 
-function requireWrite(input: unknown, token: string, revisionId: number) {
+function requireWrite(input: unknown, token: string, revisionId: number, stage: 'append_response' | 'patch_response') {
   const parsed = writeSchema.safeParse(dataOf(input));
   if (!parsed.success
     || (parsed.data.document.document_id !== undefined
       && parsed.data.document.document_id !== token)
-    || parsed.data.document.revision_id !== revisionId) unsafe();
+    || parsed.data.document.revision_id !== revisionId) unsafe(stage);
 }
 
 function executeAuditCommand(
@@ -701,13 +701,13 @@ export async function runFixedDocumentAudit(
     onResponse?: (caseId: 'docs.fetch.default' | 'docs.append.default' | 'docs.patch.default', raw: unknown) => void;
   },
 ) {
-  if (!/^[A-Za-z0-9_-]{8,128}$/u.test(input.nonce)) unsafe();
+  if (!/^[A-Za-z0-9_-]{8,128}$/u.test(input.nonce)) unsafe('nonce');
   const initialRaw = await executeAuditCommand(executor, {
     id: 'docs.fetch', doc: input.documentToken,
   }, input.signal);
   input.onResponse?.('docs.fetch.default', initialRaw);
-  const initial = parseSingleMarker(initialRaw, input.documentToken);
-  if (initial.nonce === input.nonce) unsafe();
+  const initial = parseSingleMarker(initialRaw, input.documentToken, 'initial');
+  if (initial.nonce === input.nonce) unsafe('nonce');
   const candidate = `Candidate marker: ${input.nonce}`;
   const appendRaw = await executeAuditCommand(executor, {
     id: 'docs.append',
@@ -716,7 +716,7 @@ export async function runFixedDocumentAudit(
     revisionId: initial.revisionId,
   }, input.signal);
   input.onResponse?.('docs.append.default', appendRaw);
-  requireWrite(appendRaw, input.documentToken, initial.revisionId + 1);
+  requireWrite(appendRaw, input.documentToken, initial.revisionId + 1, 'append_response');
 
   const intermediateRaw = await executeAuditCommand(executor, {
     id: 'docs.fetch', doc: input.documentToken,
@@ -732,7 +732,7 @@ export async function runFixedDocumentAudit(
     || (intermediate.data.document.title !== undefined && intermediate.data.document.title !== TITLE)
     || intermediateMatch?.[1] !== initial.nonce
     || intermediateMatch?.[2] !== input.nonce
-    || intermediate.data.document.revision_id !== initial.revisionId + 1) unsafe();
+    || intermediate.data.document.revision_id !== initial.revisionId + 1) unsafe('intermediate');
 
   const finalMarker = `Current marker: ${input.nonce}`;
   const patchRaw = await executeAuditCommand(executor, {
@@ -743,15 +743,15 @@ export async function runFixedDocumentAudit(
     revisionId: intermediate.data.document.revision_id,
   }, input.signal);
   input.onResponse?.('docs.patch.default', patchRaw);
-  requireWrite(patchRaw, input.documentToken, intermediate.data.document.revision_id + 1);
+  requireWrite(patchRaw, input.documentToken, intermediate.data.document.revision_id + 1, 'patch_response');
 
   const finalRaw = await executeAuditCommand(executor, {
     id: 'docs.fetch', doc: input.documentToken,
   }, input.signal);
   input.onResponse?.('docs.fetch.default', finalRaw);
-  const final = parseSingleMarker(finalRaw, input.documentToken);
+  const final = parseSingleMarker(finalRaw, input.documentToken, 'final');
   if (final.nonce !== input.nonce
-    || final.revisionId !== intermediate.data.document.revision_id + 1) unsafe();
+    || final.revisionId !== intermediate.data.document.revision_id + 1) unsafe('final');
   return { finalRevisionId: final.revisionId };
 }
 
@@ -760,14 +760,14 @@ export async function bootstrapFixedDocument(
   nonce: string,
   signal?: AbortSignal,
 ) {
-  if (!/^[A-Za-z0-9_-]{8,100}$/u.test(nonce)) unsafe();
+  if (!/^[A-Za-z0-9_-]{8,100}$/u.test(nonce)) unsafe('nonce');
   const raw = await executeAuditCommand(executor, {
     id: 'docs.create',
     title: TITLE,
     content: `Current marker: bootstrap_${nonce}`,
   }, signal);
   const parsed = writeSchema.safeParse(dataOf(raw));
-  if (!parsed.success) unsafe();
+  if (!parsed.success) unsafe('bootstrap_response');
   return {
     documentToken: parsed.data.document.document_id,
     initialRevisionId: parsed.data.document.revision_id,
