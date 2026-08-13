@@ -69,7 +69,7 @@ operator_log="$run_root/operator.log"
 if ! docker run --rm --interactive --read-only --user 10001:10001 \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
   --env HOME=/var/lib/minori/lark/home \
-  --env LARKSUITE_CLI_CONFIG_DIR=/var/lib/minori/lark/config \
+  --env LARKSUITE_CLI_CONFIG_DIR=/var/lib/minori/lark \
   --env LARKSUITE_CLI_DATA_DIR=/var/lib/minori/lark/data \
   --env LARK_CLI_BIN=/app/node_modules/.bin/lark-cli \
   --volume /opt/minori/lark:/var/lib/minori/lark \

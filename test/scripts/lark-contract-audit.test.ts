@@ -300,7 +300,8 @@ describe('Lark Contract Audit', () => {
     expect(launcher).toContain("[[ \"$image_arch\" == 'amd64' ]]");
     expect(launcher).toContain("[[ \"$image_user\" == '10001:10001' ]]");
     expect(launcher).toContain('HOME=/var/lib/minori/lark/home');
-    expect(launcher).toContain('LARKSUITE_CLI_CONFIG_DIR=/var/lib/minori/lark/config');
+    expect(launcher).toContain('LARKSUITE_CLI_CONFIG_DIR=/var/lib/minori/lark');
+    expect(launcher).not.toContain('LARKSUITE_CLI_CONFIG_DIR=/var/lib/minori/lark/config');
     expect(launcher).toContain('LARKSUITE_CLI_DATA_DIR=/var/lib/minori/lark/data');
     expect(launcher).toContain('/opt/minori/lark:/var/lib/minori/lark');
     expect(launcher).not.toContain('--env-file');
