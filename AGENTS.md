@@ -2,6 +2,7 @@
 
 ## Verification
 
-- Choose local verification by change risk. PostgreSQL tests are optional when a change does not touch persistence, migrations, queueing, transactions, leases, recovery, or database-backed contracts.
-- Run the relevant PostgreSQL tests locally when any of those boundaries change, and when reproducing or fixing a related CI failure.
+- Prefer fast local tests with mocks and sanitized fixtures.
+- Leave real PostgreSQL, container, external-service, and production-data verification to required GitHub CI by default.
+- Run those dependencies locally only when their boundary changes or when reproducing and fixing a related CI failure.
 - Pull-request CI must always run the PostgreSQL integration suite as a required merge check.

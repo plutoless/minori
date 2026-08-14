@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add concise root guidance that makes local PostgreSQL verification risk-based while preserving the required pull-request integration gate.
+**Goal:** Add concise root guidance that prefers fast local mocks and fixtures while preserving real-dependency verification in required pull-request CI.
 
 **Architecture:** Create one repository-root `AGENTS.md` section governing coding-agent verification behavior. This documentation-only change does not modify application code, database behavior, or CI configuration.
 
@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Keep root `AGENTS.md` concise.
-- Do not imply that PostgreSQL tests run only after CI fails.
+- Do not imply that real dependencies run locally only after CI fails.
 - Do not change runtime code, database schema, migrations, or CI workflows.
 
 ---
@@ -35,8 +35,9 @@ Create `AGENTS.md` with exactly this focused guidance:
 
 ## Verification
 
-- Choose local verification by change risk. PostgreSQL tests are optional when a change does not touch persistence, migrations, queueing, transactions, leases, recovery, or database-backed contracts.
-- Run the relevant PostgreSQL tests locally when any of those boundaries change, and when reproducing or fixing a related CI failure.
+- Prefer fast local tests with mocks and sanitized fixtures.
+- Leave real PostgreSQL, container, external-service, and production-data verification to required GitHub CI by default.
+- Run those dependencies locally only when their boundary changes or when reproducing and fixing a related CI failure.
 - Pull-request CI must always run the PostgreSQL integration suite as a required merge check.
 ```
 
@@ -45,11 +46,11 @@ Create `AGENTS.md` with exactly this focused guidance:
 Run:
 
 ```bash
-rg -n "change risk|PostgreSQL tests are optional|Run the relevant PostgreSQL tests|must always run" AGENTS.md
+rg -n "mocks and sanitized fixtures|real PostgreSQL|only when their boundary changes|must always run" AGENTS.md
 git diff --check
 ```
 
-Expected: all three rules are present and `git diff --check` reports no errors.
+Expected: all four rules are present and `git diff --check` reports no errors.
 
 - [ ] **Step 3: Confirm the change is documentation-only**
 
