@@ -20,13 +20,31 @@ export interface AgentInvocationRunner {
   ): Promise<AgentReply>;
 }
 
+export function buildScheduledInvocationPrompt(
+  run: Pick<ScheduledRun, 'scheduledFor' | 'instruction'>,
+): string {
+  return [
+    '[Scheduled Task Occurrence]',
+    `Scheduled for: ${run.scheduledFor.toISOString()}`,
+    'Now execute this already-created Scheduled Task occurrence exactly once.',
+    'Use scheduled_for to interpret relative dates and cycles, even during catch-up.',
+    'Schedule or recurrence wording in the frozen instruction describes the existing task; it is not a request to create or change Scheduled Tasks.',
+    'This occurrence must not create or change Scheduled Tasks.',
+    '',
+    '[Frozen Scheduled Task Instruction]',
+    run.instruction,
+    '[/Frozen Scheduled Task Instruction]',
+  ].join('\n');
+}
+
 export function createAgentInvocationRunner(): AgentInvocationRunner {
   return {
     async runScheduled(run, dependencies, signal) {
       const triggerMessageId = `scheduled:${run.id}`;
-      const history: AgentHistoryMessage[] = [{ role: 'user', content: run.instruction }];
+      const prompt = buildScheduledInvocationPrompt(run);
+      const history: AgentHistoryMessage[] = [{ role: 'user', content: prompt }];
       return runKnowledgeAgent({
-        prompt: run.instruction,
+        prompt,
         history,
         trigger: {
           kind: 'scheduled_task',
@@ -51,7 +69,7 @@ export function createAgentInvocationRunner(): AgentInvocationRunner {
             messageId: triggerMessageId,
             conversationId: run.id,
             role: 'user' as const,
-            content: run.instruction,
+            content: prompt,
             createdAt: run.scheduledFor,
           }],
           search: async () => [],

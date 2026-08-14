@@ -564,14 +564,19 @@ describe('open team Agent release contract', () => {
       recordTeamContext: vi.fn().mockResolvedValue(undefined),
       finish: vi.fn().mockResolvedValue(undefined), purgeFailureDetails: vi.fn().mockResolvedValue(0),
     };
+    const frozenInstruction = [
+      '每次投递开头先单独添加一句：Minori 消息投递测试',
+      '',
+      '每天在下午 3:30（Asia/Shanghai）检索当天约下午 2:00 召开的日会会议记录，优先读取 AI 摘要。',
+    ].join('\n');
     const scheduled: ScheduledRun = {
       id: 'scheduled_run_1', scheduleId: 'schedule_1', taskVersion: 1,
-      instruction: 'Check the latest weekly meeting evidence',
-      scheduledFor: new Date('2026-08-12T08:00:00Z'),
+      instruction: frozenInstruction,
+      scheduledFor: new Date('2026-08-14T07:30:00.000Z'),
       resultTarget: { chatId: 'oc_target', displayName: 'Target', chatType: 'group' },
       status: 'processing', claimAttempt: 1,
-      createdAt: new Date('2026-08-12T08:00:00Z'),
-      updatedAt: new Date('2026-08-12T08:00:00Z'),
+      createdAt: new Date('2026-08-14T07:30:00.000Z'),
+      updatedAt: new Date('2026-08-14T07:30:00.000Z'),
     };
 
     await expect(createAgentInvocationRunner().runScheduled(scheduled, {
@@ -580,10 +585,26 @@ describe('open team Agent release contract', () => {
       botOpenId: BOT_OPEN_ID, botAppId: 'cli_minori', agentRunStore: store,
       onOperationalError: vi.fn(),
     })).resolves.toMatchObject({ text: 'Found the scheduled meeting evidence.' });
+    const firstCall = model.doGenerateCalls[0];
+    const serializedPrompt = JSON.stringify(firstCall?.prompt);
+    const toolNames = firstCall?.tools?.map(({ name }) => name) ?? [];
+
+    expect(serializedPrompt).toContain('2026-08-14T07:30:00.000Z');
+    expect(serializedPrompt).toContain('[Frozen Scheduled Task Instruction]');
+    expect(serializedPrompt.match(/每天在下午 3:30/gu)).toHaveLength(1);
+    expect(serializedPrompt).toContain('execute this already-created Scheduled Task occurrence');
+    expect(serializedPrompt).toContain('must not create or change Scheduled Tasks');
+    expect(toolNames).toEqual(expect.arrayContaining([
+      'searchMeetings', 'searchMeetingMinutes', 'fetchMeetingContent',
+    ]));
+    for (const scheduleTool of [
+      'createSchedule', 'updateSchedule', 'pauseSchedule',
+      'resumeSchedule', 'deleteSchedule',
+    ]) {
+      expect(toolNames).not.toContain(scheduleTool);
+    }
+    expect(scheduled.instruction).toBe(frozenInstruction);
     expect(meeting.searchMeetings).toHaveBeenCalledOnce();
-    expect(model.doGenerateCalls[0]?.tools?.map(({ name }) => name)).toEqual(
-      expect.arrayContaining(['searchMeetings', 'searchMeetingMinutes', 'fetchMeetingContent']),
-    );
   });
 
   it('uses transient paginated Group Context while persisting only invocations and replies', async () => {
