@@ -137,7 +137,7 @@ The deterministic one-time timestamp or basic recurring calendar rule attached t
 _Avoid_: Conditional trigger, holiday calendar, event dependency, model-interpreted run time
 
 **Scheduled Run**:
-One durable execution created from a Scheduled Task for one `scheduled_for` occurrence and a task snapshot frozen at run creation. Ordinary task updates never rewrite a queued or processing run. A never-started one-time run may be cancelled, deliberately rebound to the updated task version, and explicitly requeued; once processing begins it is not interrupted and is never automatically retried.
+One durable execution created from a Scheduled Task for one `scheduled_for` occurrence and a task snapshot frozen at run creation. Relative date and cycle language in that run is evaluated against `scheduled_for`, even when catch-up execution begins later. Its frozen instruction authorizes the run's ordinary business tools but never authorizes creating, changing, pausing, resuming, or deleting Scheduled Tasks; those registry changes require a new member-triggered Current Invocation. Ordinary task updates never rewrite a queued or processing run. A never-started one-time run may be cancelled, deliberately rebound to the updated task version, and explicitly requeued; once processing begins it is not interrupted and is never automatically retried.
 _Avoid_: Scheduled Task, mutable run, automatic retry, restored Agent process
 
 **Group Context**:
